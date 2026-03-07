@@ -367,7 +367,7 @@ wasip1 = { version = "1.0.0", default-features = false }
 #
 # Note that `cap-fs-ext` should be avoided where possible to use
 # `cap-primitives` instead.
-target-lexicon = "0.13.5"
+target-lexicon = {git = "https://github.com/Scry-arch/rust-target-lexicon.git", features = ["scry"]}
 cap-primitives = "4.0.2"
 cap-fs-ext-avoid-using-this = { version = "4.0.2", package = 'cap-fs-ext' }
 rustix = "1.1.4"
@@ -399,7 +399,7 @@ backtrace = "0.3.76"
 bumpalo = "3.20.2"
 mutatis = { version = "0.5.2", features = ["alloc", "derive", "check"] }
 cc = "1.2.0" # intentionally smaller-than-latest to accommodate rust-lang/rust
-object = { version = "0.40.0", default-features = false, features = ['read_core', 'elf'] }
+object = { git = "https://github.com/Scry-arch/rust-object.git", default-features = false, features = ['read_core', 'elf'] }
 gimli = { version = "0.33.0", default-features = false, features = ['read'] }
 addr2line = { version = "0.26.0", default-features = false }
 anyhow = { version = "1.0.103", default-features = false }

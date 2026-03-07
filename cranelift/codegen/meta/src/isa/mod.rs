@@ -7,6 +7,7 @@ mod pulley;
 mod riscv64;
 mod s390x;
 pub(crate) mod x86;
+mod scry;
 
 /// Represents known ISA target.
 #[derive(PartialEq, Copy, Clone)]
@@ -17,6 +18,7 @@ pub enum Isa {
     Riscv64,
     Pulley32,
     Pulley64,
+    Scry
 }
 
 impl Isa {
@@ -37,6 +39,7 @@ impl Isa {
             "riscv64" | "riscv64gc" | "riscv64imac" => Some(Isa::Riscv64),
             "pulley32" => Some(Isa::Pulley32),
             "pulley64" => Some(Isa::Pulley64),
+            "scry" => Some(Isa::Scry),
             _ => None,
         }
     }
@@ -50,6 +53,7 @@ impl Isa {
             Isa::Riscv64,
             Isa::Pulley32,
             Isa::Pulley64,
+            Isa::Scry,
         ]
     }
 }
@@ -64,6 +68,7 @@ impl fmt::Display for Isa {
             Isa::Riscv64 => write!(f, "riscv64"),
             Isa::Pulley32 => write!(f, "pulley32"),
             Isa::Pulley64 => write!(f, "pulley64"),
+            Isa::Scry => write!(f, "scry"),
         }
     }
 }
@@ -76,6 +81,7 @@ pub(crate) fn define(isas: &[Isa]) -> Vec<TargetIsa> {
             Isa::S390x => s390x::define(),
             Isa::Riscv64 => riscv64::define(),
             Isa::Pulley32 | Isa::Pulley64 => pulley::define(),
+            Isa::Scry => scry::define(),
         })
         .collect()
 }

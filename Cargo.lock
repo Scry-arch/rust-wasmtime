@@ -2629,8 +2629,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.40.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+source = "git+https://github.com/Scry-arch/rust-object.git#7c8af5eba9ab3d56f89a0b73c706745fc956b6e9"
 dependencies = [
  "crc32fast",
  "hashbrown 0.17.0",
@@ -3716,8 +3715,7 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 [[package]]
 name = "target-lexicon"
 version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+source = "git+https://github.com/Scry-arch/rust-target-lexicon.git#437301520f9565601f8f996209c63145696352d2"
 
 [[package]]
 name = "tch"
