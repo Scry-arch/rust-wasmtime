@@ -1,0 +1,18 @@
+;; scry instruction selection and CLIF-to-MachInst lowering.
+
+
+
+
+;; These are the standard lowering entry points (see x64’s file for reference).
+(decl partial lower (Inst) InstOutput)
+(decl partial lower_branch (Inst MachLabelSlice) Unit)
+
+
+;; Catch-all: match any CLIF instruction and emit a NOP (no results).
+(rule 10000 (lower _) (emit_nop_and_empty))
+
+;; Catch-all for branches: emit a NOP and return unit.
+(rule 10000 (lower_branch _ _) (emit_nop_unit))
+
+
+

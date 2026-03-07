@@ -76,6 +76,7 @@ pub fn get_isle_compilations(
     let src_isa_aarch64 = codegen_crate_dir.join("src").join("isa").join("aarch64");
     let src_isa_s390x = codegen_crate_dir.join("src").join("isa").join("s390x");
     let src_isa_risc_v = codegen_crate_dir.join("src").join("isa").join("riscv64");
+    let src_isa_scry = codegen_crate_dir.join("src").join("isa").join("scry");
     #[cfg(feature = "pulley")]
     let src_isa_pulley_shared = codegen_crate_dir
         .join("src")
@@ -190,6 +191,18 @@ pub fn get_isle_compilations(
                     pulley_gen.clone(),
                     clif_lower_isle.clone(),
                 ],
+            },
+            // The risc-v instruction selector.
+            IsleCompilation {
+                name: "scry".to_string(),
+                output: gen_dir.join("isle_scry.rs"),
+                inputs: vec![
+                    prelude_isle.clone(),
+                    prelude_lower_isle.clone(),
+                    src_isa_scry.join("inst.isle"),
+                    src_isa_scry.join("lower.isle"),
+                ],
+                untracked_inputs: vec![numerics_isle.clone(), clif_lower_isle.clone()],
             },
         ],
     }

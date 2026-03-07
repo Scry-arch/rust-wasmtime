@@ -101,6 +101,7 @@ impl ObjectBuilder {
                 object::Architecture::Riscv64
             }
             target_lexicon::Architecture::S390x => object::Architecture::S390x,
+            target_lexicon::Architecture::Scry => object::Architecture::Scry,
             architecture => {
                 return Err(ModuleError::Backend(anyhow!(
                     "target architecture {architecture:?} is unsupported",

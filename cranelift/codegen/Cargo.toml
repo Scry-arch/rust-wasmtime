@@ -104,6 +104,7 @@ pulley = [
     "pulley-interpreter/disas",
     "cranelift-codegen-meta/pulley",
 ]
+scry = []
 # Enable the ISA target for the host machine
 host-arch = []
 
@@ -112,7 +113,7 @@ all-arch = ["all-native-arch", "pulley"]
 
 # Option to enable all architectures that correspond to an actual native target
 # (that is, exclude Pulley).
-all-native-arch = ["x86", "arm64", "s390x", "riscv64"]
+all-native-arch = ["x86", "arm64", "s390x", "riscv64", "scry"]
 
 # For dependent crates that want to serialize some parts of cranelift
 enable-serde = [
