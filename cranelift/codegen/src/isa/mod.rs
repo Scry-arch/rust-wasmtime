@@ -43,7 +43,7 @@
 //! The configured target ISA trait object is a `Box<TargetIsa>` which can be used for multiple
 //! concurrent function compilations.
 
-use crate::dominator_tree::DominatorTree;
+use     crate::dominator_tree::DominatorTree;
 pub use crate::isa::call_conv::CallConv;
 
 use crate::CodegenResult;
@@ -83,6 +83,9 @@ mod pulley64;
 #[cfg(feature = "pulley")]
 mod pulley_shared;
 
+#[cfg(feature = "scry")]
+mod scry;
+
 pub mod unwind;
 
 mod call_conv;
@@ -119,6 +122,9 @@ pub fn lookup(triple: Triple) -> Result<Builder, LookupError> {
         Architecture::Pulley64 | Architecture::Pulley64be => {
             isa_builder!(pulley64, (feature = "pulley"), triple)
         }
+        Architecture::Scry => {
+            isa_builder!(scry, (feature = "scry"), triple)
+        }
         _ => Err(LookupError::Unsupported),
     }
 }
@@ -126,7 +132,7 @@ pub fn lookup(triple: Triple) -> Result<Builder, LookupError> {
 /// The string names of all the supported, but possibly not enabled, architectures. The elements of
 /// this slice are suitable to be passed to the [lookup_by_name] function to obtain the default
 /// configuration for that architecture.
-pub const ALL_ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "s390x", "riscv64"];
+pub const ALL_ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "s390x", "riscv64", "scry"];
 
 /// Look for a supported ISA with the given `name`.
 /// Return a builder that can create a corresponding `TargetIsa`.

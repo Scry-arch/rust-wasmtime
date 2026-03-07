@@ -1,0 +1,21 @@
+;; Instruction formats.
+(type MInst
+  (enum
+    ;; A no-op.
+    (Nop)
+
+))
+
+
+;; cranelift/codegen/src/isa/scry/inst.isle
+;; Types like InstOutput and Unit come from the shared prelude built into Cranelift’s ISLE build.
+
+;; (1) Declare the ISLE signatures:
+(decl emit_nop_and_empty () InstOutput)
+(decl emit_nop_unit () Unit)
+
+;; (2) Bind to the Rust functions you wrote in lower.rs:
+(extern constructor emit_nop_and_empty emit_nop_and_empty)
+(extern constructor emit_nop_unit emit_nop_unit)
+
+
