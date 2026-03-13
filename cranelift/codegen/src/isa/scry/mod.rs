@@ -6,10 +6,7 @@ use crate::isa::scry::settings as scry_settings;
 use crate::isa::{
     Builder as IsaBuilder, FunctionAlignment, IsaFlagsHashKey, OwnedTargetIsa, TargetIsa,
 };
-use crate::machinst::{
-    CompiledCode, CompiledCodeStencil, MachInst, MachTextSectionBuilder, Reg,
-    TextSectionBuilder,
-};
+use crate::machinst::{Callee, CompiledCode, CompiledCodeStencil, MachInst, MachTextSectionBuilder, Reg, SigSet, BlockLoweringOrder, TextSectionBuilder, VCode};
 use crate::result::CodegenResult;
 use crate::settings::{self as shared_settings, Flags};
 use crate::ir;
@@ -18,7 +15,12 @@ use alloc::{boxed::Box, vec::Vec};
 use core::fmt;
 use cranelift_control::ControlPlane;
 use target_lexicon::{Architecture, Triple};
+use crate::isa::scry::inst::EmitInfo;
 use crate::isa::unwind::systemv;
+use crate::trace;
+use crate::timing;
+use crate::ir::pcc;
+use crate::CodegenError;
 
 mod abi;
 pub(crate) mod inst;
@@ -46,7 +48,54 @@ impl ScryBackend {
             isa_flags,
         }
     }
-
+    
+    /// This performs lowering to VCode, register-allocates the code, computes block layout and
+    /// finalizes branches. The result is ready for binary emission.
+    fn compile_vcode(
+        &self,
+        func: &Function,
+        domtree: &DominatorTree,
+        ctrl_plane: &mut ControlPlane,
+    ) -> CodegenResult<VCode<inst::MInst>> {
+        let emit_info = EmitInfo::new(self.flags.clone(), self.isa_flags.clone());
+        let sigs = SigSet::new::<abi::ScryMachineDeps>(func, &self.flags)?;
+        let abi = Callee::<abi::ScryMachineDeps>::new(func, self, &self.isa_flags, &sigs)?;
+        
+        // ------ The below code is copied from cranelift/codegen/src/machinst/compile.rs ------
+        // Compute lowered block order.
+        let block_order = BlockLoweringOrder::new(func, domtree, ctrl_plane);
+        
+        // Build the lowering context.
+        let lower =
+            crate::machinst::Lower::new(func, abi, emit_info, block_order, sigs, self.flags().clone())?;
+        
+        // Lower the IR.
+        let mut vcode = {
+            log::debug!(
+            "Number of CLIF instructions to lower: {}",
+            func.dfg.num_insts()
+        );
+            log::debug!("Number of CLIF blocks to lower: {}", func.dfg.num_blocks());
+            
+            let _tt = timing::vcode_lower();
+            lower.lower(self, ctrl_plane)?
+        };
+        
+        log::debug!(
+            "Number of lowered vcode instructions: {}",
+            vcode.num_insts()
+        );
+        log::debug!("Number of lowered vcode blocks: {}", vcode.num_blocks());
+        trace!("vcode from lowering: \n{:?}", vcode);
+        
+        // Perform validation of proof-carrying-code facts, if requested.
+        if self.flags().enable_pcc() {
+            pcc::check_vcode_facts(func, &mut vcode, self).map_err(CodegenError::Pcc)?;
+        }
+        // ------ The above code is copied from cranelift/codegen/src/machinst/compile.rs ------
+        
+        Ok(vcode)
+    }
 }
 
 impl TargetIsa for ScryBackend {
@@ -54,9 +103,11 @@ impl TargetIsa for ScryBackend {
         &self,
         func: &Function,
         domtree: &DominatorTree,
-        want_disasm: bool,
+        _want_disasm: bool,
         ctrl_plane: &mut ControlPlane,
     ) -> CodegenResult<CompiledCodeStencil> {
+        let vcode = self.compile_vcode(func, domtree, ctrl_plane)?;
+        dbg!(vcode);
         unimplemented!()
     }
 
@@ -86,8 +137,8 @@ impl TargetIsa for ScryBackend {
     #[cfg(feature = "unwind")]
     fn emit_unwind_info(
         &self,
-        result: &CompiledCode,
-        kind: crate::isa::unwind::UnwindInfoKind,
+        _result: &CompiledCode,
+        _kind: crate::isa::unwind::UnwindInfoKind,
     ) -> CodegenResult<Option<crate::isa::unwind::UnwindInfo>> {
         Ok(None)
     }
@@ -102,7 +153,7 @@ impl TargetIsa for ScryBackend {
     }
 
     #[cfg(feature = "unwind")]
-    fn map_regalloc_reg_to_dwarf(&self, reg: Reg) -> Result<u16, systemv::RegisterMappingError> {
+    fn map_regalloc_reg_to_dwarf(&self, _reg: Reg) -> Result<u16, systemv::RegisterMappingError> {
         unimplemented!()
     }
 
@@ -114,7 +165,7 @@ impl TargetIsa for ScryBackend {
         unimplemented!()
     }
 
-    fn pretty_print_reg(&self, reg: Reg, _size: u8) -> String {
+    fn pretty_print_reg(&self, _reg: Reg, _size: u8) -> String {
         unimplemented!()
     }
 

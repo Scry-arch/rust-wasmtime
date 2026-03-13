@@ -23,6 +23,7 @@ cranelift-codegen = { workspace = true, features = [
     "disas",
     "trace-log",
     "timing",
+    "isle-errors"
 ] }
 cranelift-entity = { workspace = true }
 cranelift-interpreter = { workspace = true }

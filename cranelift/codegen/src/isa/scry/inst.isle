@@ -4,11 +4,69 @@
     ;; A no-op.
     (Nop)
 
-))
+    ;; A pseudo-instruction that captures register arguments in vregs.
+    (Args
+      (args VecArgPair)
+    )
 
+    ;; A pseudo-instruction that moves vregs to return registers.
+    (Rets
+      (rets VecRetPair)
+    )
+
+    (Ret)
+
+    (Add
+      (rd WritableReg)
+      (rs1 Reg)
+      (rs2 Reg)
+    )
+
+    (Const
+      (rd WritableReg)
+      (imm Imm64)
+    )
+  )
+)
+
+;;
+;; Instruction-specific lowerings
+;;
+
+(decl const_r (Imm64) Reg)
+(rule
+  (const_r imm)
+  (let
+    ( (dst WritableReg (temp_writable_reg $I64))
+      (_ Unit (emit (MInst.Const dst imm)))
+    )
+    dst
+  )
+)
+
+(decl add_rrr (Reg Reg) Reg)
+(rule
+  (add_rrr src1 src2)
+  (let
+    ( (dst WritableReg (temp_writable_reg $I64))
+      (_ Unit (emit (MInst.Add dst src1 src2)))
+    )
+    dst
+  )
+)
+
+
+;;
+;;(decl mat_imm_i64 (Value) Reg)
+;;(extern constructor mat_imm_i64 mat_imm_i64)
 
 ;; cranelift/codegen/src/isa/scry/inst.isle
 ;; Types like InstOutput and Unit come from the shared prelude built into Cranelift’s ISLE build.
+
+
+;; Emits return instruction
+(decl emit_ret (ValueSlice) InstOutput)
+(extern constructor emit_ret emit_ret)
 
 ;; (1) Declare the ISLE signatures:
 (decl emit_nop_and_empty () InstOutput)
@@ -18,4 +76,11 @@
 (extern constructor emit_nop_and_empty emit_nop_and_empty)
 (extern constructor emit_nop_unit emit_nop_unit)
 
+
+;; Fallback function for when lowering rules caught the instruction
+(decl lower_error (Inst) InstOutput)
+(decl lower_branch_error (Inst MachLabelSlice) Unit)
+
+(extern constructor lower_error lower_error)
+(extern constructor lower_branch_error lower_branch_error)
 

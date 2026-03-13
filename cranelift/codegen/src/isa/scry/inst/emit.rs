@@ -2,12 +2,13 @@
 
 use crate::ir::{self};
 use crate::isa::scry::inst::*;
-use crate::isa::scry::lower::isle::generated_code::{MInst};
+use crate::isa::scry::lower::isle::generated_code::MInst;
 use cranelift_control::ControlPlane;
 
 pub struct EmitInfo {
     #[expect(dead_code, reason = "may want to be used in the future")]
     shared_flag: settings::Flags,
+    #[allow(unused)]
     isa_flags: super::super::scry_settings::Flags,
 }
 
@@ -35,12 +36,6 @@ pub struct EmitState {
     ctrl_plane: ControlPlane,
 
     frame_layout: FrameLayout,
-}
-
-impl EmitState {
-    fn take_stack_map(&mut self) -> Option<ir::UserStackMap> {
-        self.user_stack_map.take()
-    }
 }
 
 impl MachInstEmitState<MInst> for EmitState {
@@ -79,7 +74,7 @@ impl MachInstEmit for MInst {
     type State = EmitState;
     type Info = EmitInfo;
 
-    fn emit(&self, sink: &mut MachBuffer<MInst>, emit_info: &Self::Info, state: &mut EmitState) {
+    fn emit(&self, _sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
         unimplemented!()
     }
 
