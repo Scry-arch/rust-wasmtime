@@ -5,17 +5,16 @@ use crate::ir::types::*;
 
 use crate::isa;
 
-use crate::isa::scry::inst::*;
 use crate::machinst::*;
 
 use crate::CodegenResult;
-use crate::ir::Signature;
+use crate::ir::{ArgumentExtension, ArgumentPurpose, Signature};
 use crate::isa::scry::settings::Flags as ScryFlags;
 use crate::settings;
 use alloc::vec::Vec;
-use regalloc2::{MachineEnv, PRegSet};
+use regalloc2::{MachineEnv, PReg, PRegSet};
 
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
 use crate::isa::scry::lower::isle::generated_code::MInst;
 
 /// Scry-specific ABI behavior. This struct just serves as an implementation
@@ -42,34 +41,49 @@ impl ABIMachineSpec for ScryMachineDeps {
     }
 
     fn compute_arg_locs(
-        call_conv: isa::CallConv,
-        flags: &settings::Flags,
+        _call_conv: isa::CallConv,
+        _flags: &settings::Flags,
         params: &[ir::AbiParam],
-        args_or_rets: ArgsOrRets,
-        add_ret_area_ptr: bool,
-        args: ArgsAccumulator,
+        _args_or_rets: ArgsOrRets,
+        _add_ret_area_ptr: bool,
+        mut args: ArgsAccumulator,
     ) -> CodegenResult<(u32, Option<usize>)> {
+        for p in params {
+            assert_eq!(p.purpose, ArgumentPurpose::Normal);
+            assert_eq!(p.extension, ArgumentExtension::None);
+            assert_eq!(p.value_type, Type::int(32).unwrap());
+            
+            args.push(ABIArg::Slots {
+                slots: SmallVec::<[ABIArgSlot; 1]>::from_vec(vec![ABIArgSlot::Reg {
+                    reg: Reg::from_real_reg(PReg::new(0, RegClass::Int)).to_real_reg().unwrap(),
+                    ty: Default::default(),
+                    extension: ArgumentExtension::None,
+                }]),
+                purpose: p.purpose,
+            } );
+        }
+        
+        Ok((0,None))
+    }
+
+    fn gen_load_stack(_mem: StackAMode, _into_reg: Writable<Reg>, _ty: Type) -> MInst {
         unimplemented!()
     }
 
-    fn gen_load_stack(mem: StackAMode, into_reg: Writable<Reg>, ty: Type) -> MInst {
+    fn gen_store_stack(_mem: StackAMode, _from_reg: Reg, _ty: Type) -> MInst {
         unimplemented!()
     }
 
-    fn gen_store_stack(mem: StackAMode, from_reg: Reg, ty: Type) -> MInst {
-        unimplemented!()
-    }
-
-    fn gen_move(to_reg: Writable<Reg>, from_reg: Reg, ty: Type) -> MInst {
+    fn gen_move(_to_reg: Writable<Reg>, _from_reg: Reg, _ty: Type) -> MInst {
         unimplemented!()
     }
 
     fn gen_extend(
-        to_reg: Writable<Reg>,
-        from_reg: Reg,
-        signed: bool,
-        from_bits: u8,
-        to_bits: u8,
+        _to_reg: Writable<Reg>,
+        _from_reg: Reg,
+        _signed: bool,
+        _from_bits: u8,
+        _to_bits: u8,
     ) -> MInst {
         unimplemented!()
     }
@@ -78,15 +92,15 @@ impl ABIMachineSpec for ScryMachineDeps {
         _call_conv: isa::CallConv,
         specified: ir::ArgumentExtension,
     ) -> ir::ArgumentExtension {
-        unimplemented!()
+        specified
     }
 
     fn gen_args(args: Vec<ArgPair>) -> MInst {
-        unimplemented!()
+        MInst::Args { args }
     }
 
     fn gen_rets(rets: Vec<RetPair>) -> MInst {
-        unimplemented!()
+        MInst::Rets { rets }
     }
 
     fn get_stacklimit_reg(_call_conv: isa::CallConv) -> Reg {
@@ -95,47 +109,47 @@ impl ABIMachineSpec for ScryMachineDeps {
 
     fn gen_add_imm(
         _call_conv: isa::CallConv,
-        into_reg: Writable<Reg>,
-        from_reg: Reg,
-        imm: u32,
+        _into_reg: Writable<Reg>,
+        _from_reg: Reg,
+        _imm: u32,
     ) -> SmallInstVec<MInst> {
         unimplemented!()
     }
 
-    fn gen_stack_lower_bound_trap(limit_reg: Reg) -> SmallInstVec<MInst> {
+    fn gen_stack_lower_bound_trap(_limit_reg: Reg) -> SmallInstVec<MInst> {
         unimplemented!()
     }
 
-    fn gen_get_stack_addr(mem: StackAMode, into_reg: Writable<Reg>) -> MInst {
+    fn gen_get_stack_addr(_mem: StackAMode, _into_reg: Writable<Reg>) -> MInst {
         unimplemented!()
     }
 
-    fn gen_load_base_offset(into_reg: Writable<Reg>, base: Reg, offset: i32, ty: Type) -> MInst {
+    fn gen_load_base_offset(_into_reg: Writable<Reg>, _base: Reg, _offset: i32, _ty: Type) -> MInst {
         unimplemented!()
     }
 
-    fn gen_store_base_offset(base: Reg, offset: i32, from_reg: Reg, ty: Type) -> MInst {
+    fn gen_store_base_offset(_base: Reg, _offset: i32, _from_reg: Reg, _ty: Type) -> MInst {
         unimplemented!()
     }
 
-    fn gen_sp_reg_adjust(amount: i32) -> SmallInstVec<MInst> {
+    fn gen_sp_reg_adjust(_amount: i32) -> SmallInstVec<MInst> {
         unimplemented!()
     }
 
     fn gen_prologue_frame_setup(
         _call_conv: isa::CallConv,
-        flags: &settings::Flags,
+        _flags: &settings::Flags,
         _isa_flags: &ScryFlags,
-        frame_layout: &FrameLayout,
+        _frame_layout: &FrameLayout,
     ) -> SmallInstVec<MInst> {
         unimplemented!()
     }
     
     fn gen_epilogue_frame_restore(
-        call_conv: isa::CallConv,
+        _call_conv: isa::CallConv,
         _flags: &settings::Flags,
         _isa_flags: &ScryFlags,
-        frame_layout: &FrameLayout,
+        _frame_layout: &FrameLayout,
     ) -> SmallInstVec<MInst> {
         unimplemented!()
     }
@@ -145,17 +159,17 @@ impl ABIMachineSpec for ScryMachineDeps {
         _isa_flags: &ScryFlags,
         _frame_layout: &FrameLayout,
     ) -> SmallInstVec<MInst>{
-        unimplemented!()
+        smallvec![MInst::Ret {}]
     }
 
-    fn gen_probestack(insts: &mut SmallInstVec<Self::I>, frame_size: u32) {
+    fn gen_probestack(_insts: &mut SmallInstVec<Self::I>, _frame_size: u32) {
         unimplemented!()
     }
 
     fn gen_clobber_save(
         _call_conv: isa::CallConv,
-        flags: &settings::Flags,
-        frame_layout: &FrameLayout,
+        _flags: &settings::Flags,
+        _frame_layout: &FrameLayout,
     ) -> SmallVec<[MInst; 16]> {
         unimplemented!()
     }
@@ -163,60 +177,66 @@ impl ABIMachineSpec for ScryMachineDeps {
     fn gen_clobber_restore(
         _call_conv: isa::CallConv,
         _flags: &settings::Flags,
-        frame_layout: &FrameLayout,
+        _frame_layout: &FrameLayout,
     ) -> SmallVec<[MInst; 16]> {
         unimplemented!()
     }
 
     fn gen_memcpy<F: FnMut(Type) -> Writable<Reg>>(
-        call_conv: isa::CallConv,
-        dst: Reg,
-        src: Reg,
-        size: usize,
-        mut alloc_tmp: F,
+        _call_conv: isa::CallConv,
+        _dst: Reg,
+        _src: Reg,
+        _size: usize,
+        _alloc_tmp: F,
     ) -> SmallVec<[Self::I; 8]> {
         unimplemented!()
     }
 
     fn get_number_of_spillslots_for_value(
-        rc: RegClass,
+        _rc: RegClass,
         _target_vector_bytes: u32,
-        isa_flags: &ScryFlags,
+        _isa_flags: &ScryFlags,
     ) -> u32 {
         unimplemented!()
     }
 
     fn get_machine_env(_flags: &settings::Flags, _call_conv: isa::CallConv) -> &MachineEnv {
-        unimplemented!()
+        static MACHINE_ENV: MachineEnv = MachineEnv {
+            preferred_regs_by_class: [PRegSet::empty(),PRegSet::empty(),PRegSet::empty(),],
+            non_preferred_regs_by_class: [PRegSet::empty(),PRegSet::empty(),PRegSet::empty(),],
+            scratch_by_class: [None,None,None],
+            fixed_stack_slots: vec![],
+        };
+        &MACHINE_ENV
     }
 
     fn get_regs_clobbered_by_call(
-        call_conv_of_callee: isa::CallConv,
-        is_exception: bool,
+        _call_conv_of_callee: isa::CallConv,
+        _is_exception: bool,
     ) -> PRegSet {
         unimplemented!()
     }
 
     fn compute_frame_layout(
-        call_conv: isa::CallConv,
-        flags: &settings::Flags,
+        _call_conv: isa::CallConv,
+        _flags: &settings::Flags,
         _sig: &Signature,
-        regs: &[Writable<RealReg>],
-        function_calls: FunctionCalls,
-        incoming_args_size: u32,
-        tail_args_size: u32,
-        stackslots_size: u32,
-        fixed_frame_storage_size: u32,
-        outgoing_args_size: u32,
+        _regs: &[Writable<RealReg>],
+        _function_calls: FunctionCalls,
+        _incoming_args_size: u32,
+        _tail_args_size: u32,
+        _stackslots_size: u32,
+        _fixed_frame_storage_size: u32,
+        _outgoing_args_size: u32,
     ) -> FrameLayout {
         unimplemented!()
     }
 
     fn gen_inline_probestack(
-        insts: &mut SmallInstVec<Self::I>,
+        _insts: &mut SmallInstVec<Self::I>,
         _call_conv: isa::CallConv,
-        frame_size: u32,
-        guard_size: u32,
+        _frame_size: u32,
+        _guard_size: u32,
     ) {
         unimplemented!()
     }
@@ -225,7 +245,7 @@ impl ABIMachineSpec for ScryMachineDeps {
         unimplemented!()
     }
 
-    fn exception_payload_regs(call_conv: isa::CallConv) -> &'static [Reg] {
+    fn exception_payload_regs(_call_conv: isa::CallConv) -> &'static [Reg] {
         unimplemented!()
     }
 }

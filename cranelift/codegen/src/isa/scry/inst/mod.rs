@@ -3,29 +3,26 @@
 use crate::binemit::{Addend, CodeOffset, Reloc};
 pub use crate::ir::condcodes::IntCC;
 
-pub use crate::ir::{ExternalName, MemFlags, Type};
-use crate::isa::{FunctionAlignment};
+pub use crate::ir::Type;
+use crate::isa::FunctionAlignment;
 use crate::machinst::*;
-use crate::{CodegenResult, settings};
+use crate::{CodegenResult, settings, CodegenError};
 
 pub use crate::ir::condcodes::FloatCC;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt::Write;
-use regalloc2::RegClass;
+use regalloc2::{RegClass, VReg};
 
 pub mod args;
-pub use self::args::*;
 pub mod emit;
 pub use self::emit::*;
 
 use crate::isa::scry::abi::ScryMachineDeps;
 
-use core::fmt::Display;
 
 pub use crate::isa::scry::lower::isle::generated_code::MInst;
-
+use crate::opts::{I16, I32, I64, I8};
 //=============================================================================
 // Instructions (top level): definition
 
@@ -37,11 +34,11 @@ impl MachInst for MInst {
     // all zero will cause invalid opcode.
     const TRAP_OPCODE: &'static [u8] = &[0; 4];
 
-    fn gen_dummy_use(reg: Reg) -> Self {
+    fn gen_dummy_use(_reg: Reg) -> Self {
         unimplemented!()
     }
 
-    fn canonical_type_for_rc(rc: RegClass) -> Type {
+    fn canonical_type_for_rc(_rc: RegClass) -> Type {
         unimplemented!()
     }
 
@@ -50,11 +47,37 @@ impl MachInst for MInst {
     }
 
     fn get_operands(&mut self, collector: &mut impl OperandVisitor) {
-        unimplemented!()
+        use MInst::*;
+        match self {
+            Nop | Ret => (),
+            Args { args } => {
+                // We just treat function arguments as definition points
+                for p in args {
+                    collector.reg_def(&mut p.vreg);
+                }
+            }
+            Add { rd, rs1, rs2 } => {
+                collector.reg_def(rd);
+                collector.reg_use(rs1);
+                collector.reg_use(rs2);
+            }
+            Rets { rets } => {
+                for p in rets {
+                    collector.reg_use(&mut p.vreg);
+                }
+            }
+            Const { rd, ..} => {
+                collector.reg_def(rd);
+            }
+            
+        }
     }
 
     fn is_move(&self) -> Option<(Writable<Reg>, Reg)> {
-        unimplemented!()
+        use MInst::*;
+        match self {
+            Nop | Args {..} | Ret | Rets {..} | Add {..} | Const {..} => None,
+        }
     }
 
     fn is_included_in_clobbers(&self) -> bool {
@@ -62,7 +85,8 @@ impl MachInst for MInst {
     }
 
     fn is_trap(&self) -> bool {
-        unimplemented!()
+        // TODO: implement for the trap instruction
+        false
     }
 
     fn is_args(&self) -> bool {
@@ -74,18 +98,21 @@ impl MachInst for MInst {
     }
 
     fn is_term(&self) -> MachTerminator {
-        unimplemented!()
+        match self {
+            MInst::Ret => MachTerminator::Ret,
+            _ => MachTerminator::None
+        }
     }
 
     fn is_mem_access(&self) -> bool {
         unimplemented!()
     }
 
-    fn gen_move(to_reg: Writable<Reg>, from_reg: Reg, ty: Type) -> MInst {
+    fn gen_move(_to_reg: Writable<Reg>, _from_reg: Reg, _ty: Type) -> MInst {
         unimplemented!()
     }
 
-    fn gen_nop(preferred_size: usize) -> MInst {
+    fn gen_nop(_preferred_size: usize) -> MInst {
         unimplemented!()
     }
 
@@ -94,10 +121,18 @@ impl MachInst for MInst {
     }
 
     fn rc_for_type(ty: Type) -> CodegenResult<(&'static [RegClass], &'static [Type])> {
-        unimplemented!()
+        match ty {
+            I8 => Ok((&[RegClass::Int], &[I8])),
+            I16 => Ok((&[RegClass::Int], &[I16])),
+            I32 => Ok((&[RegClass::Int], &[I32])),
+            I64 => Ok((&[RegClass::Int], &[I64])),
+            _=> Err(CodegenError::Unsupported(format!(
+                "Unexpected SSA-value type: {ty}"
+            )))
+        }
     }
 
-    fn gen_jump(target: MachLabel) -> MInst{
+    fn gen_jump(_target: MachLabel) -> MInst{
         unimplemented!()
     }
 
@@ -120,9 +155,48 @@ impl MachInst for MInst {
 //=============================================================================
 // Pretty-printing of instructions.
 
+pub fn reg_name(reg: Reg) -> String {
+    format!("v({})", reg.to_virtual_reg().unwrap().index())
+}
+#[allow(unused)]
+pub fn vreg_name(reg: VReg) -> String {
+    format!("v({})", reg.vreg())
+}
+
+pub fn wreg_name(reg: Writable<Reg>) -> String {
+    format!("v({})", reg.to_reg().to_virtual_reg().unwrap().index())
+}
+
+
 impl MInst {
     fn print_with_state(&self, _state: &mut EmitState) -> String {
-        unimplemented!()
+        fn join(name: &str, list: impl Iterator<Item = String>) -> String {
+            let mut res: String = name.into();
+            res.push('(');
+            list.for_each(|s| {
+                res.push_str(s.as_str());
+                res.push_str(", ");
+            });
+            res.push(')');
+            res
+        }
+        use MInst::*;
+        match self {
+            Args { args } => {
+                join("Args", args.iter().map(|p| wreg_name(p.vreg)))
+            },
+            Nop => "Nop".into(),
+            Ret => "Ret".into(),
+            Rets { rets } => {
+                join("Rets", rets.iter().map(|p| reg_name(p.vreg)))
+            },
+            Add { rd, rs1, rs2 } => {
+                join("Add", [wreg_name(*rd), reg_name(*rs1), reg_name(*rs2)].into_iter())
+            },
+            Const {rd, imm} => {
+                join("Const", [wreg_name(*rd),format!("{}", imm.bits())].into_iter())
+            }
+        }
     }
 }
 
@@ -147,7 +221,7 @@ impl MachInstLabelUse for LabelUse {
         unimplemented!()
     }
 
-    fn patch(self, buffer: &mut [u8], use_offset: CodeOffset, label_offset: CodeOffset) {
+    fn patch(self, _buffer: &mut [u8], _use_offset: CodeOffset, _label_offset: CodeOffset) {
         unimplemented!()
     }
 
@@ -165,13 +239,13 @@ impl MachInstLabelUse for LabelUse {
 
     fn generate_veneer(
         self,
-        buffer: &mut [u8],
-        veneer_offset: CodeOffset,
+        _buffer: &mut [u8],
+        _veneer_offset: CodeOffset,
     ) -> (CodeOffset, LabelUse) {
         unimplemented!()
     }
 
-    fn from_reloc(reloc: Reloc, addend: Addend) -> Option<LabelUse> {
+    fn from_reloc(_reloc: Reloc, _addend: Addend) -> Option<LabelUse> {
         unimplemented!()
     }
 }
