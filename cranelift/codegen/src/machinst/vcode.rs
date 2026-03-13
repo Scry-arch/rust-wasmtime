@@ -700,7 +700,7 @@ impl<I: VCodeInst> VCode<I> {
 
         for (i, range) in self.operand_ranges.iter() {
             let operands = &self.operands[range.clone()];
-            let allocs = &regalloc.allocs[range];
+            let allocs = &regalloc.allocs.get(range).unwrap_or(&[]);
             for (operand, alloc) in operands.iter().zip(allocs.iter()) {
                 if operand.kind() == OperandKind::Def {
                     if let Some(preg) = alloc.as_reg() {
@@ -1014,25 +1014,27 @@ impl<I: VCodeInst> VCode<I> {
                         } else {
                             // Update the operands for this inst using the
                             // allocations from the regalloc result.
-                            let mut allocs = regalloc.inst_allocs(iix).iter();
-                            self.insts[iix.index()].get_operands(
-                                &mut |reg: &mut Reg, constraint, _kind, _pos| {
-                                    let alloc =
-                                        allocs.next().expect("enough allocations for all operands");
-
-                                    if let Some(alloc) = alloc.as_reg() {
-                                        let alloc: Reg = alloc.into();
-                                        if let OperandConstraint::FixedReg(rreg) = constraint {
-                                            debug_assert_eq!(Reg::from(rreg), alloc);
+                            if regalloc.inst_alloc_offsets.len() != 0 {
+                                let mut allocs = regalloc.inst_allocs(iix).iter();
+                                self.insts[iix.index()].get_operands(
+                                    &mut |reg: &mut Reg, constraint, _kind, _pos| {
+                                        let alloc =
+                                            allocs.next().expect("enough allocations for all operands");
+                                        
+                                        if let Some(alloc) = alloc.as_reg() {
+                                            let alloc: Reg = alloc.into();
+                                            if let OperandConstraint::FixedReg(rreg) = constraint {
+                                                debug_assert_eq!(Reg::from(rreg), alloc);
+                                            }
+                                            *reg = alloc;
+                                        } else if let Some(alloc) = alloc.as_stack() {
+                                            let alloc: Reg = alloc.into();
+                                            *reg = alloc;
                                         }
-                                        *reg = alloc;
-                                    } else if let Some(alloc) = alloc.as_stack() {
-                                        let alloc: Reg = alloc.into();
-                                        *reg = alloc;
-                                    }
-                                },
-                            );
-                            debug_assert!(allocs.next().is_none());
+                                    },
+                                );
+                                debug_assert!(allocs.next().is_none());
+                            }
 
                             log::trace!("emitting: {:?}", self.insts[iix.index()]);
 
