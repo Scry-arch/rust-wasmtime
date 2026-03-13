@@ -7,11 +7,11 @@ use generated_code::MInst;
 // Types that the generated ISLE code uses via `use super::*`.
 use crate::isa::scry::ScryBackend;
 use crate::machinst::Reg;
-use crate::machinst::{CallInfo, MachInst, isle::*};
+use crate::machinst::{MachInst, isle::*};
 use crate::machinst::{VCodeConstant, VCodeConstantData};
 use crate::{
     ir::{
-        AtomicRmwOp, BlockCall, ExternalName, Inst, InstructionData, MemFlags, Opcode, TrapCode,
+        BlockCall, ExternalName, Inst, InstructionData, MemFlags, Opcode, TrapCode,
         Value, ValueList, immediates::*, types::*,
     },
     isa::scry::inst::*,
@@ -20,9 +20,9 @@ use crate::{
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use regalloc2::PReg;
-use wasmtime_core::math::{f32_cvt_to_int_bounds, f64_cvt_to_int_bounds};
 
 type BoxExternalName = Box<ExternalName>;
+type VecArgPair = Vec<ArgPair>;
 
 pub(crate) struct ScryIsleContext<'a, 'b, I, B>
 where
@@ -30,6 +30,7 @@ where
     B: LowerBackend,
 {
     pub lower_ctx: &'a mut Lower<'b, I>,
+    #[allow(unused)]
     pub backend: &'a B,
 }
 
@@ -40,7 +41,8 @@ impl<'a, 'b> ScryIsleContext<'a, 'b, MInst, ScryBackend> {
             backend,
         }
     }
-
+    
+    #[allow(unused)]
     pub(crate) fn dfg(&self) -> &crate::ir::DataFlowGraph {
         &self.lower_ctx.f.dfg
     }
@@ -50,16 +52,32 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     isle_lower_prelude_methods!();
     
     fn emit(&mut self, arg0: &MInst) -> Unit {
+        dbg!(arg0);
         self.lower_ctx.emit(arg0.clone());
     }
     
+    fn emit_ret(&mut self, _arg0: ValueSlice) -> InstOutput {
+        dbg!(_arg0);
+        self.lower_ctx.emit(MInst::Ret);
+        smallvec::smallvec![] // empty InstOutput
+    }
+    
     fn emit_nop_and_empty(&mut self, ) -> InstOutput {
+        dbg!();
         self.lower_ctx.emit(MInst::Nop);
         smallvec::smallvec![] // empty InstOutput
     }
     
     fn emit_nop_unit(&mut self,) {
+        dbg!();
         self.lower_ctx.emit(MInst::Nop);
+    }
+    fn lower_error(&mut self, arg0: Inst) -> InstOutput {
+        let instr_data: InstructionData = self.inst_data_value(arg0);
+        unreachable!("No valid lowering rule for instruction: {:?}", instr_data);
+    }
+    fn lower_branch_error(&mut self, arg0: Inst, arg1: &MachLabelSlice) -> Unit {
+        unreachable!("No valid lowering rule for branch: {:?}, {:?}", arg0, arg1);
     }
 }
 

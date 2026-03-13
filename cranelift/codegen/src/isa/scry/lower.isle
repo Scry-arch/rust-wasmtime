@@ -8,11 +8,29 @@
 (decl partial lower_branch (Inst MachLabelSlice) Unit)
 
 
+(rule
+    (lower (iconst imm))
+    (const_r imm)
+)
+
+(rule
+    ;;(lower (iadd lhs (iconst imm)))
+    ;;(add_rrr lhs (mat_imm_i64 imm))
+    (lower (iadd lhs rhs))
+    (add_rrr lhs rhs)
+)
+
+
+
+;; Lower return
+(rule (lower (return args))
+      (lower_return args))
+
 ;; Catch-all: match any CLIF instruction and emit a NOP (no results).
-(rule 10000 (lower _) (emit_nop_and_empty))
+(rule -1 (lower instr) (lower_error instr))
 
 ;; Catch-all for branches: emit a NOP and return unit.
-(rule 10000 (lower_branch _ _) (emit_nop_unit))
+(rule -1 (lower_branch instr slice) (lower_branch_error instr slice))
 
 
 
