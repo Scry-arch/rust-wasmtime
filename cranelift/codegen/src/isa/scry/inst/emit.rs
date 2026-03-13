@@ -1,5 +1,6 @@
 //! Riscv64 ISA: binary code emission.
 
+use scry_isa::{AluVariant, Bits, CallVariant, Instruction};
 use crate::ir::{self};
 use crate::isa::scry::inst::*;
 use crate::isa::scry::lower::isle::generated_code::MInst;
@@ -74,8 +75,26 @@ impl MachInstEmit for MInst {
     type State = EmitState;
     type Info = EmitInfo;
 
-    fn emit(&self, _sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
-        unimplemented!()
+    fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
+        dbg!(self);
+        
+        match self {
+            MInst::Nop => {
+                sink.put2(Instruction::NoOp.encode())
+            }
+            MInst::Args { .. } => {}
+            MInst::Rets { .. } => {}
+            MInst::Ret => {
+                sink.put2(Instruction::Call(CallVariant::Ret, Bits::try_from(0).unwrap()).encode())
+            }
+            MInst::Add { .. } => {
+                sink.put2(Instruction::Alu(AluVariant::Add, Bits::try_from(0).unwrap()).encode())
+            }
+            MInst::Const { rd, imm } => {
+                sink.put2(Instruction::Constant(Bits::try_from(0).unwrap(), Bits::try_from(imm.bits() as i32).unwrap()).encode())
+                
+            }
+        }
     }
 
     fn pretty_print_inst(&self, state: &mut Self::State) -> String {

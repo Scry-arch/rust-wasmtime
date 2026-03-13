@@ -13,6 +13,7 @@ pub use crate::ir::condcodes::FloatCC;
 use alloc::string::String;
 use alloc::vec::Vec;
 use regalloc2::{RegClass, VReg};
+use scry_isa::Instruction;
 
 pub mod args;
 pub mod emit;
@@ -23,6 +24,8 @@ use crate::isa::scry::abi::ScryMachineDeps;
 
 pub use crate::isa::scry::lower::isle::generated_code::MInst;
 use crate::opts::{I16, I32, I64, I8};
+
+use byteorder::{ByteOrder, LittleEndian};
 //=============================================================================
 // Instructions (top level): definition
 
@@ -43,7 +46,7 @@ impl MachInst for MInst {
     }
 
     fn is_safepoint(&self) -> bool {
-        unimplemented!()
+        false
     }
 
     fn get_operands(&mut self, collector: &mut impl OperandVisitor) {
@@ -81,7 +84,8 @@ impl MachInst for MInst {
     }
 
     fn is_included_in_clobbers(&self) -> bool {
-        unimplemented!()
+        // Scry does not have to worry about clobbers (no registers)
+        false
     }
 
     fn is_trap(&self) -> bool {
@@ -94,7 +98,9 @@ impl MachInst for MInst {
     }
 
     fn call_type(&self) -> CallType {
-        unimplemented!()
+        match self {
+            _ => CallType::None,
+        }
     }
 
     fn is_term(&self) -> MachTerminator {
@@ -117,7 +123,9 @@ impl MachInst for MInst {
     }
 
     fn gen_nop_units() -> Vec<Vec<u8>>{
-        unimplemented!()
+        let mut bytes = [0;2];
+        LittleEndian::write_u16(&mut bytes, Instruction::NoOp.encode());
+        vec![bytes.to_vec()]
     }
 
     fn rc_for_type(ty: Type) -> CodegenResult<(&'static [RegClass], &'static [Type])> {

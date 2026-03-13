@@ -103,12 +103,29 @@ impl TargetIsa for ScryBackend {
         &self,
         func: &Function,
         domtree: &DominatorTree,
-        _want_disasm: bool,
+        want_disasm: bool,
         ctrl_plane: &mut ControlPlane,
     ) -> CodegenResult<CompiledCodeStencil> {
         let vcode = self.compile_vcode(func, domtree, ctrl_plane)?;
-        dbg!(vcode);
-        unimplemented!()
+        dbg!(&vcode);
+        
+        let want_disasm = want_disasm || log::log_enabled!(log::Level::Debug);
+        let emit_result = vcode.emit(&regalloc2::Output::default(), want_disasm, &self.flags, ctrl_plane);
+        let value_labels_ranges = emit_result.value_labels_ranges;
+        let buffer = emit_result.buffer;
+        
+        if let Some(disasm) = emit_result.disasm.as_ref() {
+            log::debug!("disassembly:\n{disasm}");
+        }
+        
+        dbg!(&buffer);
+        Ok(CompiledCodeStencil {
+            buffer,
+            vcode: emit_result.disasm,
+            value_labels_ranges,
+            bb_starts: emit_result.bb_offsets,
+            bb_edges: emit_result.bb_edges,
+        })
     }
 
     fn name(&self) -> &'static str {

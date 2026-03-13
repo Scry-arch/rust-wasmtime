@@ -142,7 +142,8 @@ impl ABIMachineSpec for ScryMachineDeps {
         _isa_flags: &ScryFlags,
         _frame_layout: &FrameLayout,
     ) -> SmallInstVec<MInst> {
-        unimplemented!()
+        let insts = SmallVec::new();
+        insts
     }
     
     fn gen_epilogue_frame_restore(
@@ -171,7 +172,7 @@ impl ABIMachineSpec for ScryMachineDeps {
         _flags: &settings::Flags,
         _frame_layout: &FrameLayout,
     ) -> SmallVec<[MInst; 16]> {
-        unimplemented!()
+        smallvec![]
     }
 
     fn gen_clobber_restore(
@@ -229,7 +230,8 @@ impl ABIMachineSpec for ScryMachineDeps {
         _fixed_frame_storage_size: u32,
         _outgoing_args_size: u32,
     ) -> FrameLayout {
-        unimplemented!()
+        // TODO
+        FrameLayout::default()
     }
 
     fn gen_inline_probestack(
