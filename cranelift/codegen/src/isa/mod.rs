@@ -43,7 +43,7 @@
 //! The configured target ISA trait object is a `Box<TargetIsa>` which can be used for multiple
 //! concurrent function compilations.
 
-use     crate::dominator_tree::DominatorTree;
+use crate::dominator_tree::DominatorTree;
 pub use crate::isa::call_conv::CallConv;
 
 use crate::CodegenResult;

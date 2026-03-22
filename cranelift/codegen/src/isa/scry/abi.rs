@@ -14,8 +14,8 @@ use crate::settings;
 use alloc::vec::Vec;
 use regalloc2::{MachineEnv, PReg, PRegSet};
 
-use smallvec::{smallvec, SmallVec};
 use crate::isa::scry::lower::isle::generated_code::MInst;
+use smallvec::{SmallVec, smallvec};
 
 /// Scry-specific ABI behavior. This struct just serves as an implementation
 /// point for the trait; it is never actually instantiated.
@@ -52,18 +52,20 @@ impl ABIMachineSpec for ScryMachineDeps {
             assert_eq!(p.purpose, ArgumentPurpose::Normal);
             assert_eq!(p.extension, ArgumentExtension::None);
             assert_eq!(p.value_type, Type::int(32).unwrap());
-            
+
             args.push(ABIArg::Slots {
                 slots: SmallVec::<[ABIArgSlot; 1]>::from_vec(vec![ABIArgSlot::Reg {
-                    reg: Reg::from_real_reg(PReg::new(0, RegClass::Int)).to_real_reg().unwrap(),
+                    reg: Reg::from_real_reg(PReg::new(0, RegClass::Int))
+                        .to_real_reg()
+                        .unwrap(),
                     ty: Default::default(),
                     extension: ArgumentExtension::None,
                 }]),
                 purpose: p.purpose,
-            } );
+            });
         }
-        
-        Ok((0,None))
+
+        Ok((0, None))
     }
 
     fn gen_load_stack(_mem: StackAMode, _into_reg: Writable<Reg>, _ty: Type) -> MInst {
@@ -124,7 +126,12 @@ impl ABIMachineSpec for ScryMachineDeps {
         unimplemented!()
     }
 
-    fn gen_load_base_offset(_into_reg: Writable<Reg>, _base: Reg, _offset: i32, _ty: Type) -> MInst {
+    fn gen_load_base_offset(
+        _into_reg: Writable<Reg>,
+        _base: Reg,
+        _offset: i32,
+        _ty: Type,
+    ) -> MInst {
         unimplemented!()
     }
 
@@ -145,22 +152,23 @@ impl ABIMachineSpec for ScryMachineDeps {
         let insts = SmallVec::new();
         insts
     }
-    
+
     fn gen_epilogue_frame_restore(
         _call_conv: isa::CallConv,
         _flags: &settings::Flags,
         _isa_flags: &ScryFlags,
         _frame_layout: &FrameLayout,
     ) -> SmallInstVec<MInst> {
-        unimplemented!()
+        let insts = SmallVec::new();
+        insts
     }
 
     fn gen_return(
         _call_conv: isa::CallConv,
         _isa_flags: &ScryFlags,
         _frame_layout: &FrameLayout,
-    ) -> SmallInstVec<MInst>{
-        smallvec![MInst::Ret {}]
+    ) -> SmallInstVec<MInst> {
+        smallvec![]
     }
 
     fn gen_probestack(_insts: &mut SmallInstVec<Self::I>, _frame_size: u32) {
@@ -180,7 +188,7 @@ impl ABIMachineSpec for ScryMachineDeps {
         _flags: &settings::Flags,
         _frame_layout: &FrameLayout,
     ) -> SmallVec<[MInst; 16]> {
-        unimplemented!()
+        smallvec![]
     }
 
     fn gen_memcpy<F: FnMut(Type) -> Writable<Reg>>(
@@ -203,9 +211,9 @@ impl ABIMachineSpec for ScryMachineDeps {
 
     fn get_machine_env(_flags: &settings::Flags, _call_conv: isa::CallConv) -> &MachineEnv {
         static MACHINE_ENV: MachineEnv = MachineEnv {
-            preferred_regs_by_class: [PRegSet::empty(),PRegSet::empty(),PRegSet::empty(),],
-            non_preferred_regs_by_class: [PRegSet::empty(),PRegSet::empty(),PRegSet::empty(),],
-            scratch_by_class: [None,None,None],
+            preferred_regs_by_class: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()],
+            non_preferred_regs_by_class: [PRegSet::empty(), PRegSet::empty(), PRegSet::empty()],
+            scratch_by_class: [None, None, None],
             fixed_stack_slots: vec![],
         };
         &MACHINE_ENV

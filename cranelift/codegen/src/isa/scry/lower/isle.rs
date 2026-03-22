@@ -11,8 +11,8 @@ use crate::machinst::{MachInst, isle::*};
 use crate::machinst::{VCodeConstant, VCodeConstantData};
 use crate::{
     ir::{
-        BlockCall, ExternalName, Inst, InstructionData, MemFlags, Opcode, TrapCode,
-        Value, ValueList, immediates::*, types::*,
+        BlockCall, ExternalName, Inst, InstructionData, MemFlags, Opcode, TrapCode, Value,
+        ValueList, immediates::*, types::*,
     },
     isa::scry::inst::*,
     machinst::{ArgPair, CallArgList, CallRetList, InstOutput},
@@ -23,6 +23,8 @@ use regalloc2::PReg;
 
 type BoxExternalName = Box<ExternalName>;
 type VecArgPair = Vec<ArgPair>;
+type RegVec = Vec<Reg>;
+type WritableRegVec = Vec<WritableReg>;
 
 pub(crate) struct ScryIsleContext<'a, 'b, I, B>
 where
@@ -36,12 +38,9 @@ where
 
 impl<'a, 'b> ScryIsleContext<'a, 'b, MInst, ScryBackend> {
     fn new(lower_ctx: &'a mut Lower<'b, MInst>, backend: &'a ScryBackend) -> Self {
-        Self {
-            lower_ctx,
-            backend,
-        }
+        Self { lower_ctx, backend }
     }
-    
+
     #[allow(unused)]
     pub(crate) fn dfg(&self) -> &crate::ir::DataFlowGraph {
         &self.lower_ctx.f.dfg
@@ -50,25 +49,23 @@ impl<'a, 'b> ScryIsleContext<'a, 'b, MInst, ScryBackend> {
 
 impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     isle_lower_prelude_methods!();
-    
+
     fn emit(&mut self, arg0: &MInst) -> Unit {
         dbg!(arg0);
         self.lower_ctx.emit(arg0.clone());
     }
-    
+
     fn emit_ret(&mut self, _arg0: ValueSlice) -> InstOutput {
-        dbg!(_arg0);
-        self.lower_ctx.emit(MInst::Ret);
-        smallvec::smallvec![] // empty InstOutput
+        unreachable!()
     }
-    
-    fn emit_nop_and_empty(&mut self, ) -> InstOutput {
+
+    fn emit_nop_and_empty(&mut self) -> InstOutput {
         dbg!();
         self.lower_ctx.emit(MInst::Nop);
         smallvec::smallvec![] // empty InstOutput
     }
-    
-    fn emit_nop_unit(&mut self,) {
+
+    fn emit_nop_unit(&mut self) {
         dbg!();
         self.lower_ctx.emit(MInst::Nop);
     }
@@ -92,7 +89,6 @@ pub(crate) fn lower(
     let mut isle_ctx = ScryIsleContext::new(lower_ctx, backend);
     generated_code::constructor_lower(&mut isle_ctx, inst)
 }
-
 
 /// The main entry point for branch lowering with ISLE.
 pub(crate) fn lower_branch(

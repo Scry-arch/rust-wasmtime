@@ -1018,9 +1018,10 @@ impl<I: VCodeInst> VCode<I> {
                                 let mut allocs = regalloc.inst_allocs(iix).iter();
                                 self.insts[iix.index()].get_operands(
                                     &mut |reg: &mut Reg, constraint, _kind, _pos| {
-                                        let alloc =
-                                            allocs.next().expect("enough allocations for all operands");
-                                        
+                                        let alloc = allocs
+                                            .next()
+                                            .expect("enough allocations for all operands");
+
                                         if let Some(alloc) = alloc.as_reg() {
                                             let alloc: Reg = alloc.into();
                                             if let OperandConstraint::FixedReg(rreg) = constraint {
@@ -1717,7 +1718,7 @@ impl<I: VCodeInst> fmt::Debug for VCode<I> {
                 if !self.operands.is_empty() {
                     for operand in self.inst_operands(InsnIndex::new(inst)) {
                         if operand.kind() == OperandKind::Def {
-                            if let Some(fact) = &self.facts[operand.vreg().vreg()] {
+                            if let Some(Some(fact)) = &self.facts.get(operand.vreg().vreg()) {
                                 writeln!(f, "    v{} ! {}", operand.vreg().vreg(), fact)?;
                             }
                         }
@@ -2027,6 +2028,7 @@ entity_impl!(VCodeConstant);
 
 /// Identify the different types of constant that can be inserted into [VCodeConstants]. Tracking
 /// these separately instead of as raw byte buffers allows us to avoid some duplication.
+#[derive(Debug)]
 pub enum VCodeConstantData {
     /// A constant already present in the Cranelift IR
     /// [ConstantPool](crate::ir::constant::ConstantPool).

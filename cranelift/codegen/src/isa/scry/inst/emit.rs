@@ -1,10 +1,10 @@
 //! Riscv64 ISA: binary code emission.
 
-use scry_isa::{AluVariant, Bits, CallVariant, Instruction};
 use crate::ir::{self};
 use crate::isa::scry::inst::*;
 use crate::isa::scry::lower::isle::generated_code::MInst;
 use cranelift_control::ControlPlane;
+use scry_isa::{AluVariant, Bits, CallVariant, Instruction};
 
 pub struct EmitInfo {
     #[expect(dead_code, reason = "may want to be used in the future")]
@@ -40,10 +40,7 @@ pub struct EmitState {
 }
 
 impl MachInstEmitState<MInst> for EmitState {
-    fn new(
-        abi: &Callee<crate::isa::scry::abi::ScryMachineDeps>,
-        ctrl_plane: ControlPlane,
-    ) -> Self {
+    fn new(abi: &Callee<crate::isa::scry::abi::ScryMachineDeps>, ctrl_plane: ControlPlane) -> Self {
         EmitState {
             user_stack_map: None,
             ctrl_plane,
@@ -63,8 +60,7 @@ impl MachInstEmitState<MInst> for EmitState {
         self.ctrl_plane
     }
 
-    fn on_new_block(&mut self) {
-    }
+    fn on_new_block(&mut self) {}
 
     fn frame_layout(&self) -> &FrameLayout {
         &self.frame_layout
@@ -77,22 +73,25 @@ impl MachInstEmit for MInst {
 
     fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
         dbg!(self);
-        
+        use MInst::*;
         match self {
-            MInst::Nop => {
-                sink.put2(Instruction::NoOp.encode())
-            }
-            MInst::Args { .. } => {}
-            MInst::Rets { .. } => {}
-            MInst::Ret => {
-                sink.put2(Instruction::Call(CallVariant::Ret, Bits::try_from(0).unwrap()).encode())
-            }
-            MInst::Add { .. } => {
-                sink.put2(Instruction::Alu(AluVariant::Add, Bits::try_from(0).unwrap()).encode())
-            }
-            MInst::Const { rd, imm } => {
-                sink.put2(Instruction::Constant(Bits::try_from(0).unwrap(), Bits::try_from(imm.bits() as i32).unwrap()).encode())
-                
+            Args { .. } | Rets { .. } => unreachable!(),
+            Nop => sink.put2(Instruction::NoOp.encode()),
+            Ret { trig } => sink.put2(
+                Instruction::Call(CallVariant::Ret, Bits::try_from(*trig as i32).unwrap()).encode(),
+            ),
+            Add { out, .. } => sink.put2(
+                Instruction::Alu(AluVariant::Add, Bits::try_from(*out as i32).unwrap()).encode(),
+            ),
+            Const { imm, .. } => sink.put2(
+                Instruction::Constant(
+                    Bits::try_from(0).unwrap(),
+                    Bits::try_from(imm.bits() as i32).unwrap(),
+                )
+                .encode(),
+            ),
+            EchoLong { out, .. } => {
+                sink.put2(Instruction::EchoLong(Bits::try_from(*out as i32).unwrap()).encode())
             }
         }
     }
