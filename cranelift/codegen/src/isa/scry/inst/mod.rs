@@ -6,7 +6,7 @@ pub use crate::ir::condcodes::IntCC;
 pub use crate::ir::Type;
 use crate::isa::FunctionAlignment;
 use crate::machinst::*;
-use crate::{CodegenResult, settings, CodegenError};
+use crate::{CodegenError, CodegenResult, settings};
 
 pub use crate::ir::condcodes::FloatCC;
 
@@ -14,6 +14,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use regalloc2::{RegClass, VReg};
 use scry_isa::Instruction;
+use std::iter::once;
 
 pub mod args;
 pub mod emit;
@@ -21,9 +22,8 @@ pub use self::emit::*;
 
 use crate::isa::scry::abi::ScryMachineDeps;
 
-
 pub use crate::isa::scry::lower::isle::generated_code::MInst;
-use crate::opts::{I16, I32, I64, I8};
+use crate::opts::{I8, I16, I32, I64};
 
 use byteorder::{ByteOrder, LittleEndian};
 //=============================================================================
@@ -52,14 +52,14 @@ impl MachInst for MInst {
     fn get_operands(&mut self, collector: &mut impl OperandVisitor) {
         use MInst::*;
         match self {
-            Nop | Ret => (),
+            Nop | Ret { .. } => (),
             Args { args } => {
                 // We just treat function arguments as definition points
                 for p in args {
                     collector.reg_def(&mut p.vreg);
                 }
             }
-            Add { rd, rs1, rs2 } => {
+            Add { rd, rs1, rs2, .. } => {
                 collector.reg_def(rd);
                 collector.reg_use(rs1);
                 collector.reg_use(rs2);
@@ -69,17 +69,23 @@ impl MachInst for MInst {
                     collector.reg_use(&mut p.vreg);
                 }
             }
-            Const { rd, ..} => {
+            Const { rd, .. } => {
                 collector.reg_def(rd);
             }
-            
+            EchoLong { ins2, outs, .. } => {
+                outs.iter_mut().for_each(|r| collector.reg_def(r));
+                ins2.iter_mut().for_each(|r| {
+                    collector.reg_use(r);
+                });
+            }
         }
     }
 
     fn is_move(&self) -> Option<(Writable<Reg>, Reg)> {
         use MInst::*;
         match self {
-            Nop | Args {..} | Ret | Rets {..} | Add {..} | Const {..} => None,
+            Nop | Args { .. } | Ret { .. } | Rets { .. } | Add { .. } | Const { .. } => None,
+            EchoLong { ins2, outs, .. } => ins2.first().map(|r| (*outs.first().unwrap(), *r)),
         }
     }
 
@@ -105,8 +111,8 @@ impl MachInst for MInst {
 
     fn is_term(&self) -> MachTerminator {
         match self {
-            MInst::Ret => MachTerminator::Ret,
-            _ => MachTerminator::None
+            MInst::Rets { .. } => MachTerminator::Ret,
+            _ => MachTerminator::None,
         }
     }
 
@@ -122,8 +128,8 @@ impl MachInst for MInst {
         unimplemented!()
     }
 
-    fn gen_nop_units() -> Vec<Vec<u8>>{
-        let mut bytes = [0;2];
+    fn gen_nop_units() -> Vec<Vec<u8>> {
+        let mut bytes = [0; 2];
         LittleEndian::write_u16(&mut bytes, Instruction::NoOp.encode());
         vec![bytes.to_vec()]
     }
@@ -134,13 +140,13 @@ impl MachInst for MInst {
             I16 => Ok((&[RegClass::Int], &[I16])),
             I32 => Ok((&[RegClass::Int], &[I32])),
             I64 => Ok((&[RegClass::Int], &[I64])),
-            _=> Err(CodegenError::Unsupported(format!(
+            _ => Err(CodegenError::Unsupported(format!(
                 "Unexpected SSA-value type: {ty}"
-            )))
+            ))),
         }
     }
 
-    fn gen_jump(_target: MachLabel) -> MInst{
+    fn gen_jump(_target: MachLabel) -> MInst {
         unimplemented!()
     }
 
@@ -148,7 +154,7 @@ impl MachInst for MInst {
         2
     }
 
-    fn ref_type_regclass(_settings: &settings::Flags) -> RegClass{
+    fn ref_type_regclass(_settings: &settings::Flags) -> RegClass {
         unimplemented!()
     }
 
@@ -175,7 +181,6 @@ pub fn wreg_name(reg: Writable<Reg>) -> String {
     format!("v({})", reg.to_reg().to_virtual_reg().unwrap().index())
 }
 
-
 impl MInst {
     fn print_with_state(&self, _state: &mut EmitState) -> String {
         fn join(name: &str, list: impl Iterator<Item = String>) -> String {
@@ -190,31 +195,72 @@ impl MInst {
         }
         use MInst::*;
         match self {
-            Args { args } => {
-                join("Args", args.iter().map(|p| wreg_name(p.vreg)))
-            },
+            Args { args } => join("Args", args.iter().map(|p| wreg_name(p.vreg))),
             Nop => "Nop".into(),
-            Ret => "Ret".into(),
-            Rets { rets } => {
-                join("Rets", rets.iter().map(|p| reg_name(p.vreg)))
-            },
-            Add { rd, rs1, rs2 } => {
-                join("Add", [wreg_name(*rd), reg_name(*rs1), reg_name(*rs2)].into_iter())
-            },
-            Const {rd, imm} => {
-                join("Const", [wreg_name(*rd),format!("{}", imm.bits())].into_iter())
-            }
+            Ret { trig } => join("Ret", once(format!("trig: {}", trig))),
+            Rets { rets } => join("Rets", rets.iter().map(|p| reg_name(p.vreg))),
+            Add { rd, rs1, rs2, out } => join(
+                "Add",
+                [
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    "rs1:".into(),
+                    reg_name(*rs1),
+                    "rs2:".into(),
+                    reg_name(*rs2),
+                    format!("out: {}", out),
+                ]
+                .into_iter(),
+            ),
+            Const { rd, imm } => join(
+                "Const",
+                ["rd:".into(), wreg_name(*rd), format!("imm: {}", imm.bits())].into_iter(),
+            ),
+            EchoLong { ins2, outs, out } => join(
+                "EchoLong",
+                once("ins:".into())
+                    .chain(ins2.iter().map(|r| reg_name(*r)))
+                    .chain(once("outs:".into()))
+                    .chain(outs.iter().map(|r| wreg_name(*r)))
+                    .chain(once(format!("out: {}", out))),
+            ),
         }
+    }
+
+    /// Returns the registers used by this instruction
+    pub(crate) fn get_uses(&self) -> impl Iterator<Item = Reg> {
+        use MInst::*;
+        match self {
+            Nop | Ret { .. } | Args { .. } | Const { .. } => vec![],
+            Add { rs1, rs2, .. } => {
+                vec![*rs1, *rs2]
+            }
+            Rets { rets } => rets.iter().map(|p| p.vreg).collect::<Vec<_>>(),
+            EchoLong { ins2, .. } => ins2.clone(),
+        }
+        .into_iter()
+    }
+
+    /// Returns the registers defined by this instruction
+    pub(crate) fn get_defs(&self) -> impl Iterator<Item = Reg> {
+        use MInst::*;
+        match self {
+            Nop | Rets { .. } | Ret { .. } | Const { .. } => vec![],
+            Add { rd, .. } => {
+                vec![rd.to_reg()]
+            }
+            Args { args } => args.iter().map(|p| p.vreg.to_reg()).collect::<Vec<_>>(),
+            EchoLong { outs, .. } => outs.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>(),
+        }
+        .into_iter()
     }
 }
 
 /// Different forms of label references for different instruction formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LabelUse {
-}
+pub enum LabelUse {}
 
 impl MachInstLabelUse for LabelUse {
-    
     const ALIGN: CodeOffset = 2;
 
     fn max_pos_range(self) -> CodeOffset {
@@ -241,7 +287,7 @@ impl MachInstLabelUse for LabelUse {
         unimplemented!()
     }
 
-    fn worst_case_veneer_size() -> CodeOffset{
+    fn worst_case_veneer_size() -> CodeOffset {
         unimplemented!()
     }
 

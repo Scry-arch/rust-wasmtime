@@ -6,8 +6,8 @@ mod arm64;
 mod pulley;
 mod riscv64;
 mod s390x;
-pub(crate) mod x86;
 mod scry;
+pub(crate) mod x86;
 
 /// Represents known ISA target.
 #[derive(PartialEq, Copy, Clone)]
@@ -18,7 +18,7 @@ pub enum Isa {
     Riscv64,
     Pulley32,
     Pulley64,
-    Scry
+    Scry,
 }
 
 impl Isa {
