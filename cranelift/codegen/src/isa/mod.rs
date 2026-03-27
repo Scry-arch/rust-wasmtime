@@ -122,7 +122,7 @@ pub fn lookup(triple: Triple) -> Result<Builder, LookupError> {
         Architecture::Pulley64 | Architecture::Pulley64be => {
             isa_builder!(pulley64, (feature = "pulley"), triple)
         }
-        Architecture::Scry => {
+        Architecture::Scry(_) => {
             isa_builder!(scry, (feature = "scry"), triple)
         }
         _ => Err(LookupError::Unsupported),
@@ -132,7 +132,7 @@ pub fn lookup(triple: Triple) -> Result<Builder, LookupError> {
 /// The string names of all the supported, but possibly not enabled, architectures. The elements of
 /// this slice are suitable to be passed to the [lookup_by_name] function to obtain the default
 /// configuration for that architecture.
-pub const ALL_ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "s390x", "riscv64", "scry"];
+pub const ALL_ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "s390x", "riscv64", "scry32", "scry64"];
 
 /// Look for a supported ISA with the given `name`.
 /// Return a builder that can create a corresponding `TargetIsa`.
