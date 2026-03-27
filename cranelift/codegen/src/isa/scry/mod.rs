@@ -208,6 +208,9 @@ impl TargetIsa for ScryBackend {
         );
 
         builder.set_entry(entry);
+        for _ in 0..100 {
+            builder.push(MInst::Nop, RelSourceLoc::default());
+        }
         for inst in vcode.block_insns(entry).iter().rev() {
             if let Some(patches) = patches.get(&inst) {
                 patches.iter().for_each(|p| {
@@ -370,7 +373,7 @@ impl fmt::Display for ScryBackend {
 /// Create a new `isa::Builder`.
 pub fn isa_builder(triple: Triple) -> IsaBuilder {
     match triple.architecture {
-        Architecture::Scry => {}
+        Architecture::Scry(_) => {}
         _ => unreachable!(),
     }
     IsaBuilder {
