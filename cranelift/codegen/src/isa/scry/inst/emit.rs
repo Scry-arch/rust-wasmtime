@@ -74,26 +74,66 @@ impl MachInstEmit for MInst {
     fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
         dbg!(self);
         use MInst::*;
-        match self {
-            Args { .. } | Rets { .. } => unreachable!(),
-            Nop => sink.put2(Instruction::NoOp.encode()),
-            Ret { trig } => sink.put2(
-                Instruction::Call(CallVariant::Ret, Bits::try_from(*trig as i32).unwrap()).encode(),
-            ),
-            Add { out, .. } => sink.put2(
-                Instruction::Alu(AluVariant::Add, Bits::try_from(*out as i32).unwrap()).encode(),
-            ),
-            Const { imm, .. } => sink.put2(
-                Instruction::Constant(
-                    Bits::try_from(0).unwrap(),
-                    Bits::try_from(imm.bits() as i32).unwrap(),
-                )
-                .encode(),
-            ),
-            EchoLong { out, .. } => {
-                sink.put2(Instruction::EchoLong(Bits::try_from(*out as i32).unwrap()).encode())
+        let instr = match self {
+            Args { .. } | Rets { .. } => unreachable!("{:?}", self),
+            CallArgs { .. } => return,
+            Nop => Instruction::NoOp,
+            Ret { trig } => {
+                Instruction::Call(CallVariant::Ret, Bits::try_from(*trig as i32).unwrap())
             }
-        }
+            Add { out, .. } => {
+                Instruction::Alu(AluVariant::Add, Bits::try_from(*out as i32).unwrap())
+            }
+            Const { imm, .. } => Instruction::Constant(
+                Bits::try_from(0).unwrap(),
+                Bits::try_from(imm.bits() as i32).unwrap(),
+            ),
+            Echo { rds, outs, .. } => {
+                assert_eq!(
+                    rds.len(),
+                    outs.len(),
+                    "Registers do not have correct number of outputs: {:?} != {:?}",
+                    rds,
+                    outs
+                );
+
+                if outs.iter().all(|o| *o == outs[0]) {
+                    // All outputs go to the same destination, use long echo
+                    Instruction::EchoLong(Bits::try_from(outs[0] as i32).unwrap())
+                } else if outs.len() == 2 {
+                    // Two outputs going different destinations, use splitting echo
+                    Instruction::Echo(
+                        false,
+                        Bits::try_from(outs[0] as i32).unwrap(),
+                        Bits::try_from(outs[1] as i32).unwrap(),
+                    )
+                } else {
+                    unimplemented!()
+                }
+            }
+            Reorder { out, .. } => {
+                // Can use splitting echo with the same target to reorder
+                Instruction::Echo(
+                    false,
+                    Bits::try_from(*out as i32).unwrap(),
+                    Bits::try_from(*out as i32).unwrap(),
+                )
+            }
+            Duplicate { out1, out2, .. } => Instruction::Duplicate(
+                false,
+                Bits::try_from(*out1 as i32).unwrap(),
+                Bits::try_from(*out2 as i32).unwrap(),
+            ),
+            Store { .. } => Instruction::Store,
+            Load { out, .. } => Instruction::Load(
+                scry_isa::Type::Int(2).try_into().unwrap(),
+                Bits::try_from(*out as i32).unwrap(),
+            ),
+            Call { trig, .. } => {
+                Instruction::Call(CallVariant::Call, Bits::try_from(*trig as i32).unwrap())
+            }
+        };
+        sink.put2(instr.encode());
     }
 
     fn pretty_print_inst(&self, state: &mut Self::State) -> String {

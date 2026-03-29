@@ -72,11 +72,43 @@ impl MachInst for MInst {
             Const { rd, .. } => {
                 collector.reg_def(rd);
             }
-            EchoLong { ins2, outs, .. } => {
-                outs.iter_mut().for_each(|r| collector.reg_def(r));
-                ins2.iter_mut().for_each(|r| {
+            Echo { rds, rss, .. } => {
+                rds.iter_mut().for_each(|r| collector.reg_def(r));
+                rss.iter_mut().for_each(|r| {
                     collector.reg_use(r);
                 });
+            }
+            Duplicate { rd1, rd2, rs, .. } => {
+                collector.reg_def(rd1);
+                collector.reg_def(rd2);
+                collector.reg_use(rs);
+            }
+            Reorder {
+                rd1, rd2, rs1, rs2, ..
+            } => {
+                collector.reg_def(rd1);
+                collector.reg_def(rd2);
+                collector.reg_use(rs1);
+                collector.reg_use(rs2);
+            }
+            Store { rd, rs } => {
+                collector.reg_use(rd);
+                collector.reg_use(rs);
+            }
+            Load { rd, rs, .. } => {
+                collector.reg_def(rd);
+                collector.reg_use(rs);
+            }
+            Call { link, fun, .. } => {
+                collector.reg_def(link);
+                collector.reg_use(fun);
+            }
+            CallArgs {
+                link, rets, args, ..
+            } => {
+                collector.reg_use(link);
+                rets.iter_mut().for_each(|p| collector.reg_def(&mut p.vreg));
+                args.iter_mut().for_each(|p| collector.reg_use(&mut p.vreg));
             }
         }
     }
@@ -84,8 +116,25 @@ impl MachInst for MInst {
     fn is_move(&self) -> Option<(Writable<Reg>, Reg)> {
         use MInst::*;
         match self {
-            Nop | Args { .. } | Ret { .. } | Rets { .. } | Add { .. } | Const { .. } => None,
-            EchoLong { ins2, outs, .. } => ins2.first().map(|r| (*outs.first().unwrap(), *r)),
+            Nop
+            | Args { .. }
+            | Ret { .. }
+            | Rets { .. }
+            | Add { .. }
+            | Const { .. }
+            | Store { .. }
+            | Load { .. }
+            | Call { .. }
+            | CallArgs { .. }
+            | Duplicate { .. }
+            | Reorder { .. } => None,
+            Echo { rds, rss, .. } => {
+                if rds.len() == 1 && rds.len() == rss.len() {
+                    Some((rds[0], rss[0]))
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -216,41 +265,138 @@ impl MInst {
                 "Const",
                 ["rd:".into(), wreg_name(*rd), format!("imm: {}", imm.bits())].into_iter(),
             ),
-            EchoLong { ins2, outs, out } => join(
-                "EchoLong",
-                once("ins:".into())
-                    .chain(ins2.iter().map(|r| reg_name(*r)))
-                    .chain(once("outs:".into()))
-                    .chain(outs.iter().map(|r| wreg_name(*r)))
-                    .chain(once(format!("out: {}", out))),
+            Echo { rds, rss, outs } => join(
+                "Echo",
+                once("rds:".into())
+                    .chain(rds.iter().map(|r| wreg_name(*r)))
+                    .chain(once("rss:".into()))
+                    .chain(rss.iter().map(|r| reg_name(*r)))
+                    .chain(once(format!("outs: {:?}", outs))),
+            ),
+            Duplicate {
+                rd1,
+                rd2,
+                rs,
+                out1,
+                out2,
+            } => join(
+                "Duplicate",
+                [
+                    "rd1:".into(),
+                    wreg_name(*rd1),
+                    "rd2:".into(),
+                    wreg_name(*rd2),
+                    "rs:".into(),
+                    reg_name(*rs),
+                    format!("out1: {}", out1),
+                    format!("out2: {}", out2),
+                ]
+                .into_iter(),
+            ),
+            Reorder {
+                rd1,
+                rd2,
+                rs1,
+                rs2,
+                out,
+            } => join(
+                "Reorder",
+                [
+                    "rd1:".into(),
+                    wreg_name(*rd1),
+                    "rd2:".into(),
+                    wreg_name(*rd2),
+                    "rs1:".into(),
+                    reg_name(*rs1),
+                    "rs2:".into(),
+                    reg_name(*rs2),
+                    format!("out: {}", out),
+                ]
+                .into_iter(),
+            ),
+            Store { rd, rs } => join(
+                "Store",
+                ["rd:".into(), reg_name(*rd), "rs:".into(), reg_name(*rs)].into_iter(),
+            ),
+            Load { rd, rs, out } => join(
+                "Load",
+                [
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    "rs:".into(),
+                    reg_name(*rs),
+                    format!("out: {}", out),
+                ]
+                .into_iter(),
+            ),
+            Call { link, fun, trig } => join(
+                "Call",
+                [
+                    "link:".into(),
+                    wreg_name(*link),
+                    "fn_ptr:".into(),
+                    reg_name(*fun),
+                    format!("trig: {}", trig),
+                ]
+                .into_iter(),
+            ),
+            CallArgs { link, rets, args } => join(
+                "CallArgs",
+                ["link:".into(), reg_name(*link), "rets:".into()]
+                    .into_iter()
+                    .chain(rets.iter().map(|p| wreg_name(p.vreg)))
+                    .chain(once("args:".into()))
+                    .chain(args.iter().map(|p| reg_name(p.vreg))),
             ),
         }
     }
 
+    #[duplicate::duplicate_item[
+        name            reference(type) iterate;
+        [get_uses]      [& type]        [iter];
+        [get_uses_mut]  [&mut type]     [iter_mut];
+    ]]
     /// Returns the registers used by this instruction
-    pub(crate) fn get_uses(&self) -> impl Iterator<Item = Reg> {
+    pub(crate) fn name(self: reference([Self])) -> impl Iterator<Item = reference([Reg])> {
         use MInst::*;
         match self {
             Nop | Ret { .. } | Args { .. } | Const { .. } => vec![],
-            Add { rs1, rs2, .. } => {
-                vec![*rs1, *rs2]
+            Add { rs1, rs2, .. } | Reorder { rs1, rs2, .. } => {
+                vec![rs1, rs2]
             }
-            Rets { rets } => rets.iter().map(|p| p.vreg).collect::<Vec<_>>(),
-            EchoLong { ins2, .. } => ins2.clone(),
+            Rets { rets } => rets
+                .iterate()
+                .map(|p| reference([(p.vreg)]))
+                .collect::<Vec<_>>(),
+            Echo { rss, .. } => rss.iterate().collect::<Vec<_>>(),
+            Duplicate { rs, .. } => vec![rs],
+            Store { rd, rs } => vec![rd, rs],
+            Load { rs, .. } => vec![rs],
+            Call { fun, .. } => vec![fun],
+            CallArgs { link, args, .. } => {
+                let mut uses = vec![link];
+                uses.extend(args.iterate().map(|p| reference([(p.vreg)])));
+                uses
+            }
         }
         .into_iter()
     }
 
     /// Returns the registers defined by this instruction
-    pub(crate) fn get_defs(&self) -> impl Iterator<Item = Reg> {
+    pub(crate) fn get_defs(&self) -> impl Iterator<Item = Reg> + use<> {
         use MInst::*;
         match self {
-            Nop | Rets { .. } | Ret { .. } | Const { .. } => vec![],
-            Add { rd, .. } => {
+            Nop | Rets { .. } | Ret { .. } | Const { .. } | Store { .. } => vec![],
+            Add { rd, .. } | Load { rd, .. } => {
                 vec![rd.to_reg()]
             }
             Args { args } => args.iter().map(|p| p.vreg.to_reg()).collect::<Vec<_>>(),
-            EchoLong { outs, .. } => outs.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>(),
+            Echo { rds, .. } => rds.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>(),
+            Duplicate { rd1, rd2, .. } | Reorder { rd1, rd2, .. } => {
+                vec![rd1.to_reg(), rd2.to_reg()]
+            }
+            Call { link, .. } => vec![link.to_reg()],
+            CallArgs { rets, .. } => rets.iter().map(|p| p.vreg.to_reg()).collect(),
         }
         .into_iter()
     }
