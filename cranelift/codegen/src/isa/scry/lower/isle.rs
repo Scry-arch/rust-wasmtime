@@ -25,6 +25,7 @@ type BoxExternalName = Box<ExternalName>;
 type VecArgPair = Vec<ArgPair>;
 type RegVec = Vec<Reg>;
 type WritableRegVec = Vec<WritableReg>;
+type U16Vec = Vec<u16>;
 
 pub(crate) struct ScryIsleContext<'a, 'b, I, B>
 where

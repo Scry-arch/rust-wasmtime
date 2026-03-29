@@ -440,7 +440,8 @@ rayon = "1.5.3"
 regex = "1.9.1"
 pin-project-lite = "0.2.14"
 sha2 = { version = "0.10.2", default-features = false }
-scryer = { git = "https://github.com/Scry-arch/scryer.git"}
+scry_sim = { git = "https://github.com/Scry-arch/scry_sim.git"}
+scry_isa = { git = "https://github.com/Scry-arch/scry_isa.git"}
 
 # =============================================================================
 #

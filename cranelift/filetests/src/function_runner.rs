@@ -459,6 +459,116 @@ impl<'a> Trampoline<'a> {
                 }
             }
 
+            // For Scry, run on the simulator
+            Architecture::Scry(_) => {
+                use scry_sim::{ExecState, Memory};
+                struct HostMemory {}
+                impl Memory for HostMemory {
+                    fn read_raw(&mut self, addr: usize) -> Option<u8> {
+                        let ptr = addr as *mut u8;
+                        Some(unsafe { *ptr })
+                    }
+
+                    fn read_data(
+                        &mut self,
+                        addr: usize,
+                        into: &mut Value,
+                        _len: usize,
+                        _tracker: &mut impl MetricTracker,
+                    ) -> std::result::Result<(), (MemError, usize)> {
+                        let mut bytes = Vec::new();
+                        for i in 0..into.scale() {
+                            bytes.push(self.read_raw(addr + i).unwrap());
+                        }
+                        into.first.set_val(bytes.as_ref());
+                        Ok(())
+                    }
+
+                    fn read_instr(
+                        &mut self,
+                        addr: usize,
+                        _tracker: &mut impl MetricTracker,
+                    ) -> std::result::Result<[u8; 2], MemError> {
+                        Ok([
+                            self.read_raw(addr).unwrap(),
+                            self.read_raw(addr + 1).unwrap(),
+                        ])
+                    }
+
+                    fn write_raw(
+                        &mut self,
+                        addr: usize,
+                        data: u8,
+                    ) -> std::result::Result<(), MemError> {
+                        let ptr = addr as *mut u8;
+                        unsafe { *ptr = data }
+                        Ok(())
+                    }
+
+                    fn write(
+                        &mut self,
+                        addr: usize,
+                        from: &Value,
+                        _tracker: &mut impl MetricTracker,
+                    ) -> std::result::Result<(), (MemError, usize)> {
+                        for (i, b) in from.first.bytes().unwrap().iter().enumerate() {
+                            self.write_raw(addr + i, *b).unwrap();
+                        }
+                        Ok(())
+                    }
+                }
+
+                // Ready inputs
+                let mut op_queue = HashMap::new();
+                let fn_ptr = Value::singleton::<u64>(Scalar::from_sized(function_ptr as usize, 8));
+                let ld_ptr =
+                    Value::singleton::<u64>(Scalar::from_sized(arguments_address as usize, 8));
+                op_queue.insert(0, OperandList::new(fn_ptr, vec![ld_ptr]));
+
+                let mut stack_mem = [0u8; 1 << 10]; // 1kB for stack memory
+                let stack_buffer = 1 << 12;
+                let base_stack = StackFrame {
+                    block: Block {
+                        address: (&mut stack_mem).as_mut_ptr() as usize,
+                        size: 0,
+                    },
+                    base_size: 0,
+                };
+                let original_state = ExecState {
+                    addr_space: 3,
+                    address: trampoline_ptr as usize,
+                    frame: CallFrameState {
+                        ret_addr: 0,
+                        branches: HashMap::new(),
+                        op_queue,
+                        stack: base_stack.clone(),
+                    },
+                    frame_stack: vec![CallFrameState {
+                        ret_addr: 0,
+                        branches: HashMap::new(),
+                        op_queue: HashMap::new(),
+                        stack: base_stack,
+                    }],
+                    stack_buffer,
+                };
+
+                let mut hm = HostMemory {};
+                let mut res =
+                    Executor::<HostMemory, _>::from_state(&original_state, &mut hm).step(&mut ());
+
+                while res.is_ok() {
+                    let exec = res.unwrap();
+                    let state = exec.state();
+
+                    if state.frame_stack.len() == 0 {
+                        // Done
+                        return;
+                    }
+                    res = exec.step(&mut ());
+                }
+                unreachable!()
+            }
+
             // Other targets natively execute this machine code.
             _ => {
                 let callable_trampoline: fn(*const u8, *mut u128) -> () =
@@ -783,8 +893,13 @@ fn lookup_libcall(name: &str) -> Option<*const u8> {
     }
 }
 
+use scry_sim::{
+    Block, CallFrameState, Executor, MemError, MetricTracker, OperandList, Scalar, StackFrame,
+    Value,
+};
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__m128i;
+
 #[cfg(target_arch = "x86_64")]
 #[expect(
     improper_ctypes_definitions,
