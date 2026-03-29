@@ -1,5 +1,6 @@
 (type RegVec (primitive RegVec))
 (type WritableRegVec (primitive WritableRegVec))
+(type U16Vec (primitive U16Vec))
 
 ;; Instruction formats.
 (type MInst
@@ -18,7 +19,21 @@
     )
 
     (Ret
-        (trig u16) ;; Trigger location, ready to encode
+      (trig u16) ;; Trigger location, ready to encode
+    )
+
+    ;; Call instruction
+    (Call
+      (link WritableReg) ;; Links to the trigger pseudo-instruction, not actually used
+      (fun Reg)          ;; Address to call
+      (trig u16)         ;; Trigger location, ready to encode
+    )
+
+    ;; Pseudo-instruction at a call trigger position
+    (CallArgs
+      (link Reg)         ;; Link to the call instruction, not actually used
+      (rets CallRetList) ;; Return operands
+      (args CallArgList) ;; call arguments
     )
 
     (Add
@@ -33,10 +48,39 @@
       (imm Imm64)
     )
 
-    (EchoLong
-      (ins2 RegVec)
-      (outs WritableRegVec)
+    ;; General-purpose echoing, does not reflect a Scry echo instruction 1-to-1
+    (Echo
+      (rds WritableRegVec)
+      (rss RegVec)
+      (outs U16Vec) ;; Output references for each rd
+    )
+
+    ;; Reorder the two inputs to the same output
+    (Reorder
+      (rd1 WritableReg)
+      (rd2 WritableReg)
+      (rs1 Reg)
+      (rs2 Reg)
       (out u16) ;; Output reference
+    )
+
+    (Duplicate
+      (rd1 WritableReg)
+      (rd2 WritableReg)
+      (rs Reg)
+      (out1 u16) ;; Output reference
+      (out2 u16) ;; Output reference
+    )
+
+    (Store
+      (rd Reg) ;; Address to store to
+      (rs Reg) ;; value to store
+    )
+
+    (Load
+      (rd WritableReg) ;; Loaded value
+      (rs Reg)         ;; Address to load from
+      (out u16)        ;; Output reference
     )
   )
 )
@@ -67,6 +111,38 @@
   )
 )
 
+(decl st_rrfo (Reg Reg MemFlags Offset32) InstOutput)
+(rule
+  (st_rrfo val dst flags off)
+  (side_effect (SideEffectNoResult.Inst (MInst.Store dst val)))
+)
+
+(decl call_ind_srv (SigRef Reg ValueRegsVec) ValueRegsVec)
+(rule
+  (call_ind_srv sig_ref ptr args)
+  (let
+    ( (call_trig_link WritableReg (temp_writable_reg $I64))
+      (output ValueRegsVec (gen_call_output sig_ref))
+      (abi Sig (abi_sig sig_ref))
+      (uses CallArgList (gen_call_args abi args))
+      (defs CallRetList (gen_call_rets abi output))
+      (_ Unit (emit (MInst.Call call_trig_link ptr 0)))
+      (_ Unit (emit (MInst.CallArgs call_trig_link defs uses)))
+    )
+    output
+  )
+)
+
+(decl ld_rfo (Reg MemFlags Offset32) Reg)
+(rule
+  (ld_rfo ptr flags off)
+  (let
+    ( (dst WritableReg (temp_writable_reg $I64))
+      (_ Unit (emit (MInst.Load dst ptr 0)))
+    )
+    dst
+  )
+)
 
 ;;
 ;;(decl mat_imm_i64 (Value) Reg)

@@ -1,0 +1,12 @@
+test interpret
+test run
+target scry32
+
+function %add_one(i32) -> i32 {
+block1(v0: i32):
+    v1 = iadd_imm v0, 1
+    return v1
+}
+; run: %add_one(0) == 1
+; run: %add_one(100) == 101
+; run: %add_one(-10) == -9

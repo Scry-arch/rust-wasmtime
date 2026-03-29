@@ -478,6 +478,8 @@ sha2 = { version = "0.10.2", default-features = false }
 gdbstub = "0.7.10"
 gdbstub_arch = "0.3.3"
 scryer = { git = "https://github.com/Scry-arch/scryer.git"}
+scry_sim = { git = "https://github.com/Scry-arch/scry_sim.git"}
+scry_isa = { git = "https://github.com/Scry-arch/scry_isa.git"}
 
 # =============================================================================
 #

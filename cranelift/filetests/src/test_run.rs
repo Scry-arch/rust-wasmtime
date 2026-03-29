@@ -81,6 +81,9 @@ fn is_isa_compatible(
         ) if host_triple.pointer_width() == requested.triple().pointer_width()
             && host_triple.endianness() == requested.triple().endianness() => {}
 
+        // Scry tests will be run on the Scry simulator regardless of host target
+        (_, Architecture::Scry(_)) => {}
+
         _ => {
             return Err(format!(
                 "skipped {file_path}: host can't run {requested_arch:?} programs"
@@ -153,7 +156,8 @@ fn compile_testfile(
         Architecture::Pulley32
         | Architecture::Pulley64
         | Architecture::Pulley32be
-        | Architecture::Pulley64be => {
+        | Architecture::Pulley64be
+        | Architecture::Scry(_) => {
             let mut builder = cranelift_codegen::isa::lookup(isa.triple().clone())?;
             for value in isa.isa_flags() {
                 builder.set(value.name, &value.value_string()).unwrap();

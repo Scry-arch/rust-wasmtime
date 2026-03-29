@@ -20,6 +20,22 @@
     (add_rrr lhs rhs)
 )
 
+(rule
+    (lower (store flags val dst off))
+    (st_rrfo val dst flags off)
+)
+
+(rule
+    (lower (call_indirect sig_ref ptr args))
+    (call_ind_srv sig_ref ptr args)
+)
+
+(rule
+    (lower (load flags ptr offset))
+    (ld_rfo ptr flags offset)
+)
+
+
 
 
 ;; Lower return
