@@ -41,4 +41,4 @@ smallvec = { workspace = true }
 pulley-interpreter = { workspace = true, features = ["disas", "std", "interp"] }
 libm = { workspace = true }
 scry_sim = { workspace = true }
-scry_isa = { workspace = true }
+scry_asm = { workspace = true }

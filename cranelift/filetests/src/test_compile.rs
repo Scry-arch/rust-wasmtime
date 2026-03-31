@@ -84,6 +84,35 @@ impl SubTest for TestCompile {
                     pulley_interpreter::decode::Decoder::decode_all(&mut disas)?;
                     disas.disas().to_string()
                 }
+
+                target_lexicon::Architecture::Scry(_) => {
+                    use scry_asm::{Disassemble, Raw};
+
+                    let mut result = String::new();
+                    let mut reached = 0usize;
+
+                    let data = compiled_code.buffer.data();
+                    for (i, bb) in compiled_code.bb_starts.iter().enumerate() {
+                        let addr = *bb as usize;
+                        if addr != reached {
+                            result.push_str(
+                                Raw::disassemble(data[reached..addr].into_iter().cloned())
+                                    .unwrap()
+                                    .as_str(),
+                            );
+                            reached = addr;
+                        }
+
+                        result.push_str(format!("block{}: ; offset {:#x}\n", i, bb).as_str());
+                    }
+                    result.push_str(
+                        Raw::disassemble(data[reached..].into_iter().cloned())
+                            .unwrap()
+                            .as_str(),
+                    );
+
+                    result
+                }
                 _ => {
                     let cs = isa.to_capstone().map_err(|e| anyhow::format_err!("{e}"))?;
                     compiled_code.disassemble(Some(&params), &cs)?
