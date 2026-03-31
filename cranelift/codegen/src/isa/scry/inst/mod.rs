@@ -149,7 +149,10 @@ impl MachInst for MInst {
     }
 
     fn is_args(&self) -> bool {
-        unimplemented!()
+        match self {
+            MInst::Args { .. } => true,
+            _ => false,
+        }
     }
 
     fn call_type(&self) -> CallType {
