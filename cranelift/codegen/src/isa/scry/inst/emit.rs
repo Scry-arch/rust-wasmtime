@@ -72,7 +72,6 @@ impl MachInstEmit for MInst {
     type Info = EmitInfo;
 
     fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
-        dbg!(self);
         use MInst::*;
         let instr = match self {
             Args { .. } | Rets { .. } => unreachable!("{:?}", self),

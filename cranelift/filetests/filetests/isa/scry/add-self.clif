@@ -1,0 +1,12 @@
+test interpret
+test run
+target scry32
+
+function %add_self(i32) -> i32 {
+block1(v0: i32):
+    v1 = iadd v0, v0
+    return v1
+}
+; run: %add_self(0) == 0
+; run: %add_self(88) == 176
+; run: %add_self(-11) == -22
