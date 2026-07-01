@@ -3,10 +3,9 @@
 use crate::CodegenError;
 use crate::dominator_tree::DominatorTree;
 use crate::ir::pcc;
-use crate::ir::{Function, RelSourceLoc, Type};
+use crate::ir::{Function, Type};
 use crate::isa::scry::inst::{EmitInfo, MInst};
 use crate::isa::scry::settings as scry_settings;
-use crate::isa::scry::vcode_patches::{Patch, PatchIterator, VCodePatches};
 use crate::isa::unwind::systemv;
 use crate::isa::{
     Builder as IsaBuilder, FunctionAlignment, IsaFlagsHashKey, OwnedTargetIsa, TargetIsa,
@@ -28,14 +27,16 @@ use core::fmt;
 use cranelift_control::ControlPlane;
 use regalloc2::Function as RegFunc;
 use std::collections::{HashMap, HashSet};
-use std::ops::Index;
+use graphene::core::GraphMut;
+use graphene::core::property::Rooted;
 use target_lexicon::{Architecture, Triple};
 
 mod abi;
 pub(crate) mod inst;
 mod lower;
 mod settings;
-mod vcode_patches;
+mod vcode_cfg;
+use vcode_cfg::*;
 
 /// A Scry backend.
 pub struct ScryBackend {
@@ -152,6 +153,163 @@ impl ScryBackend {
     }
 }
 
+/// Replaces the first use of the `find` register with the `replace` register
+fn replace_first_use(bb: &mut VCodeBB<MInst>, find: Reg, replace: Reg) -> bool{
+    for inst in bb.inst.iter_mut() {
+        if let Some(r) = inst.get_uses_mut().find(|r| **r==find) {
+            *r = replace;
+            return true;
+        }
+    }
+    false
+}
+
+/// Looks for registers that are used multiple times and inserts `dup` instructions at their definition
+/// and makes the uses use the resulting, unique registers. I.e. eliminates multiple uses of the same register.
+fn insert_duplicates(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg)
+{
+    let mut find_and_replace = |bb: &mut VCodeBB<MInst>, reg, dup_idx| {
+        let rd1 = new_vreg();
+        let rd2 = new_vreg();
+        
+        // Replace uses with uses of new vregs
+        assert!(replace_first_use(bb, reg, rd1));
+        assert!(replace_first_use(bb, reg, rd2));
+        
+        // Insert duplication of original register to new vregs
+        bb.inst.insert(dup_idx, MInst::Duplicate {
+            rd1: Writable::from_reg(rd1),
+            rd2: Writable::from_reg(rd2),
+            rs: reg,
+            out1: 0,
+            out2: 0,
+        });
+    };
+    
+    'a: loop {
+        for (_, bb) in cfg.0.all_vertices_weighted_mut() {
+            
+            // Check each def for multiple uses
+            for (inst_idx, reg_def) in bb.inst_defs().collect::<Vec<_>>() {
+                if bb.reg_uses(reg_def).count() > 1 {
+                    find_and_replace(bb, reg_def, inst_idx+1);
+                    continue 'a;
+                }
+            }
+            
+            
+        }
+        // No changes were made, finish
+        break
+    }
+}
+
+fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>)
+{
+    for (_,  bb) in cfg.0.all_vertices_weighted_mut() {
+        let mut use_pos = HashMap::<Reg, Vec<usize>>::new();
+        for (inst_idx, inst) in bb.inst.iter_mut().rev().enumerate() {
+            // Record all uses, we can do this on-the-fly as we assume no use comes before its def
+            inst.get_uses().for_each(|r| {
+                use_pos.entry(*r).or_insert_with(Vec::new).push(inst_idx);
+            });
+            
+            if inst.get_defs().count() >= 1 {
+                let ref_dists = inst.get_defs().enumerate().map(|(i, def)| {
+                    let use_idx = use_pos[&def][0];
+                    (i, (inst_idx - use_idx - 1) as u16)
+                }).collect::<HashMap<_, _>>();
+                
+                match inst {
+                    MInst::Add { out, .. }
+                    | MInst::Load { out, .. } => {
+                        *out = ref_dists[&0];
+                    }
+                    MInst::Duplicate {
+                        out1,
+                        out2,
+                        ..
+                    } => {
+                        *out1 = ref_dists[&0];
+                        *out2 = ref_dists[&1];
+                    }
+                    MInst::Args { args } => {
+                        *inst = MInst::Echo {
+                            rss: vec![],
+                            rds: args.iter().map(|g| g.vreg).collect(),
+                            outs: args
+                                .iter()
+                                .enumerate()
+                                .map(|(i, _)| ref_dists[&i])
+                                .collect(),
+                        }
+                    },
+                    MInst::CallArgs { rets, .. } if ref_dists[&0] > 0 => {
+                        *inst = MInst::Echo {
+                            rss: vec![],
+                            rds: rets.iter().map(|g| g.vreg).collect(),
+                            outs: rets
+                                .iter()
+                                .enumerate()
+                                .map(|(i, _)| ref_dists[&i])
+                                .collect(),
+                        }
+                    }
+                    _=>(),
+                };
+            }
+        }
+            
+        }
+}
+
+fn add_reorderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg)
+{
+    for (_,  bb) in cfg.0.all_vertices_weighted_mut() {
+        'a: loop {
+            let mut def_pos = HashMap::<Reg, usize>::new();
+            for (inst_idx, inst) in bb.inst.iter_mut().enumerate() {
+                // Record def positions
+                for def in inst.get_defs() {
+                    def_pos.insert(def, inst_idx);
+                }
+                
+                match inst {
+                    MInst::Store { rd, rs } => {
+                        // Reorder if the address precedes the value
+                        if def_pos[rd] < def_pos[rs] {
+                            // Create new vregs for the reorder
+                            let rd1 = new_vreg();
+                            let rd2 = new_vreg();
+                            
+                            let rd_old = *rd;
+                            let rs_old = *rs;
+                            
+                            // assign reordered vregs to store
+                            *rd = rd1;
+                            *rs = rd2;
+                            
+                            // Insert reorder instruction before store
+                            bb.inst.insert(inst_idx, MInst::Reorder {
+                                rd1: Writable::from_reg(rd1),
+                                rd2: Writable::from_reg(rd2),
+                                rs1: rd_old,
+                                rs2: rs_old,
+                                out: 0,
+                            });
+                            
+                            // Start over
+                            continue 'a;
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            break
+        }
+    }
+}
+
 impl TargetIsa for ScryBackend {
     fn compile_function(
         &self,
@@ -160,7 +318,6 @@ impl TargetIsa for ScryBackend {
         want_disasm: bool,
         ctrl_plane: &mut ControlPlane,
     ) -> CodegenResult<CompiledCodeStencil> {
-        dbg!(func);
         let (vcode, mut new_vregs) = self.compile_vcode(func, domtree, ctrl_plane)?;
         let mut new_vreg = || {
             new_vregs
@@ -168,281 +325,20 @@ impl TargetIsa for ScryBackend {
                 .only_reg()
                 .unwrap()
         };
-        dbg!(&vcode);
-        dbg!(vcode.constants.len());
-        vcode.constants.iter().for_each(|c| {
-            dbg!(c.1);
-        });
 
         let emit_info = EmitInfo::new(self.flags.clone(), self.isa_flags.clone());
         let sigs = SigSet::new::<abi::ScryMachineDeps>(func, &self.flags)?;
         let abi = Callee::<abi::ScryMachineDeps>::new(func, self, &self.isa_flags, &sigs)?;
-
-        let mut patches = VCodePatches::new();
-        patches.insert(
-            vcode
-                .block_insns(vcode.entry_block())
-                .iter()
-                .rev()
-                .next()
-                .unwrap(),
-            vec![Patch::Before(MInst::Ret { trig: 0 })],
-        );
-
-        let entry = vcode.entry_block();
-
-        'a: loop {
-            dbg!();
-            // Track the position if each register use
-            let mut use_pos = HashMap::<Reg, Vec<usize>>::new();
-            let mut def_pos = HashMap::<Reg, usize>::new();
-            'b: for (i, (minst, inst, idx)) in PatchIterator::new(&vcode, &patches, entry)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .enumerate()
-            {
-                dbg!(minst);
-                // Record all uses
-                minst.get_uses().for_each(|r| {
-                    use_pos.entry(*r).or_insert_with(Vec::new).push(i);
-                });
-                if minst.get_defs().next().is_some() {
-                    for def in minst.get_defs() {
-                        def_pos.insert(def, i);
-                        let use_idxs = &use_pos[&def];
-                        assert!(use_idxs.iter().all(|idx| *idx <= i));
-                        assert!(use_idxs.len() <= 2);
-
-                        dbg!(use_idxs);
-                        if use_idxs.len() > 1 {
-                            let rd1 = new_vreg();
-                            let rd2 = new_vreg();
-                            let mut rds = vec![rd1, rd2];
-                            let mut replacements = vec![];
-
-                            // Find all old uses and replace them
-                            for (i2, (minst2, inst2, _)) in
-                                PatchIterator::new(&vcode, &patches, entry)
-                                    .collect::<Vec<_>>()
-                                    .into_iter()
-                                    .rev()
-                                    .enumerate()
-                            {
-                                if i == i2 || rds.len() == 0 {
-                                    break;
-                                }
-
-                                if minst2.get_uses().any(|u| *u == def) {
-                                    let mut minst2_clone = minst2.clone();
-
-                                    minst2_clone.get_uses_mut().filter(|u| **u == def).for_each(
-                                        |u| {
-                                            if let Some(r) = rds.pop() {
-                                                *u = r;
-                                            }
-                                        },
-                                    );
-
-                                    replacements.push((inst2, idx, minst2_clone));
-                                }
-                            }
-
-                            for (inst, idx, repl) in replacements.into_iter() {
-                                if let Some(patches) = patches.get_mut(&inst) {
-                                    if let Some(idx) = idx {
-                                        *patches[idx].extract_mut() = repl;
-                                    } else {
-                                        if let Some(r) = patches.iter_mut().find(|p| p.is_replace())
-                                        {
-                                            *r = Patch::Replace(repl);
-                                        } else {
-                                            patches.push(Patch::Replace(repl));
-                                        }
-                                    }
-                                } else {
-                                    patches.insert(inst, vec![Patch::Replace(repl)]);
-                                }
-                            }
-
-                            let dup = Patch::After(MInst::Duplicate {
-                                rd1: Writable::from_reg(rd1),
-                                rd2: Writable::from_reg(rd2),
-                                rs: def,
-                                out1: 0,
-                                out2: 0,
-                            });
-                            match idx {
-                                None => {
-                                    if let Some(patches) = patches.get_mut(&inst) {
-                                        patches.push(dup);
-                                    } else {
-                                        patches.insert(inst, vec![dup]);
-                                    }
-                                }
-                                _ => unimplemented!(),
-                            }
-
-                            continue 'a;
-                        }
-                    }
-
-                    let get_ref_dist = |def_idx| {
-                        let use_idx = use_pos[&minst.get_defs().skip(def_idx).next().unwrap()][0];
-                        (i - use_idx - 1) as u16
-                    };
-
-                    let patch = match minst {
-                        MInst::Add { rd, rs1, rs2, out } if *out != get_ref_dist(0) => {
-                            vec![Patch::Replace(MInst::Add {
-                                rd: *rd,
-                                rs1: *rs1,
-                                rs2: *rs2,
-                                out: get_ref_dist(0),
-                            })]
-                        }
-                        MInst::Load { rd, rs, out } if *out != get_ref_dist(0) => {
-                            vec![Patch::Replace(MInst::Load {
-                                rd: *rd,
-                                rs: *rs,
-                                out: get_ref_dist(0),
-                            })]
-                        }
-                        MInst::Duplicate {
-                            rd1,
-                            rd2,
-                            rs,
-                            out1,
-                            out2,
-                        } if *out1 != get_ref_dist(0) || *out2 != get_ref_dist(1) => {
-                            vec![Patch::Replace(MInst::Duplicate {
-                                rd1: *rd1,
-                                rd2: *rd2,
-                                rs: *rs,
-                                out1: get_ref_dist(0),
-                                out2: get_ref_dist(1),
-                            })]
-                        }
-                        MInst::Args { args }
-                            if args
-                                .iter()
-                                .enumerate()
-                                .any(|(i, _)| get_ref_dist(i) != get_ref_dist(0)) =>
-                        {
-                            vec![Patch::Replace(MInst::Echo {
-                                rss: vec![],
-                                rds: args.iter().map(|g| g.vreg).collect(),
-                                outs: args
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, _)| get_ref_dist(i))
-                                    .collect(),
-                            })]
-                        }
-                        MInst::Args { args } => vec![Patch::Replace(MInst::Echo {
-                            rss: vec![],
-                            rds: args.iter().map(|g| g.vreg).collect(),
-                            outs: args
-                                .iter()
-                                .enumerate()
-                                .map(|(i, _)| get_ref_dist(i))
-                                .collect(),
-                        })],
-                        MInst::CallArgs { rets, .. } if get_ref_dist(0) > 0 => {
-                            vec![Patch::After(MInst::Echo {
-                                rss: vec![],
-                                rds: rets.iter().map(|g| g.vreg).collect(),
-                                outs: rets
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, _)| get_ref_dist(i))
-                                    .collect(),
-                            })]
-                        }
-                        _ => continue 'b,
-                    };
-                    dbg!(&patch);
-
-                    let patches = patches.entry(inst).or_insert_with(Vec::new);
-                    match idx {
-                        None => {
-                            for patch in patch {
-                                if let (Some(p), true) = (
-                                    patches.iter_mut().find(|p| p.is_replace()),
-                                    patch.is_replace(),
-                                ) {
-                                    *p = patch;
-                                } else {
-                                    patches.push(patch);
-                                }
-                            }
-                        }
-                        Some(idx) => {
-                            for (i, patch) in patch.into_iter().enumerate() {
-                                if patch.is_replace() {
-                                    *patches[idx + i].extract_mut() = patch.extract().clone();
-                                } else {
-                                    patches.insert(idx + i, patch);
-                                }
-                            }
-                        }
-                    }
-                    continue 'a;
-                }
-            }
-
-            // Correct any ordering issues
-            for (minst, inst, idx) in PatchIterator::new(&vcode, &patches, entry)
-                .collect::<Vec<_>>()
-                .into_iter()
-            {
-                use MInst::*;
-                match minst {
-                    Store { rd, rs } => {
-                        if def_pos[rd] > def_pos[rs] {
-                            // Reorder is the address precedes the value
-                            let rd = *rd;
-                            let rs = *rs;
-                            let rd1 = new_vreg();
-                            let rd2 = new_vreg();
-
-                            patches
-                                .entry(inst)
-                                .or_insert_with(Vec::new)
-                                .push(Patch::Before(Reorder {
-                                    rd1: Writable::from_reg(rd1),
-                                    rd2: Writable::from_reg(rd2),
-                                    rs1: rd,
-                                    rs2: rs,
-                                    out: 0,
-                                }));
-                            let new_store = Store { rd: rd1, rs: rd2 };
-                            if let Some(idx) = idx {
-                                *patches.get_mut(&inst).unwrap()[idx].extract_mut() = new_store;
-                            } else {
-                                if let Some(og) = patches
-                                    .get_mut(&inst)
-                                    .unwrap()
-                                    .iter_mut()
-                                    .find(|p| p.is_replace())
-                                {
-                                    *og.extract_mut() = new_store;
-                                } else {
-                                    patches
-                                        .get_mut(&inst)
-                                        .unwrap()
-                                        .push(Patch::Replace(new_store));
-                                }
-                            }
-                            continue 'a;
-                        }
-                    }
-                    _ => (),
-                }
-            }
-
-            break;
-        }
+        
+        let mut cfg = VCodeCFG::from_vcode(&vcode);
+        
+        let entry_inst_count = cfg.0.root_weight().inst.len();
+        cfg.0.root_weight_mut().inst.insert(entry_inst_count-1, MInst::Ret { trig: 0 });
+        
+        insert_duplicates(&mut cfg, &mut new_vreg);
+        insert_ref_distances(&mut cfg);
+        add_reorderings(&mut cfg, &mut new_vreg);
+        
 
         let mut builder = VCodeBuilder::<inst::MInst>::new(
             sigs,
@@ -454,55 +350,11 @@ impl TargetIsa for ScryBackend {
             2,
         );
 
-        builder.set_entry(entry);
-        for inst in vcode.block_insns(entry).iter().rev() {
-            if let Some(patches) = patches.get(&inst) {
-                patches.iter().for_each(|p| {
-                    if let Patch::After(mi) = p {
-                        builder.push(mi.clone(), RelSourceLoc::default());
-                    }
-                })
-            }
-
-            let minst = if let Some(rep) = patches
-                .get(&inst)
-                .map_or(None, |ps| ps.iter().find(|p| p.is_replace()))
-            {
-                Some(rep.extract())
-            } else if patches
-                .get(&inst)
-                .map_or(true, |ps| !ps.iter().any(Patch::is_delete))
-            {
-                Some(vcode.index(inst))
-            } else {
-                None
-            };
-
-            if let Some(minst) = minst {
-                builder.push(minst.clone(), RelSourceLoc::default());
-                // vcode.inst_operands(inst).iter().for_each(|op| {
-                //     if let Some(f) = vcode.vreg_fact(op.vreg()) {
-                //         builder.vcode.set_vreg_fact(op.vreg(), f.clone());
-                //     }
-                // });
-            }
-
-            if let Some(patches) = patches.get(&inst) {
-                patches.iter().for_each(|p| {
-                    if let Patch::Before(mi) = p {
-                        builder.push(mi.clone(), RelSourceLoc::default());
-                    }
-                })
-            }
-        }
-        builder.end_bb();
+        cfg.build_vcode(&mut builder);
 
         let vreg_alloc = VRegAllocator::with_capacity(vcode.num_vregs());
         let vcode2 = builder.build(vreg_alloc);
-
-        dbg!(&vcode);
-        dbg!(&vcode2);
-
+        
         let want_disasm = want_disasm || log::log_enabled!(log::Level::Debug);
         let emit_result = vcode2.emit(
             &regalloc2::Output::default(),
@@ -517,7 +369,6 @@ impl TargetIsa for ScryBackend {
             log::debug!("disassembly:\n{disasm}");
         }
 
-        dbg!(&buffer);
         Ok(CompiledCodeStencil {
             buffer,
             vcode: emit_result.disasm,

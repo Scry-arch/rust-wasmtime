@@ -107,8 +107,8 @@ impl ObjectBuilder {
             target_lexicon::Architecture::Scry(a) => match a.width {
                 PointerWidth::U32 => object::Architecture::Scry32,
                 PointerWidth::U64 => object::Architecture::Scry64,
-                _ => unreachable!()
-            }
+                _ => unreachable!(),
+            },
             architecture => {
                 return Err(ModuleError::Backend(anyhow!(
                     "target architecture {architecture:?} is unsupported",

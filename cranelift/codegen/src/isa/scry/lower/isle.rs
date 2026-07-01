@@ -52,7 +52,6 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     isle_lower_prelude_methods!();
 
     fn emit(&mut self, arg0: &MInst) -> Unit {
-        dbg!(arg0);
         self.lower_ctx.emit(arg0.clone());
     }
 
@@ -61,13 +60,11 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     }
 
     fn emit_nop_and_empty(&mut self) -> InstOutput {
-        dbg!();
         self.lower_ctx.emit(MInst::Nop);
         smallvec::smallvec![] // empty InstOutput
     }
 
     fn emit_nop_unit(&mut self) {
-        dbg!();
         self.lower_ctx.emit(MInst::Nop);
     }
     fn lower_error(&mut self, arg0: Inst) -> InstOutput {
