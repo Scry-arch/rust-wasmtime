@@ -246,6 +246,10 @@ impl TargetIsa for Riscv64Backend {
         // leading to `sext` here.
         ir::ArgumentExtension::Sext
     }
+
+    fn remove_constant_phis(&self) -> bool {
+        true
+    }
 }
 
 impl fmt::Display for Riscv64Backend {

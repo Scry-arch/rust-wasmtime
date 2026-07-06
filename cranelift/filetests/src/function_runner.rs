@@ -462,10 +462,10 @@ impl<'a> Trampoline<'a> {
             // For Scry, run on the simulator
             Architecture::Scry(_) => {
                 use scry_sim::{
-                    ExecState, HostMemory, Block, CallFrameState, Executor, OperandList, Scalar, StackFrame,
-                    Value,
+                    Block, CallFrameState, ExecState, Executor, HostMemory, OperandList, Scalar,
+                    StackFrame, Value,
                 };
-                
+
                 // Ready inputs
                 let mut op_queue = HashMap::new();
                 let fn_ptr = Value::singleton::<u64>(Scalar::from_sized(function_ptr as usize, 8));

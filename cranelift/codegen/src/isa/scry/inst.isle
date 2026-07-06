@@ -1,6 +1,10 @@
 (type RegVec (primitive RegVec))
 (type WritableRegVec (primitive WritableRegVec))
 (type U16Vec (primitive U16Vec))
+(type MachLabelVec (primitive MachLabelVec))
+
+(decl gen_machlabel (MachLabelSlice) MachLabel)
+(extern constructor gen_machlabel gen_machlabel)
 
 ;; Instruction formats.
 (type MInst
@@ -81,6 +85,28 @@
       (rd WritableReg) ;; Loaded value
       (rs Reg)         ;; Address to load from
       (out u16)        ;; Output reference
+    )
+
+    (ImmJump           ;; A unconditional immediate jump
+      (dst MachLabel)
+    )
+
+    ;; Issues a unconditional jump
+    (JumpIssue
+      (link WritableReg) ;; Links to the trigger instruction, not actually used
+      (dst MachLabel)  ;; Where to jump to
+    )
+
+    ;; Issues a conditional branch
+    (BranchIssue
+      (link WritableReg) ;; Links to the trigger instruction, not actually used
+      (dst MachLabel)  ;; Where to jump to
+      (cond Reg)         ;; Condition
+    )
+
+    (JumpTrigger
+      (link Reg)          ;; Links to the issue instruction, not actually used
+      (args RegVec)       ;; Block call arguments
     )
   )
 )
@@ -171,4 +197,5 @@
 
 (extern constructor lower_error lower_error)
 (extern constructor lower_branch_error lower_branch_error)
+
 

@@ -10,7 +10,7 @@ use crate::isa::unwind::systemv;
 use crate::isa::{
     Builder as IsaBuilder, FunctionAlignment, IsaFlagsHashKey, OwnedTargetIsa, TargetIsa,
 };
-use crate::machinst::isle::Writable;
+use crate::machinst::isle::{Writable, WritableReg};
 use crate::machinst::{
     BlockLoweringOrder, Callee, CompiledCode, CompiledCodeStencil, MachInst,
     MachTextSectionBuilder, Reg, SigSet, TextSectionBuilder, VCode, VCodeBuildDirection,
@@ -25,10 +25,12 @@ use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
 use core::fmt;
 use cranelift_control::ControlPlane;
-use regalloc2::Function as RegFunc;
-use std::collections::{HashMap, HashSet};
+use graphene::algo::Bfs;
+use graphene::core::Graph;
 use graphene::core::GraphMut;
 use graphene::core::property::Rooted;
+use regalloc2::Function as RegFunc;
+use std::collections::{HashMap, HashSet};
 use target_lexicon::{Architecture, Triple};
 
 mod abi;
@@ -153,10 +155,81 @@ impl ScryBackend {
     }
 }
 
+fn prepare_block_params(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
+    // Handle entry block first, moving MInst:Args to the params
+    let entry_bb = cfg.0.root_weight_mut();
+
+    match entry_bb.inst.remove(0) {
+        MInst::Args { args } => {
+            entry_bb.params = args.into_iter().map(|r| r.vreg.to_reg()).collect();
+        }
+        inst => unreachable!("Entry did not include MInst::Args: {:?}", inst),
+    }
+
+    let mut bfs = Bfs::new(&cfg.0);
+    while bfs.next().is_some() {}
+    let pred = bfs
+        .predecessor_tree()
+        .all_edges()
+        .map(|(so, si, _)| (so, si))
+        .collect::<HashMap<_, _>>();
+
+    // Insert params for non-entry blocks
+    for (v, p) in pred.iter() {
+        let bb = cfg.0.vertex_weight(v).unwrap();
+        let pred_bb = cfg.0.vertex_weight(p).unwrap();
+
+        if bb.params.is_empty() && !pred_bb.params.is_empty() {
+            cfg.0.vertex_weight_mut(v).unwrap().params = pred_bb.params.clone();
+        }
+    }
+
+    for (_, bb) in cfg.0.all_vertices_weighted_mut() {
+        // Insert echos for handling params
+        if bb.params.len() >= 1 {
+            bb.inst.insert(
+                0,
+                MInst::Echo {
+                    rss: vec![],
+                    rds: bb
+                        .params
+                        .iter()
+                        .map(|r| WritableReg::from_reg(*r))
+                        .collect(),
+                    outs: bb.params.iter().map(|_| 0).collect(),
+                },
+            )
+        }
+
+        // Convert ImmJump to issue/trigger combo
+        let mut i = 0;
+        while i < bb.inst.len() {
+            let inst = &mut bb.inst[i];
+            if let MInst::ImmJump { dst } = inst {
+                let link = new_vreg();
+                *inst = MInst::JumpIssue {
+                    link: Writable::from_reg(link),
+                    dst: *dst,
+                };
+                bb.inst.insert(
+                    i + 1,
+                    MInst::JumpTrigger {
+                        link,
+                        args: bb.branch_params.clone(),
+                    },
+                );
+            }
+            i += 1;
+        }
+    }
+
+    log::trace!("VCodeCFG: {:?}", cfg);
+}
+
 /// Replaces the first use of the `find` register with the `replace` register
-fn replace_first_use(bb: &mut VCodeBB<MInst>, find: Reg, replace: Reg) -> bool{
+fn replace_first_use(bb: &mut VCodeBB<MInst>, find: Reg, replace: Reg) -> bool {
     for inst in bb.inst.iter_mut() {
-        if let Some(r) = inst.get_uses_mut().find(|r| **r==find) {
+        if let Some(r) = inst.get_uses_mut().find(|r| **r == find) {
             *r = replace;
             return true;
         }
@@ -166,84 +239,94 @@ fn replace_first_use(bb: &mut VCodeBB<MInst>, find: Reg, replace: Reg) -> bool{
 
 /// Looks for registers that are used multiple times and inserts `dup` instructions at their definition
 /// and makes the uses use the resulting, unique registers. I.e. eliminates multiple uses of the same register.
-fn insert_duplicates(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg)
-{
+fn insert_duplicates(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
+    log::debug!("insert_duplicates");
     let mut find_and_replace = |bb: &mut VCodeBB<MInst>, reg, dup_idx| {
         let rd1 = new_vreg();
         let rd2 = new_vreg();
-        
+
         // Replace uses with uses of new vregs
         assert!(replace_first_use(bb, reg, rd1));
         assert!(replace_first_use(bb, reg, rd2));
-        
+
         // Insert duplication of original register to new vregs
-        bb.inst.insert(dup_idx, MInst::Duplicate {
-            rd1: Writable::from_reg(rd1),
-            rd2: Writable::from_reg(rd2),
-            rs: reg,
-            out1: 0,
-            out2: 0,
-        });
+        bb.inst.insert(
+            dup_idx,
+            MInst::Duplicate {
+                rd1: Writable::from_reg(rd1),
+                rd2: Writable::from_reg(rd2),
+                rs: reg,
+                out1: 0,
+                out2: 0,
+            },
+        );
     };
-    
+
     'a: loop {
-        for (_, bb) in cfg.0.all_vertices_weighted_mut() {
-            
-            // Check each def for multiple uses
-            for (inst_idx, reg_def) in bb.inst_defs().collect::<Vec<_>>() {
-                if bb.reg_uses(reg_def).count() > 1 {
-                    find_and_replace(bb, reg_def, inst_idx+1);
+        let entry = cfg.0.root();
+        for (v, bb) in cfg.0.all_vertices_weighted_mut() {
+            // Check each param for multiple uses
+            for p in &bb.params {
+                if bb.reg_uses(*p).count() > 1 {
+                    let insert_idx = if v == entry {
+                        1 // After the Minst::Args in the entry
+                    } else {
+                        0
+                    };
+                    find_and_replace(bb, *p, insert_idx);
                     continue 'a;
                 }
             }
-            
-            
+
+            // Check each def for multiple uses
+            for (inst_idx, reg_def) in bb.inst_defs().collect::<Vec<_>>() {
+                if bb.reg_uses(reg_def).count() > 1 {
+                    find_and_replace(bb, reg_def, inst_idx + 1);
+                    continue 'a;
+                }
+            }
         }
         // No changes were made, finish
-        break
+        break;
     }
+    log::trace!("VCodeCFG: {:?}", cfg);
 }
 
-fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>)
-{
-    for (_,  bb) in cfg.0.all_vertices_weighted_mut() {
+fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>) {
+    log::debug!("insert_ref_distances");
+    for (_, bb) in cfg.0.all_vertices_weighted_mut() {
+        log::trace!("BB: {:?}", bb);
+
         let mut use_pos = HashMap::<Reg, Vec<usize>>::new();
         for (inst_idx, inst) in bb.inst.iter_mut().rev().enumerate() {
+            log::trace!("inst: {:?}", inst);
             // Record all uses, we can do this on-the-fly as we assume no use comes before its def
             inst.get_uses().for_each(|r| {
                 use_pos.entry(*r).or_insert_with(Vec::new).push(inst_idx);
             });
-            
+
             if inst.get_defs().count() >= 1 {
-                let ref_dists = inst.get_defs().enumerate().map(|(i, def)| {
-                    let use_idx = use_pos[&def][0];
-                    (i, (inst_idx - use_idx - 1) as u16)
-                }).collect::<HashMap<_, _>>();
-                
+                let ref_dists = inst
+                    .get_defs()
+                    .enumerate()
+                    .map(|(i, def)| {
+                        let use_idx = use_pos[&def][0];
+                        (i, (inst_idx - use_idx - 1) as u16)
+                    })
+                    .collect::<HashMap<_, _>>();
+
                 match inst {
-                    MInst::Add { out, .. }
-                    | MInst::Load { out, .. } => {
+                    MInst::Add { out, .. } | MInst::Load { out, .. } => {
                         *out = ref_dists[&0];
                     }
-                    MInst::Duplicate {
-                        out1,
-                        out2,
-                        ..
-                    } => {
+                    MInst::Echo { outs, .. } => outs
+                        .iter_mut()
+                        .enumerate()
+                        .for_each(|(i, out)| *out = ref_dists[&i]),
+                    MInst::Duplicate { out1, out2, .. } => {
                         *out1 = ref_dists[&0];
                         *out2 = ref_dists[&1];
                     }
-                    MInst::Args { args } => {
-                        *inst = MInst::Echo {
-                            rss: vec![],
-                            rds: args.iter().map(|g| g.vreg).collect(),
-                            outs: args
-                                .iter()
-                                .enumerate()
-                                .map(|(i, _)| ref_dists[&i])
-                                .collect(),
-                        }
-                    },
                     MInst::CallArgs { rets, .. } if ref_dists[&0] > 0 => {
                         *inst = MInst::Echo {
                             rss: vec![],
@@ -255,17 +338,19 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>)
                                 .collect(),
                         }
                     }
-                    _=>(),
+                    _ => (),
                 };
             }
         }
-            
-        }
+
+        log::trace!("BB: {:?}", bb);
+    }
+    log::trace!("VCodeCFG: {:?}", cfg);
 }
 
-fn add_reorderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg)
-{
-    for (_,  bb) in cfg.0.all_vertices_weighted_mut() {
+fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
+    log::debug!("fix_orderings");
+    for (_, bb) in cfg.0.all_vertices_weighted_mut() {
         'a: loop {
             let mut def_pos = HashMap::<Reg, usize>::new();
             for (inst_idx, inst) in bb.inst.iter_mut().enumerate() {
@@ -273,7 +358,7 @@ fn add_reorderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg)
                 for def in inst.get_defs() {
                     def_pos.insert(def, inst_idx);
                 }
-                
+
                 match inst {
                     MInst::Store { rd, rs } => {
                         // Reorder if the address precedes the value
@@ -281,23 +366,26 @@ fn add_reorderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg)
                             // Create new vregs for the reorder
                             let rd1 = new_vreg();
                             let rd2 = new_vreg();
-                            
+
                             let rd_old = *rd;
                             let rs_old = *rs;
-                            
+
                             // assign reordered vregs to store
                             *rd = rd1;
                             *rs = rd2;
-                            
+
                             // Insert reorder instruction before store
-                            bb.inst.insert(inst_idx, MInst::Reorder {
-                                rd1: Writable::from_reg(rd1),
-                                rd2: Writable::from_reg(rd2),
-                                rs1: rd_old,
-                                rs2: rs_old,
-                                out: 0,
-                            });
-                            
+                            bb.inst.insert(
+                                inst_idx,
+                                MInst::Reorder {
+                                    rd1: Writable::from_reg(rd1),
+                                    rd2: Writable::from_reg(rd2),
+                                    rs1: rd_old,
+                                    rs2: rs_old,
+                                    out: 0,
+                                },
+                            );
+
                             // Start over
                             continue 'a;
                         }
@@ -305,9 +393,10 @@ fn add_reorderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg)
                     _ => (),
                 }
             }
-            break
+            break;
         }
     }
+    log::trace!("VCodeCFG: {:?}", cfg);
 }
 
 impl TargetIsa for ScryBackend {
@@ -318,6 +407,8 @@ impl TargetIsa for ScryBackend {
         want_disasm: bool,
         ctrl_plane: &mut ControlPlane,
     ) -> CodegenResult<CompiledCodeStencil> {
+        log::debug!("Beginning Scry compile");
+        log::trace!("func: {:?}", func);
         let (vcode, mut new_vregs) = self.compile_vcode(func, domtree, ctrl_plane)?;
         let mut new_vreg = || {
             new_vregs
@@ -326,24 +417,44 @@ impl TargetIsa for ScryBackend {
                 .unwrap()
         };
 
-        let emit_info = EmitInfo::new(self.flags.clone(), self.isa_flags.clone());
-        let sigs = SigSet::new::<abi::ScryMachineDeps>(func, &self.flags)?;
-        let abi = Callee::<abi::ScryMachineDeps>::new(func, self, &self.isa_flags, &sigs)?;
-        
         let mut cfg = VCodeCFG::from_vcode(&vcode);
-        
-        let entry_inst_count = cfg.0.root_weight().inst.len();
-        cfg.0.root_weight_mut().inst.insert(entry_inst_count-1, MInst::Ret { trig: 0 });
-        
+
+        log::trace!("VCodeCFG: {:?}", cfg);
+
+        prepare_block_params(&mut cfg, &mut new_vreg);
+
+        // Insert `ret` instruction as movable trigger
+        cfg.0
+            .all_vertices_weighted_mut()
+            .find(|(_, bb)| {
+                bb.inst
+                    .iter()
+                    .find(|i| {
+                        if let MInst::Rets { .. } = i {
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .is_some()
+            })
+            .map(|(_, bb)| {
+                let inst_count = bb.inst.len();
+                bb.inst.insert(inst_count - 1, MInst::Ret { trig: 0 })
+            });
+
+        log::trace!("VCodeCFG: {:?}", cfg);
+
         insert_duplicates(&mut cfg, &mut new_vreg);
         insert_ref_distances(&mut cfg);
-        add_reorderings(&mut cfg, &mut new_vreg);
-        
+        fix_orderings(&mut cfg, &mut new_vreg);
 
+        let sigs = SigSet::new::<abi::ScryMachineDeps>(func, &self.flags)?;
+        let abi = Callee::<abi::ScryMachineDeps>::new(func, self, &self.isa_flags, &sigs)?;
         let mut builder = VCodeBuilder::<inst::MInst>::new(
             sigs,
             abi,
-            emit_info,
+            EmitInfo::new(self.flags.clone(), self.isa_flags.clone()),
             BlockLoweringOrder::new(func, domtree, ctrl_plane),
             VCodeConstants::with_capacity(vcode.constants.len()),
             VCodeBuildDirection::Backward,
@@ -354,7 +465,9 @@ impl TargetIsa for ScryBackend {
 
         let vreg_alloc = VRegAllocator::with_capacity(vcode.num_vregs());
         let vcode2 = builder.build(vreg_alloc);
-        
+
+        log::trace!("VCode2: {:?}", vcode2);
+
         let want_disasm = want_disasm || log::log_enabled!(log::Level::Debug);
         let emit_result = vcode2.emit(
             &regalloc2::Output::default(),
@@ -463,6 +576,10 @@ impl TargetIsa for ScryBackend {
 
     fn default_argument_extension(&self) -> ir::ArgumentExtension {
         ir::ArgumentExtension::Sext
+    }
+
+    fn remove_constant_phis(&self) -> bool {
+        false
     }
 }
 

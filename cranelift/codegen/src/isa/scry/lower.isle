@@ -35,8 +35,51 @@
     (ld_rfo ptr flags offset)
 )
 
+;; Helper to extract register arguments from BlockCall
+(decl block_call_regs (BlockCall) RegVec)
+(extern constructor block_call_regs block_call_regs)
+
+;; Helper to check that two BlockCalls use the same registers
+(decl assert_same_block_call_regs (BlockCall BlockCall) Unit)
+(extern constructor assert_same_block_call_regs assert_same_block_call_regs)
 
 
+;; Lower unconditional jump
+(rule
+    (lower_branch (jump block_call) targets)
+    (let
+      ( (jmp_trig_link WritableReg (temp_writable_reg $I64))
+        (_ Unit (emit (MInst.JumpIssue jmp_trig_link (gen_machlabel targets))))
+      )
+      (emit_side_effect
+        (SideEffectNoResult.Inst
+          (MInst.JumpTrigger
+            jmp_trig_link
+            (block_call_regs block_call)
+          )
+        )
+      )
+    )
+)
+
+;; Lower conditional jump
+(rule
+    (lower_branch (brif cond block_call_1 block_call_2) targets)
+    (let
+      ( (_ Unit (assert_same_block_call_regs block_call_1 block_call_2))
+        (jmp_trig_link WritableReg (temp_writable_reg $I64))
+        (_ Unit (emit (MInst.BranchIssue jmp_trig_link (gen_machlabel targets) cond)))
+      )
+      (emit_side_effect
+        (SideEffectNoResult.Inst
+          (MInst.JumpTrigger
+            jmp_trig_link
+            (block_call_regs block_call_1)
+          )
+        )
+      )
+    )
+)
 
 ;; Lower return
 (rule (lower (return args))
