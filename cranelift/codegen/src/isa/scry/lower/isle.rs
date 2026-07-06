@@ -71,8 +71,41 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
         let instr_data: InstructionData = self.inst_data_value(arg0);
         unreachable!("No valid lowering rule for instruction: {:?}", instr_data);
     }
+
+    /// Catches any branch instruction with no lowering rule. Throws relevant error
     fn lower_branch_error(&mut self, arg0: Inst, arg1: &MachLabelSlice) -> Unit {
-        unreachable!("No valid lowering rule for branch: {:?}, {:?}", arg0, arg1);
+        unreachable!(
+            "No valid lowering rule for branch: {:?}, {:?}",
+            self.inst_data_value(arg0),
+            arg1
+        )
+    }
+
+    fn gen_machlabel(&mut self, labels: &MachLabelSlice) -> MachLabel {
+        assert!(labels.len() >= 1);
+        labels[0].clone()
+    }
+
+    fn block_call_regs(&mut self, block_call: BlockCall) -> RegVec {
+        log::trace!("block_call_regs: {:?}", block_call);
+        let args: Vec<_> = block_call
+            .args(&self.lower_ctx.dfg().value_lists)
+            .map(|arg| arg.as_value().unwrap())
+            .collect();
+        args.into_iter()
+            .map(|arg| self.lower_ctx.put_value_in_regs(arg).only_reg().unwrap())
+            .collect()
+    }
+
+    fn assert_same_block_call_regs(
+        &mut self,
+        block_call_1: BlockCall,
+        block_call_2: BlockCall,
+    ) -> Unit {
+        assert_eq!(
+            self.block_call_regs(block_call_1),
+            self.block_call_regs(block_call_2)
+        )
     }
 }
 

@@ -222,6 +222,10 @@ impl TargetIsa for S390xBackend {
         // the same as-is for now to reduce the likelihood of problems arising.
         ir::ArgumentExtension::Uext
     }
+
+    fn remove_constant_phis(&self) -> bool {
+        true
+    }
 }
 
 impl fmt::Display for S390xBackend {

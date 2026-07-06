@@ -74,8 +74,10 @@ impl MachInstEmit for MInst {
     fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
         use MInst::*;
         let instr = match self {
-            Args { .. } | Rets { .. } => unreachable!("{:?}", self),
-            CallArgs { .. } => return,
+            Rets { .. } | ImmJump { .. } => {
+                unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
+            }
+            Args { .. } | CallArgs { .. } | JumpTrigger { .. } => return,
             Nop => Instruction::NoOp,
             Ret { trig } => {
                 Instruction::Call(CallVariant::Ret, Bits::try_from(*trig as i32).unwrap())
@@ -130,6 +132,11 @@ impl MachInstEmit for MInst {
             ),
             Call { trig, .. } => {
                 Instruction::Call(CallVariant::Call, Bits::try_from(*trig as i32).unwrap())
+            }
+            JumpIssue { dst, .. } | BranchIssue { dst, .. } => {
+                // sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpTrig6);
+                sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpLoc7);
+                Instruction::Jump(0.try_into().unwrap(), 0.try_into().unwrap())
             }
         };
         sink.put2(instr.encode());

@@ -52,7 +52,7 @@ impl MachInst for MInst {
     fn get_operands(&mut self, collector: &mut impl OperandVisitor) {
         use MInst::*;
         match self {
-            Nop | Ret { .. } => (),
+            Nop | Ret { .. } | ImmJump { .. } => (),
             Args { args } => {
                 // We just treat function arguments as definition points
                 for p in args {
@@ -110,6 +110,19 @@ impl MachInst for MInst {
                 rets.iter_mut().for_each(|p| collector.reg_def(&mut p.vreg));
                 args.iter_mut().for_each(|p| collector.reg_use(&mut p.vreg));
             }
+            JumpIssue { link, .. } => {
+                collector.reg_def(link);
+            }
+            BranchIssue { link, cond, .. } => {
+                collector.reg_def(link);
+                collector.reg_use(cond);
+            }
+            JumpTrigger { link, args, .. } => {
+                collector.reg_use(link);
+                for r in args {
+                    collector.reg_use(r);
+                }
+            }
         }
     }
 
@@ -127,7 +140,11 @@ impl MachInst for MInst {
             | Call { .. }
             | CallArgs { .. }
             | Duplicate { .. }
-            | Reorder { .. } => None,
+            | Reorder { .. }
+            | JumpIssue { .. }
+            | BranchIssue { .. }
+            | JumpTrigger { .. }
+            | ImmJump { .. } => None,
             Echo { rds, rss, .. } => {
                 if rds.len() == 1 && rds.len() == rss.len() {
                     Some((rds[0], rss[0]))
@@ -198,8 +215,8 @@ impl MachInst for MInst {
         }
     }
 
-    fn gen_jump(_target: MachLabel) -> MInst {
-        unimplemented!()
+    fn gen_jump(dst: MachLabel) -> MInst {
+        MInst::ImmJump { dst }
     }
 
     fn worst_case_size() -> CodeOffset {
@@ -351,6 +368,36 @@ impl MInst {
                     .chain(once("args:".into()))
                     .chain(args.iter().map(|p| reg_name(p.vreg))),
             ),
+            JumpIssue { link, dst } => join(
+                "JumpIssue",
+                [
+                    "link:".into(),
+                    wreg_name(*link),
+                    "dst:".into(),
+                    dst.to_string(),
+                ]
+                .into_iter(),
+            ),
+            BranchIssue { link, cond, dst } => join(
+                "BranchIssue",
+                [
+                    "link:".into(),
+                    wreg_name(*link),
+                    "cond:".into(),
+                    reg_name(*cond),
+                    "dst:".into(),
+                    dst.to_string(),
+                ]
+                .into_iter(),
+            ),
+            JumpTrigger { link, args } => join(
+                "JumpTrigger",
+                ["link:".into(), reg_name(*link)]
+                    .into_iter()
+                    .chain(once("args:".into()))
+                    .chain(args.iter().map(|r| reg_name(*r))),
+            ),
+            ImmJump { dst } => join("ImmJump", ["dst:".into(), dst.to_string()].into_iter()),
         }
     }
 
@@ -363,7 +410,9 @@ impl MInst {
     pub(crate) fn name(self: reference([Self])) -> impl Iterator<Item = reference([Reg])> {
         use MInst::*;
         match self {
-            Nop | Ret { .. } | Args { .. } | Const { .. } => vec![],
+            Nop | Ret { .. } | Args { .. } | Const { .. } | JumpIssue { .. } | ImmJump { .. } => {
+                vec![]
+            }
             Add { rs1, rs2, .. } | Reorder { rs1, rs2, .. } => {
                 vec![rs1, rs2]
             }
@@ -381,6 +430,8 @@ impl MInst {
                 uses.extend(args.iterate().map(|p| reference([(p.vreg)])));
                 uses
             }
+            BranchIssue { cond, .. } => vec![cond],
+            JumpTrigger { link, args, .. } => args.iterate().chain(once(link)).collect(),
         }
         .into_iter()
     }
@@ -389,16 +440,24 @@ impl MInst {
     pub(crate) fn get_defs(&self) -> impl Iterator<Item = Reg> + use<> {
         use MInst::*;
         match self {
-            Nop | Rets { .. } | Ret { .. } | Const { .. } | Store { .. } => vec![],
+            Nop
+            | Args { .. }
+            | Rets { .. }
+            | Ret { .. }
+            | Const { .. }
+            | Store { .. }
+            | JumpTrigger { .. }
+            | ImmJump { .. } => vec![],
             Add { rd, .. } | Load { rd, .. } => {
                 vec![rd.to_reg()]
             }
-            Args { args } => args.iter().map(|p| p.vreg.to_reg()).collect::<Vec<_>>(),
             Echo { rds, .. } => rds.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>(),
             Duplicate { rd1, rd2, .. } | Reorder { rd1, rd2, .. } => {
                 vec![rd1.to_reg(), rd2.to_reg()]
             }
-            Call { link, .. } => vec![link.to_reg()],
+            Call { link, .. } | JumpIssue { link, .. } | BranchIssue { link, .. } => {
+                vec![link.to_reg()]
+            }
             CallArgs { rets, .. } => rets.iter().map(|p| p.vreg.to_reg()).collect(),
         }
         .into_iter()
@@ -407,29 +466,97 @@ impl MInst {
 
 /// Different forms of label references for different instruction formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LabelUse {}
+pub enum LabelUse {
+    /// 7-bit jump location offset. Used in [`Instruction::Jump`] for short range
+    JmpLoc7,
+    /// 6-bit jump trigger offset. Used in [`Instruction::Jump`] for short range
+    JmpTrig6,
+}
 
 impl MachInstLabelUse for LabelUse {
     const ALIGN: CodeOffset = 2;
 
     fn max_pos_range(self) -> CodeOffset {
-        unimplemented!()
+        use LabelUse::*;
+        match self {
+            JmpLoc7 => {
+                // The positive range is calculated after the trigger address and therefore
+                // gets a higher range based on it
+                ((1 << (6 + 7 - 1)) - 1) * 2
+            }
+            JmpTrig6 => ((1 << (6 - 1)) - 1) * 2,
+        }
     }
 
     fn max_neg_range(self) -> CodeOffset {
-        unimplemented!()
+        use LabelUse::*;
+        match self {
+            JmpLoc7 => ((1 << 7 - 1) - 1) * 2,
+            JmpTrig6 => ((1 << (6 - 1)) - 1) * 2,
+        }
     }
 
     fn patch_size(self) -> CodeOffset {
-        unimplemented!()
+        use LabelUse::*;
+        match self {
+            JmpLoc7 | JmpTrig6 => 2,
+        }
     }
 
-    fn patch(self, _buffer: &mut [u8], _use_offset: CodeOffset, _label_offset: CodeOffset) {
-        unimplemented!()
+    fn patch(self, buffer: &mut [u8], use_offset: CodeOffset, label_offset: CodeOffset) {
+        use LabelUse::*;
+        assert_eq!(buffer.len(), 2);
+
+        let inst = Instruction::decode(LittleEndian::read_u16(buffer));
+
+        log::debug!(
+            "Patching {:?}: use({:?}) label({:?}), {:?}",
+            self,
+            use_offset,
+            label_offset,
+            inst
+        );
+
+        let patched = match (self, inst) {
+            (JmpTrig6, Instruction::Jump(imm, _)) => {
+                if label_offset >= use_offset {
+                    // Trigger after instruction
+                    let diff = label_offset - use_offset;
+                    assert!(diff.is_multiple_of(2));
+                    let diff = diff / 2;
+                    Instruction::Jump(imm, (diff as i32).try_into().unwrap())
+                } else {
+                    unimplemented!()
+                }
+            }
+            (JmpLoc7, Instruction::Jump(_, trig)) => {
+                if trig.value >= 0 {
+                    // Trigger after instruction
+                    let trig_offset = use_offset + trig.value as u32 * 2;
+                    assert!(label_offset >= trig_offset);
+
+                    let diff = label_offset - trig_offset;
+                    assert!(diff.is_multiple_of(2));
+                    let diff = diff / 2;
+
+                    if diff == 1 {
+                        // The jmp instruction cannot be used for fallthrough
+                        Instruction::NoOp
+                    } else {
+                        Instruction::Jump((diff as i32 - 1).try_into().unwrap(), trig)
+                    }
+                } else {
+                    unimplemented!()
+                }
+            }
+            (_, i) => unreachable!("Invalid LabelUse for instruction: {:?}, {:?}", self, i),
+        };
+        log::debug!("Patched: {:?}", patched);
+        LittleEndian::write_u16(buffer, patched.encode());
     }
 
     fn supports_veneer(self) -> bool {
-        unimplemented!()
+        false
     }
 
     fn veneer_size(self) -> CodeOffset {
@@ -437,7 +564,7 @@ impl MachInstLabelUse for LabelUse {
     }
 
     fn worst_case_veneer_size() -> CodeOffset {
-        unimplemented!()
+        4
     }
 
     fn generate_veneer(

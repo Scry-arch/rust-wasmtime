@@ -219,6 +219,10 @@ impl TargetIsa for X64Backend {
         // the same as-is for now to reduce the likelihood of problems arising.
         ir::ArgumentExtension::Uext
     }
+
+    fn remove_constant_phis(&self) -> bool {
+        true
+    }
 }
 
 /// Emit unwind info for an x86 target.

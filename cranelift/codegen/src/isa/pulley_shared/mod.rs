@@ -262,6 +262,10 @@ where
     fn default_argument_extension(&self) -> ir::ArgumentExtension {
         ir::ArgumentExtension::None
     }
+
+    fn remove_constant_phis(&self) -> bool {
+        true
+    }
 }
 
 /// Create a new Pulley ISA builder.

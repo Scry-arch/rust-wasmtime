@@ -1,0 +1,19 @@
+test interpret
+test run
+target scry32
+
+function %maybe_add_one(i32) -> i32 {
+block0(v0: i32):
+    brif v0, block2(v0), block3(v0)
+
+block2(v1: i32):
+    v2 = iadd_imm v1, 1
+    jump block3(v2)
+
+block3(v3: i32):
+    return v3
+}
+
+; run: %maybe_add_one(0) == 0
+; run: %maybe_add_one(16) == 17
+; run: %maybe_add_one(-100) == -99

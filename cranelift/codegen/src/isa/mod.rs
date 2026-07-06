@@ -322,6 +322,11 @@ pub trait TargetIsa: fmt::Display + Send + Sync {
         ctrl_plane: &mut ControlPlane,
     ) -> CodegenResult<CompiledCodeStencil>;
 
+    /// Returns whether constant-phi removal should be run on functions.
+    ///
+    /// See [`Context::remove_constant_phis`]
+    fn remove_constant_phis(&self) -> bool;
+
     #[cfg(feature = "unwind")]
     /// Map a regalloc::Reg to its corresponding DWARF register.
     fn map_regalloc_reg_to_dwarf(

@@ -187,7 +187,9 @@ impl Context {
         self.compute_cfg();
         self.compute_domtree();
         self.eliminate_unreachable_code(isa)?;
-        self.remove_constant_phis(isa)?;
+        if isa.remove_constant_phis() {
+            self.remove_constant_phis(isa)?;
+        }
 
         self.func.dfg.resolve_all_aliases();
 
