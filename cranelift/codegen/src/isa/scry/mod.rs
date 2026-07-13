@@ -26,11 +26,14 @@ use alloc::{boxed::Box, vec::Vec};
 use core::fmt;
 use cranelift_control::ControlPlane;
 use graphene::algo::Bfs;
+use graphene::algo::Retainable;
 use graphene::core::Graph;
 use graphene::core::GraphMut;
 use graphene::core::property::Rooted;
 use regalloc2::Function as RegFunc;
+use scry_isa::AluVariant;
 use std::collections::{HashMap, HashSet};
+use std::iter::once;
 use target_lexicon::{Architecture, Triple};
 
 mod abi;
@@ -38,7 +41,56 @@ pub(crate) mod inst;
 mod lower;
 mod settings;
 mod vcode_cfg;
+use crate::opts::IntCC;
 use vcode_cfg::*;
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum IsaType {
+    /// Something went wrong in type resolution and the value cannot be determinted to have a valid type.
+    Invalid,
+
+    /// Either signed or unsigned integer of the given power of 2 size (bytes)
+    Integer(u8),
+
+    /// A specific known type
+    Known(scry_isa::Type),
+}
+
+impl IsaType {
+    /// Power of 2 size of the type in bytes
+    fn size_pow2(&self) -> u8 {
+        match self {
+            IsaType::Integer(s) => *s,
+            IsaType::Known(t) => t.size_pow2(),
+            _ => unimplemented!(),
+        }
+    }
+
+    /// Power of 2 size of the type in bytes
+    fn is_int(&self) -> bool {
+        match self {
+            IsaType::Integer(_) => true,
+            IsaType::Known(t) => t.is_signed_int() || t.is_unsigned_int(),
+            _ => false,
+        }
+    }
+
+    fn refine(self, t: IsaType) -> Option<IsaType> {
+        use IsaType::*;
+
+        if self.size_pow2() == t.size_pow2() {
+            match (self, t) {
+                (Integer(_), _) if t.is_int() => Some(t),
+                (_, Integer(_)) if self.is_int() => Some(self),
+                (Known(scry_isa::Type::Int(_)), Known(scry_isa::Type::Int(_))) => Some(self),
+                (Known(scry_isa::Type::Uint(_)), Known(scry_isa::Type::Uint(_))) => Some(self),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+}
 
 /// A Scry backend.
 pub struct ScryBackend {
@@ -166,9 +218,10 @@ fn prepare_block_params(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
         inst => unreachable!("Entry did not include MInst::Args: {:?}", inst),
     }
 
-    let mut bfs = Bfs::new(&cfg.0);
+    let mut bfs = Bfs::new(&cfg.0).retain(&cfg.0);
     while bfs.next().is_some() {}
     let pred = bfs
+        .algo
         .predecessor_tree()
         .all_edges()
         .map(|(so, si, _)| (so, si))
@@ -316,7 +369,7 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>) {
                     .collect::<HashMap<_, _>>();
 
                 match inst {
-                    MInst::Alu1 { out, .. } | MInst::Load { out, .. } => {
+                    MInst::Alu1 { out, .. } | MInst::Load { out, .. } | MInst::Cast { out, .. } => {
                         *out = ref_dists[&0];
                     }
                     MInst::Echo { outs, .. } => outs
@@ -399,6 +452,187 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
     log::trace!("VCodeCFG: {:?}", cfg);
 }
 
+fn type_to_isatype(t: Type) -> IsaType {
+    use crate::ir::types::*;
+    use IsaType::*;
+    match t {
+        I8 => Integer(0),
+        I16 => Integer(1),
+        I32 => Integer(2),
+        I64 => Integer(3),
+        _ => unimplemented!(),
+    }
+}
+
+fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
+    log::trace!("type_resolution");
+
+    let mut type_map = HashMap::new();
+
+    for (_, bb) in once(cfg.0.root())
+        .chain(Bfs::new(&cfg.0).retain(&cfg.0))
+        .map(|v| (v, cfg.0.vertex_weight(v).unwrap()))
+    {
+        // Resolve parameters
+        for p in bb.params.iter() {
+            let t = type_to_isatype(vreg_type(*p));
+            let t2 = if let Some(refined) = type_map
+                .get(p)
+                .map(|t2| t.refine(*t2).expect("Block paramter type conflict"))
+            {
+                refined
+            } else {
+                t
+            };
+
+            type_map.insert(*p, t2);
+        }
+
+        for inst in bb.inst.iter() {
+            use MInst::*;
+            match inst {
+                IntAdd { rd, rs1, rs2 } => {
+                    let t1 = type_map.get(rs1).unwrap();
+                    let t2 = type_map.get(rs2).unwrap();
+
+                    let refined = t1.refine(*t2).unwrap();
+
+                    type_map.insert(*rs1, refined);
+                    type_map.insert(*rs2, refined);
+                    type_map.insert(rd.to_reg(), refined);
+                }
+                IntCmp { rd, rs1, rs2, cc } => {
+                    let t1 = type_map.get(rs1).unwrap();
+                    let t2 = type_map.get(rs2).unwrap();
+
+                    let refined = t1.refine(*t2).unwrap();
+
+                    // Make sure inputs match comparison
+                    let refined = match cc {
+                        IntCC::UnsignedGreaterThan
+                        | IntCC::UnsignedLessThan
+                        | IntCC::UnsignedGreaterThanOrEqual
+                        | IntCC::UnsignedLessThanOrEqual => refined
+                            .refine(IsaType::Known(scry_isa::Type::Uint(refined.size_pow2())))
+                            .unwrap(),
+                        IntCC::SignedGreaterThan
+                        | IntCC::SignedLessThan
+                        | IntCC::SignedGreaterThanOrEqual
+                        | IntCC::SignedLessThanOrEqual => refined
+                            .refine(IsaType::Known(scry_isa::Type::Int(refined.size_pow2())))
+                            .unwrap(),
+                        _ => refined,
+                    };
+
+                    type_map.insert(*rs1, refined);
+                    type_map.insert(*rs2, refined);
+                    type_map.insert(rd.to_reg(), IsaType::Known(scry_isa::Type::Uint(0)));
+                }
+                UnsignedExt { rd, rs } => {
+                    let rs_t = type_map.get(rs).unwrap();
+                    let rd_t = type_to_isatype(vreg_type(rd.to_reg()));
+
+                    assert!(rs_t.size_pow2() < rd_t.size_pow2());
+
+                    // Both operands need to be unsigned
+                    type_map.insert(
+                        *rs,
+                        rs_t.refine(IsaType::Known(scry_isa::Type::Uint(rs_t.size_pow2())))
+                            .unwrap(),
+                    );
+                    type_map.insert(
+                        rd.to_reg(),
+                        rd_t.refine(IsaType::Known(scry_isa::Type::Uint(rd_t.size_pow2())))
+                            .unwrap(),
+                    );
+                }
+                Const { rd, .. } => {
+                    type_map.insert(rd.to_reg(), type_to_isatype(vreg_type(rd.to_reg())));
+                }
+                Echo { rds, rss, .. } => {
+                    if rss.len() != 0 {
+                        // This echo handle block arguments
+                        assert_eq!(rds.len(), rss.len());
+                        rss.iter().zip(rds.iter()).for_each(|(rs, rd)| {
+                            type_map.insert(rd.to_reg(), *type_map.get(rs).unwrap());
+                        });
+                    }
+                }
+                Reorder {
+                    rd1, rd2, rs1, rs2, ..
+                } => {
+                    type_map.insert(rd1.to_reg(), *type_map.get(rs1).unwrap());
+                    type_map.insert(rd2.to_reg(), *type_map.get(rs2).unwrap());
+                }
+                Duplicate { rd1, rd2, rs, .. } => {
+                    let t = *type_map.get(rs).unwrap();
+                    type_map.insert(rd1.to_reg(), t);
+                    type_map.insert(rd2.to_reg(), t);
+                }
+                Load { rd, rs, .. } => {
+                    type_map.insert(
+                        *rs,
+                        type_map
+                            .get(rs)
+                            .expect("Load source missing type")
+                            .refine(IsaType::Known(scry_isa::Type::Uint(2)))
+                            .expect("Load source refine fail"),
+                    );
+                    type_map.insert(rd.to_reg(), IsaType::Known(scry_isa::Type::Uint(2)));
+                }
+                _ => (),
+            }
+        }
+    }
+
+    log::trace!("Type map: {:?}", type_map);
+
+    // Resolve type specific instructions into Scry instructions
+    for (_, bb) in cfg.0.all_vertices_weighted_mut() {
+        'a: loop {
+            for (_, inst) in bb.inst.iter_mut().enumerate() {
+                match inst {
+                    MInst::IntAdd { rd, rs1, rs2 } => {
+                        *inst = MInst::Alu1 {
+                            var: AluVariant::Add,
+                            rd: *rd,
+                            rss: vec![*rs1, *rs2],
+                            out: 0,
+                        };
+                    }
+                    MInst::IntCmp { cc, rd, rs1, rs2 } => {
+                        let var = match cc {
+                            IntCC::Equal => AluVariant::Equal,
+                            _ => unimplemented!(),
+                        };
+                        *inst = MInst::Alu1 {
+                            var,
+                            rd: *rd,
+                            rss: vec![*rs1, *rs2],
+                            out: 0,
+                        };
+                    }
+                    MInst::UnsignedExt { rd, rs } => {
+                        let rd_t = type_map.get(&rd.to_reg()).unwrap();
+                        let rs_t = type_map.get(rs).unwrap();
+
+                        assert!(rd_t != rs_t);
+
+                        *inst = MInst::Cast {
+                            rd: *rd,
+                            ty: *rd_t,
+                            rs: *rs,
+                            out: 0,
+                        };
+                    }
+                    _ => (),
+                }
+            }
+            break;
+        }
+    }
+}
+
 impl TargetIsa for ScryBackend {
     fn compile_function(
         &self,
@@ -410,12 +644,14 @@ impl TargetIsa for ScryBackend {
         log::debug!("Beginning Scry compile");
         log::trace!("func: {:?}", func);
         let (vcode, mut new_vregs) = self.compile_vcode(func, domtree, ctrl_plane)?;
+
         let mut new_vreg = || {
             new_vregs
                 .alloc_with_deferred_error(Type::int(32).unwrap())
                 .only_reg()
                 .unwrap()
         };
+        let reg_type = |r: Reg| vcode.vreg_type(r.to_virtual_reg().unwrap().into());
 
         let mut cfg = VCodeCFG::from_vcode(&vcode);
 
@@ -445,6 +681,7 @@ impl TargetIsa for ScryBackend {
 
         log::trace!("VCodeCFG: {:?}", cfg);
 
+        type_resolution(&mut cfg, reg_type);
         insert_duplicates(&mut cfg, &mut new_vreg);
         insert_ref_distances(&mut cfg);
         fix_orderings(&mut cfg, &mut new_vreg);

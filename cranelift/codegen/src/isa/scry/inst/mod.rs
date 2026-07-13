@@ -65,6 +65,11 @@ impl MachInst for MInst {
                     collector.reg_use(r);
                 });
             }
+            IntAdd { rd, rs1, rs2 } | IntCmp { rd, rs1, rs2, .. } => {
+                collector.reg_def(rd);
+                collector.reg_use(rs1);
+                collector.reg_use(rs2);
+            }
             Rets { rets } => {
                 for p in rets {
                     collector.reg_use(&mut p.vreg);
@@ -96,7 +101,7 @@ impl MachInst for MInst {
                 collector.reg_use(rd);
                 collector.reg_use(rs);
             }
-            Load { rd, rs, .. } => {
+            Load { rd, rs, .. } | UnsignedExt { rd, rs } | Cast { rd, rs, .. } => {
                 collector.reg_def(rd);
                 collector.reg_use(rs);
             }
@@ -145,7 +150,11 @@ impl MachInst for MInst {
             | BranchIssue { .. }
             | JumpTrigger { .. }
             | ImmJump { .. }
-            | Alu1 { .. } => None,
+            | Alu1 { .. }
+            | IntAdd { .. }
+            | IntCmp { .. }
+            | UnsignedExt { .. }
+            | Cast { .. } => None,
             Echo { rds, rss, .. } => {
                 if rds.len() == 1 && rds.len() == rss.len() {
                     Some((rds[0], rss[0]))
@@ -345,6 +354,47 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
+            Cast { rd, ty, rs, out } => join(
+                "Cast",
+                [
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    format!("ty: {:?}", ty),
+                    "rs:".into(),
+                    reg_name(*rs),
+                    format!("out: {}", out),
+                ]
+                .into_iter(),
+            ),
+            UnsignedExt { rd, rs } => join(
+                "UnsignedExt",
+                ["rd:".into(), wreg_name(*rd), "rs:".into(), reg_name(*rs)].into_iter(),
+            ),
+            IntAdd { rd, rs1, rs2 } => join(
+                "IntAdd",
+                [
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    "rs1:".into(),
+                    reg_name(*rs1),
+                    "rs2:".into(),
+                    reg_name(*rs2),
+                ]
+                .into_iter(),
+            ),
+            IntCmp { cc, rd, rs1, rs2 } => join(
+                "IntCmp",
+                [
+                    format!("cc: {}", cc),
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    "rs1:".into(),
+                    reg_name(*rs1),
+                    "rs2:".into(),
+                    reg_name(*rs2),
+                ]
+                .into_iter(),
+            ),
             Call { link, fun, trig } => join(
                 "Call",
                 [
@@ -417,9 +467,11 @@ impl MInst {
                 .map(|p| reference([(p.vreg)]))
                 .collect::<Vec<_>>(),
             Echo { rss, .. } | Alu1 { rss, .. } => rss.iterate().collect::<Vec<_>>(),
-            Duplicate { rs, .. } => vec![rs],
+            IntAdd { rs1, rs2, .. } | IntCmp { rs1, rs2, .. } => vec![rs1, rs2],
+            Duplicate { rs, .. } | Load { rs, .. } | UnsignedExt { rs, .. } | Cast { rs, .. } => {
+                vec![rs]
+            }
             Store { rd, rs } => vec![rd, rs],
-            Load { rs, .. } => vec![rs],
             Call { fun, .. } => vec![fun],
             CallArgs { link, args, .. } => {
                 let mut uses = vec![link];
@@ -448,7 +500,12 @@ impl MInst {
             Duplicate { rd1, rd2, .. } | Reorder { rd1, rd2, .. } => {
                 vec![rd1.to_reg(), rd2.to_reg()]
             }
-            Alu1 { rd, .. } | Load { rd, .. } => {
+            Alu1 { rd, .. }
+            | Load { rd, .. }
+            | IntAdd { rd, .. }
+            | IntCmp { rd, .. }
+            | UnsignedExt { rd, .. }
+            | Cast { rd, .. } => {
                 vec![rd.to_reg()]
             }
             Call { link, .. } | JumpIssue { link, .. } | BranchIssue { link, .. } => {

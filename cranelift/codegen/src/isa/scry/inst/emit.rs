@@ -1,6 +1,7 @@
 //! Riscv64 ISA: binary code emission.
 
 use crate::ir::{self};
+use crate::isa::scry::IsaType;
 use crate::isa::scry::inst::*;
 use crate::isa::scry::lower::isle::generated_code::MInst;
 use cranelift_control::ControlPlane;
@@ -74,7 +75,7 @@ impl MachInstEmit for MInst {
     fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
         use MInst::*;
         let instr = match self {
-            Rets { .. } | ImmJump { .. } => {
+            Rets { .. } | ImmJump { .. } | IntCmp { .. } | IntAdd { .. } | UnsignedExt { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
             Args { .. } | CallArgs { .. } | JumpTrigger { .. } => return,
@@ -128,6 +129,16 @@ impl MachInstEmit for MInst {
                 scry_isa::Type::Int(2).try_into().unwrap(),
                 Bits::try_from(*out as i32).unwrap(),
             ),
+            Cast { out, ty, .. } => {
+                let ty = match ty {
+                    IsaType::Known(t) => t,
+                    _ => unimplemented!("ty: {:?}", ty),
+                };
+                Instruction::Cast(
+                    ty.clone().try_into().unwrap(),
+                    Bits::try_from(*out as i32).unwrap(),
+                )
+            }
             Call { trig, .. } => {
                 Instruction::Call(CallVariant::Call, Bits::try_from(*trig as i32).unwrap())
             }
