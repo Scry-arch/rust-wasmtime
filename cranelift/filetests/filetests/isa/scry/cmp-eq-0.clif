@@ -1,0 +1,20 @@
+test interpret
+test run
+target scry32
+
+function %zero_add_one(i32) -> i32 {
+block0(v0: i32):
+	v1 = icmp_imm eq v0, 0
+    brif v1, block2(v0), block3(v0)
+
+block2(v2: i32):
+    v3 = iadd_imm v2, 1
+    jump block3(v3)
+
+block3(v4: i32):
+    return v4
+}
+
+; run: %zero_add_one(0) == 1
+; run: %zero_add_one(16) == 16
+; run: %zero_add_one(-100) == -100

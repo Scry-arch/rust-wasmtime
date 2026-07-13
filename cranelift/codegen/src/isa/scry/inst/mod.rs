@@ -59,10 +59,11 @@ impl MachInst for MInst {
                     collector.reg_def(&mut p.vreg);
                 }
             }
-            Add { rd, rs1, rs2, .. } => {
+            Alu1 { rd, rss, .. } => {
                 collector.reg_def(rd);
-                collector.reg_use(rs1);
-                collector.reg_use(rs2);
+                rss.iter_mut().for_each(|r| {
+                    collector.reg_use(r);
+                });
             }
             Rets { rets } => {
                 for p in rets {
@@ -133,7 +134,6 @@ impl MachInst for MInst {
             | Args { .. }
             | Ret { .. }
             | Rets { .. }
-            | Add { .. }
             | Const { .. }
             | Store { .. }
             | Load { .. }
@@ -144,7 +144,8 @@ impl MachInst for MInst {
             | JumpIssue { .. }
             | BranchIssue { .. }
             | JumpTrigger { .. }
-            | ImmJump { .. } => None,
+            | ImmJump { .. }
+            | Alu1 { .. } => None,
             Echo { rds, rss, .. } => {
                 if rds.len() == 1 && rds.len() == rss.len() {
                     Some((rds[0], rss[0]))
@@ -268,18 +269,13 @@ impl MInst {
             Nop => "Nop".into(),
             Ret { trig } => join("Ret", once(format!("trig: {}", trig))),
             Rets { rets } => join("Rets", rets.iter().map(|p| reg_name(p.vreg))),
-            Add { rd, rs1, rs2, out } => join(
-                "Add",
-                [
-                    "rd:".into(),
-                    wreg_name(*rd),
-                    "rs1:".into(),
-                    reg_name(*rs1),
-                    "rs2:".into(),
-                    reg_name(*rs2),
-                    format!("out: {}", out),
-                ]
-                .into_iter(),
+            Alu1 { var, rd, rss, out } => join(
+                "Alu1",
+                [format!("var: {:?}", var), wreg_name(*rd)]
+                    .into_iter()
+                    .chain(once("rss:".into()))
+                    .chain(rss.iter().map(|r| reg_name(*r)))
+                    .chain(once(format!("out: {:?}", out))),
             ),
             Const { rd, imm } => join(
                 "Const",
@@ -413,14 +409,14 @@ impl MInst {
             Nop | Ret { .. } | Args { .. } | Const { .. } | JumpIssue { .. } | ImmJump { .. } => {
                 vec![]
             }
-            Add { rs1, rs2, .. } | Reorder { rs1, rs2, .. } => {
+            Reorder { rs1, rs2, .. } => {
                 vec![rs1, rs2]
             }
             Rets { rets } => rets
                 .iterate()
                 .map(|p| reference([(p.vreg)]))
                 .collect::<Vec<_>>(),
-            Echo { rss, .. } => rss.iterate().collect::<Vec<_>>(),
+            Echo { rss, .. } | Alu1 { rss, .. } => rss.iterate().collect::<Vec<_>>(),
             Duplicate { rs, .. } => vec![rs],
             Store { rd, rs } => vec![rd, rs],
             Load { rs, .. } => vec![rs],
@@ -448,12 +444,12 @@ impl MInst {
             | Store { .. }
             | JumpTrigger { .. }
             | ImmJump { .. } => vec![],
-            Add { rd, .. } | Load { rd, .. } => {
-                vec![rd.to_reg()]
-            }
             Echo { rds, .. } => rds.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>(),
             Duplicate { rd1, rd2, .. } | Reorder { rd1, rd2, .. } => {
                 vec![rd1.to_reg(), rd2.to_reg()]
+            }
+            Alu1 { rd, .. } | Load { rd, .. } => {
+                vec![rd.to_reg()]
             }
             Call { link, .. } | JumpIssue { link, .. } | BranchIssue { link, .. } => {
                 vec![link.to_reg()]
