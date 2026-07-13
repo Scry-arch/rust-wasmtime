@@ -316,7 +316,7 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>) {
                     .collect::<HashMap<_, _>>();
 
                 match inst {
-                    MInst::Add { out, .. } | MInst::Load { out, .. } => {
+                    MInst::Alu1 { out, .. } | MInst::Load { out, .. } => {
                         *out = ref_dists[&0];
                     }
                     MInst::Echo { outs, .. } => outs

@@ -2,9 +2,19 @@
 (type WritableRegVec (primitive WritableRegVec))
 (type U16Vec (primitive U16Vec))
 (type MachLabelVec (primitive MachLabelVec))
+(type AluVariant (primitive AluVariant))
 
 (decl gen_machlabel (MachLabelSlice) MachLabel)
 (extern constructor gen_machlabel gen_machlabel)
+
+;; Create an empty RegVec
+(decl regvec_empty () RegVec)
+(extern constructor regvec_empty regvec_empty)
+
+;; Add a Reg to RegVec
+(decl regvec_push (RegVec Reg) RegVec)
+(extern constructor regvec_push regvec_push)
+
 
 ;; Instruction formats.
 (type MInst
@@ -38,13 +48,6 @@
       (link Reg)         ;; Link to the call instruction, not actually used
       (rets CallRetList) ;; Return operands
       (args CallArgList) ;; call arguments
-    )
-
-    (Add
-      (rd WritableReg)
-      (rs1 Reg)
-      (rs2 Reg)
-      (out u16) ;; Output reference
     )
 
     (Const
@@ -108,6 +111,14 @@
       (link Reg)          ;; Links to the issue instruction, not actually used
       (args RegVec)       ;; Block call arguments
     )
+
+    ;; Single-output ALU instructions
+    (Alu1
+      (var AluVariant)
+      (rd WritableReg)
+      (rss RegVec)
+      (out u16) ;; Output reference
+    )
   )
 )
 
@@ -126,12 +137,37 @@
   )
 )
 
+(decl alu1_add () AluVariant)
+(extern constructor alu1_add alu1_add)
+
 (decl add_rrr (Reg Reg) Reg)
 (rule
   (add_rrr src1 src2)
   (let
     ( (dst WritableReg (temp_writable_reg $I64))
-      (_ Unit (emit (MInst.Add dst src1 src2 0)))
+      (v0 RegVec (regvec_empty))
+      (v1 RegVec (regvec_push v0 src1))
+      (v2 RegVec (regvec_push v1 src2))
+      (_ Unit (emit (MInst.Alu1 (alu1_add) dst v2 0)))
+    )
+    dst
+  )
+)
+
+;; Convert IntCC to comparison ALU instruction
+(decl cc_to_alu1 (IntCC) AluVariant)
+(extern constructor cc_to_alu1 cc_to_alu1)
+
+(decl icmp_crrr (IntCC Reg Reg) Reg)
+(rule
+  (icmp_crrr cc lhs rhs)
+  (let
+    ( (dst WritableReg (temp_writable_reg $I64))
+      (v0 RegVec (regvec_empty))
+      (v1 RegVec (regvec_push v0 lhs))
+      (v2 RegVec (regvec_push v1 rhs))
+
+      (_ Unit (emit (MInst.Alu1 (cc_to_alu1 cc) dst v2 0)))
     )
     dst
   )

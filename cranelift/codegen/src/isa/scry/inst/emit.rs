@@ -4,7 +4,7 @@ use crate::ir::{self};
 use crate::isa::scry::inst::*;
 use crate::isa::scry::lower::isle::generated_code::MInst;
 use cranelift_control::ControlPlane;
-use scry_isa::{AluVariant, Bits, CallVariant, Instruction};
+use scry_isa::{Bits, CallVariant, Instruction};
 
 pub struct EmitInfo {
     #[expect(dead_code, reason = "may want to be used in the future")]
@@ -82,9 +82,7 @@ impl MachInstEmit for MInst {
             Ret { trig } => {
                 Instruction::Call(CallVariant::Ret, Bits::try_from(*trig as i32).unwrap())
             }
-            Add { out, .. } => {
-                Instruction::Alu(AluVariant::Add, Bits::try_from(*out as i32).unwrap())
-            }
+            Alu1 { var, out, .. } => Instruction::Alu(*var, Bits::try_from(*out as i32).unwrap()),
             Const { imm, .. } => Instruction::Constant(
                 Bits::try_from(0).unwrap(),
                 Bits::try_from(imm.bits() as i32).unwrap(),
