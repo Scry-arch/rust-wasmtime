@@ -9,13 +9,11 @@
 
 
 (rule
-    (lower (iconst imm))
-    (const_r imm)
+    (lower (has_type ty (iconst imm)))
+    (const_r ty imm)
 )
 
 (rule
-    ;;(lower (iadd lhs (iconst imm)))
-    ;;(add_rrr lhs (mat_imm_i64 imm))
     (lower (iadd lhs rhs))
     (add_rrr lhs rhs)
 )
@@ -23,6 +21,11 @@
 (rule
     (lower (icmp cc lhs rhs))
     (icmp_crrr cc lhs rhs)
+)
+
+(rule
+    (lower (has_type ty (uextend rs)))
+    (uext_rr ty rs)
 )
 
 (rule

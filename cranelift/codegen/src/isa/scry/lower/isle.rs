@@ -5,7 +5,7 @@ pub mod generated_code;
 use generated_code::MInst;
 
 // Types that the generated ISLE code uses via `use super::*`.
-use crate::isa::scry::ScryBackend;
+use crate::isa::scry::{IsaType, ScryBackend};
 use crate::machinst::Reg;
 use crate::machinst::{MachInst, isle::*};
 use crate::machinst::{VCodeConstant, VCodeConstantData};
@@ -85,27 +85,6 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     fn gen_machlabel(&mut self, labels: &MachLabelSlice) -> MachLabel {
         assert!(labels.len() >= 1);
         labels[0].clone()
-    }
-
-    fn regvec_empty(&mut self) -> RegVec {
-        RegVec::new()
-    }
-
-    fn regvec_push(&mut self, mut vec: RegVec, reg: Reg) -> RegVec {
-        vec.push(reg);
-        vec
-    }
-
-    fn cc_to_alu1(&mut self, cc: &IntCC) -> AluVariant {
-        use IntCC::*;
-        match cc {
-            Equal => AluVariant::Equal,
-            _ => unimplemented!(),
-        }
-    }
-
-    fn alu1_add(&mut self) -> AluVariant {
-        AluVariant::Add
     }
 
     fn block_call_regs(&mut self, block_call: BlockCall) -> RegVec {
