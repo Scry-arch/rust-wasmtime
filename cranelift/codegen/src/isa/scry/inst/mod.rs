@@ -101,7 +101,7 @@ impl MachInst for MInst {
                 collector.reg_use(rd);
                 collector.reg_use(rs);
             }
-            Load { rd, rs, .. } | UnsignedExt { rd, rs } | Cast { rd, rs, .. } => {
+            Load { rd, rs, .. } | Extend { rd, rs, .. } | Cast { rd, rs, .. } => {
                 collector.reg_def(rd);
                 collector.reg_use(rs);
             }
@@ -153,7 +153,7 @@ impl MachInst for MInst {
             | Alu1 { .. }
             | IntAdd { .. }
             | IntCmp { .. }
-            | UnsignedExt { .. }
+            | Extend { .. }
             | Cast { .. } => None,
             Echo { rds, rss, .. } => {
                 if rds.len() == 1 && rds.len() == rss.len() {
@@ -286,9 +286,15 @@ impl MInst {
                     .chain(rss.iter().map(|r| reg_name(*r)))
                     .chain(once(format!("out: {:?}", out))),
             ),
-            Const { rd, imm } => join(
+            Const { ty, rd, imm } => join(
                 "Const",
-                ["rd:".into(), wreg_name(*rd), format!("imm: {}", imm.bits())].into_iter(),
+                [
+                    format!("ty: {:?}", ty),
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    format!("imm: {}", imm.bits()),
+                ]
+                .into_iter(),
             ),
             Echo { rds, rss, outs } => join(
                 "Echo",
@@ -366,9 +372,16 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
-            UnsignedExt { rd, rs } => join(
-                "UnsignedExt",
-                ["rd:".into(), wreg_name(*rd), "rs:".into(), reg_name(*rs)].into_iter(),
+            Extend { sign, rd, rs } => join(
+                "Extend",
+                [
+                    format!("sign: {}", sign),
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    "rs:".into(),
+                    reg_name(*rs),
+                ]
+                .into_iter(),
             ),
             IntAdd { rd, rs1, rs2 } => join(
                 "IntAdd",
@@ -468,7 +481,7 @@ impl MInst {
                 .collect::<Vec<_>>(),
             Echo { rss, .. } | Alu1 { rss, .. } => rss.iterate().collect::<Vec<_>>(),
             IntAdd { rs1, rs2, .. } | IntCmp { rs1, rs2, .. } => vec![rs1, rs2],
-            Duplicate { rs, .. } | Load { rs, .. } | UnsignedExt { rs, .. } | Cast { rs, .. } => {
+            Duplicate { rs, .. } | Load { rs, .. } | Extend { rs, .. } | Cast { rs, .. } => {
                 vec![rs]
             }
             Store { rd, rs } => vec![rd, rs],
@@ -504,7 +517,7 @@ impl MInst {
             | Load { rd, .. }
             | IntAdd { rd, .. }
             | IntCmp { rd, .. }
-            | UnsignedExt { rd, .. }
+            | Extend { rd, .. }
             | Cast { rd, .. } => {
                 vec![rd.to_reg()]
             }

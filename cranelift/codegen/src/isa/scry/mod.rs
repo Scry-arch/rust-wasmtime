@@ -75,6 +75,37 @@ impl IsaType {
         }
     }
 
+    fn is_known(&self) -> bool {
+        match self {
+            IsaType::Known(_) => true,
+            _ => false,
+        }
+    }
+
+    fn is_signed_int(&self) -> bool {
+        match self {
+            IsaType::Known(t) => t.is_signed_int(),
+            _ => false,
+        }
+    }
+
+    fn is_unsigned_int(&self) -> bool {
+        match self {
+            IsaType::Known(t) => t.is_unsigned_int(),
+            _ => false,
+        }
+    }
+
+    fn is_same_signedness(&self, other: &IsaType) -> bool {
+        match (self, other) {
+            (IsaType::Known(a), IsaType::Known(b)) => {
+                (a.is_unsigned_int() && b.is_unsigned_int())
+                    || (a.is_signed_int() && b.is_signed_int())
+            }
+            _ => false,
+        }
+    }
+
     fn refine(self, t: IsaType) -> Option<IsaType> {
         use IsaType::*;
 
@@ -88,6 +119,21 @@ impl IsaType {
             }
         } else {
             None
+        }
+    }
+
+    fn new_known_int(size_pow2: u8, signed: bool) -> IsaType {
+        if signed {
+            IsaType::Known(scry_isa::Type::Int(size_pow2))
+        } else {
+            IsaType::Known(scry_isa::Type::Uint(size_pow2))
+        }
+    }
+
+    fn get_known(&self) -> Option<scry_isa::Type> {
+        match self {
+            IsaType::Known(t) => Some(*t),
+            _ => None,
         }
     }
 }
@@ -528,21 +574,21 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                     type_map.insert(*rs2, refined);
                     type_map.insert(rd.to_reg(), IsaType::Known(scry_isa::Type::Uint(0)));
                 }
-                UnsignedExt { rd, rs } => {
+                Extend { sign, rd, rs } => {
                     let rs_t = type_map.get(rs).unwrap();
                     let rd_t = type_to_isatype(vreg_type(rd.to_reg()));
 
                     assert!(rs_t.size_pow2() < rd_t.size_pow2());
 
-                    // Both operands need to be unsigned
+                    // Both operands need to be set to the specified signedness
                     type_map.insert(
                         *rs,
-                        rs_t.refine(IsaType::Known(scry_isa::Type::Uint(rs_t.size_pow2())))
+                        rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), *sign))
                             .unwrap(),
                     );
                     type_map.insert(
                         rd.to_reg(),
-                        rd_t.refine(IsaType::Known(scry_isa::Type::Uint(rd_t.size_pow2())))
+                        rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), *sign))
                             .unwrap(),
                     );
                 }
@@ -612,11 +658,12 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                             out: 0,
                         };
                     }
-                    MInst::UnsignedExt { rd, rs } => {
+                    MInst::Extend { rd, rs, .. } => {
                         let rd_t = type_map.get(&rd.to_reg()).unwrap();
                         let rs_t = type_map.get(rs).unwrap();
 
                         assert!(rd_t != rs_t);
+                        assert!(rd_t.is_same_signedness(rs_t));
 
                         *inst = MInst::Cast {
                             rd: *rd,
@@ -624,6 +671,13 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                             rs: *rs,
                             out: 0,
                         };
+                    }
+                    MInst::Const { ty, rd, .. } => {
+                        let rd_t = type_map.get(&rd.to_reg()).unwrap();
+
+                        assert!(rd_t.is_int());
+
+                        *ty = *rd_t;
                     }
                     _ => (),
                 }

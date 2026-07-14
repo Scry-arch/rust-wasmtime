@@ -37,7 +37,8 @@
       (rs2 Reg)
     )
 
-    (UnsignedExt
+    (Extend
+      (sign bool)
       (rd WritableReg)
       (rs Reg)
     )
@@ -61,6 +62,7 @@
     )
 
     (Const
+      (ty IsaType)
       (rd WritableReg)
       (imm Imm64)
     )
@@ -145,12 +147,15 @@
 ;; Instruction-specific lowerings
 ;;
 
+(decl isatype_invalid () IsaType)
+(extern constructor isatype_invalid isatype_invalid)
+
 (decl const_r (Type Imm64) Reg)
 (rule
   (const_r ty imm)
   (let
     ( (dst WritableReg (temp_writable_reg ty))
-      (_ Unit (emit (MInst.Const dst imm)))
+      (_ Unit (emit (MInst.Const (isatype_invalid) dst imm)))
     )
     dst
   )
@@ -178,12 +183,12 @@
   )
 )
 
-(decl uext_rr (Type Reg) Reg)
+(decl ext_brr (bool Type Reg) Reg)
 (rule
-  (uext_rr ty rs)
+  (ext_brr sign ty rs)
   (let
     ( (dst WritableReg (temp_writable_reg ty))
-      (_ Unit (emit (MInst.UnsignedExt dst rs)))
+      (_ Unit (emit (MInst.Extend sign dst rs)))
     )
     dst
   )
