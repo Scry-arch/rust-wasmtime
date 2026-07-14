@@ -75,7 +75,7 @@ impl MachInstEmit for MInst {
     fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
         use MInst::*;
         let instr = match self {
-            Rets { .. } | ImmJump { .. } | IntCmp { .. } | IntAdd { .. } | UnsignedExt { .. } => {
+            Rets { .. } | ImmJump { .. } | IntCmp { .. } | IntAdd { .. } | Extend { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
             Args { .. } | CallArgs { .. } | JumpTrigger { .. } => return,
@@ -84,10 +84,19 @@ impl MachInstEmit for MInst {
                 Instruction::Call(CallVariant::Ret, Bits::try_from(*trig as i32).unwrap())
             }
             Alu1 { var, out, .. } => Instruction::Alu(*var, Bits::try_from(*out as i32).unwrap()),
-            Const { imm, .. } => Instruction::Constant(
-                Bits::try_from(0).unwrap(),
-                Bits::try_from(imm.bits() as i32).unwrap(),
-            ),
+            Const { ty, imm, .. } => {
+                let ty = if let Some(ty) = ty.get_known() {
+                    ty
+                } else if ty.is_int() {
+                    scry_isa::Type::Int(ty.size_pow2())
+                } else {
+                    unreachable!("Type: {:?}", ty)
+                };
+                Instruction::Constant(
+                    ty.try_into().unwrap(),
+                    Bits::try_from(imm.bits() as i32).unwrap(),
+                )
+            }
             Echo { rds, outs, .. } => {
                 assert_eq!(
                     rds.len(),
@@ -129,16 +138,10 @@ impl MachInstEmit for MInst {
                 scry_isa::Type::Int(2).try_into().unwrap(),
                 Bits::try_from(*out as i32).unwrap(),
             ),
-            Cast { out, ty, .. } => {
-                let ty = match ty {
-                    IsaType::Known(t) => t,
-                    _ => unimplemented!("ty: {:?}", ty),
-                };
-                Instruction::Cast(
-                    ty.clone().try_into().unwrap(),
-                    Bits::try_from(*out as i32).unwrap(),
-                )
-            }
+            Cast { out, ty, .. } => Instruction::Cast(
+                ty.get_known().unwrap().try_into().unwrap(),
+                Bits::try_from(*out as i32).unwrap(),
+            ),
             Call { trig, .. } => {
                 Instruction::Call(CallVariant::Call, Bits::try_from(*trig as i32).unwrap())
             }

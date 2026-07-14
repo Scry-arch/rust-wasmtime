@@ -25,7 +25,12 @@
 
 (rule
     (lower (has_type ty (uextend rs)))
-    (uext_rr ty rs)
+    (ext_brr false ty rs)
+)
+
+(rule
+    (lower (has_type ty (sextend rs)))
+    (ext_brr true ty rs)
 )
 
 (rule

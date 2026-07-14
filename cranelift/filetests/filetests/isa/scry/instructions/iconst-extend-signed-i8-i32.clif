@@ -1,0 +1,15 @@
+test interpret
+test run
+target scry32
+
+function %add_to_const_signed(i32) -> i32 {
+block0(v0: i32):
+	v1 = iconst.i8 -1
+	v2 = sextend.i32 v1
+	v3 = iadd v0,v2
+    return v3
+}
+
+; run: %add_to_const_signed(0) == -1
+; run: %add_to_const_signed(10) == 9
+; run: %add_to_const_signed(-1) == -2

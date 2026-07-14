@@ -87,6 +87,10 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
         labels[0].clone()
     }
 
+    fn isatype_invalid(&mut self) -> IsaType {
+        IsaType::Invalid
+    }
+
     fn block_call_regs(&mut self, block_call: BlockCall) -> RegVec {
         log::trace!("block_call_regs: {:?}", block_call);
         let args: Vec<_> = block_call
