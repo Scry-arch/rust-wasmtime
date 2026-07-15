@@ -1,7 +1,6 @@
 //! Riscv64 ISA: binary code emission.
 
 use crate::ir::{self};
-use crate::isa::scry::IsaType;
 use crate::isa::scry::inst::*;
 use crate::isa::scry::lower::isle::generated_code::MInst;
 use cranelift_control::ControlPlane;
@@ -75,7 +74,7 @@ impl MachInstEmit for MInst {
     fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
         use MInst::*;
         let instr = match self {
-            Rets { .. } | ImmJump { .. } | IntCmp { .. } | IntAdd { .. } | Extend { .. } => {
+            Rets { .. } | ImmJump { .. } | IntCmp { .. } | IntAddWrap { .. } | Resize { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
             Args { .. } | CallArgs { .. } | JumpTrigger { .. } => return,
@@ -84,6 +83,12 @@ impl MachInstEmit for MInst {
                 Instruction::Call(CallVariant::Ret, Bits::try_from(*trig as i32).unwrap())
             }
             Alu1 { var, out, .. } => Instruction::Alu(*var, Bits::try_from(*out as i32).unwrap()),
+            Alu2 {
+                var, out_var, outs, ..
+            } => {
+                assert_eq!(outs.len(), 1);
+                Instruction::Alu2(*var, *out_var, Bits::try_from(outs[0] as i32).unwrap())
+            }
             Const { ty, imm, .. } => {
                 let ty = if let Some(ty) = ty.get_known() {
                     ty
@@ -92,10 +97,17 @@ impl MachInstEmit for MInst {
                 } else {
                     unreachable!("Type: {:?}", ty)
                 };
-                Instruction::Constant(
-                    ty.try_into().unwrap(),
-                    Bits::try_from(imm.bits() as i32).unwrap(),
-                )
+
+                let mut bits: i64 = imm.bits();
+                // if ty.is_signed_int() && ty.size_pow2() < 3 {
+                //     // Immediate is signed and smaller than i64
+                //     // Therefore, it must be sign-extended into i64
+                //     let shift_amount = i64::BITS - (8*(2u32.pow(ty.size_pow2() as u32)));
+                //     bits <<= shift_amount; // Shift up to the most significant bit
+                //     bits >>= shift_amount; // Right shift will use arithmetic shift
+                // }
+
+                Instruction::Constant(ty.try_into().unwrap(), Bits::try_from(bits as i32).unwrap())
             }
             Echo { rds, outs, .. } => {
                 assert_eq!(
@@ -139,7 +151,10 @@ impl MachInstEmit for MInst {
                 Bits::try_from(*out as i32).unwrap(),
             ),
             Cast { out, ty, .. } => Instruction::Cast(
-                ty.get_known().unwrap().try_into().unwrap(),
+                ty.get_known()
+                    .unwrap_or(scry_isa::Type::Uint(ty.size_pow2()))
+                    .try_into()
+                    .unwrap(),
                 Bits::try_from(*out as i32).unwrap(),
             ),
             Call { trig, .. } => {

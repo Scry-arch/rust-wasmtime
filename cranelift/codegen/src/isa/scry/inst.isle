@@ -3,10 +3,22 @@
 (type U16Vec (primitive U16Vec))
 (type MachLabelVec (primitive MachLabelVec))
 (type AluVariant (primitive AluVariant))
+(type Alu2Variant (primitive Alu2Variant))
+(type Alu2OutputVariant (primitive Alu2OutputVariant))
 (type IsaType (primitive IsaType))
+
+
 
 (decl gen_machlabel (MachLabelSlice) MachLabel)
 (extern constructor gen_machlabel gen_machlabel)
+
+(type ResizeVariant
+  (enum
+    (Uextend) ;; Unsigned extend
+    (Sextend) ;; Signed extend
+    (Reduce)  ;; Reduce
+  )
+)
 
 ;; Instruction formats.
 (type MInst
@@ -24,7 +36,7 @@
       (rets VecRetPair)
     )
 
-    (IntAdd
+    (IntAddWrap
       (rd WritableReg)
       (rs1 Reg)
       (rs2 Reg)
@@ -37,8 +49,8 @@
       (rs2 Reg)
     )
 
-    (Extend
-      (sign bool)
+    (Resize
+      (var ResizeVariant)
       (rd WritableReg)
       (rs Reg)
     )
@@ -139,7 +151,14 @@
       (out u16) ;; Output reference
     )
 
-
+    ;; Single-output ALU instructions
+    (Alu2
+      (var Alu2Variant)
+      (out_var Alu2OutputVariant)
+      (rds WritableRegVec)
+      (rss RegVec)
+      (outs U16Vec) ;; Output reference
+    )
   )
 )
 
@@ -166,7 +185,7 @@
   (add_rrr src1 src2)
   (let
     ( (dst WritableReg (temp_writable_reg $I64))
-      (_ Unit (emit (MInst.IntAdd  dst src1 src2)))
+      (_ Unit (emit (MInst.IntAddWrap  dst src1 src2)))
     )
     dst
   )
@@ -183,12 +202,12 @@
   )
 )
 
-(decl ext_brr (bool Type Reg) Reg)
+(decl resize_vrr (ResizeVariant Type Reg) Reg)
 (rule
-  (ext_brr sign ty rs)
+  (resize_vrr var ty rs)
   (let
     ( (dst WritableReg (temp_writable_reg ty))
-      (_ Unit (emit (MInst.Extend sign dst rs)))
+      (_ Unit (emit (MInst.Resize var dst rs)))
     )
     dst
   )

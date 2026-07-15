@@ -4,7 +4,7 @@ use crate::CodegenError;
 use crate::dominator_tree::DominatorTree;
 use crate::ir::pcc;
 use crate::ir::{Function, Type};
-use crate::isa::scry::inst::{EmitInfo, MInst};
+use crate::isa::scry::inst::{EmitInfo, MInst, ResizeVariant};
 use crate::isa::scry::settings as scry_settings;
 use crate::isa::unwind::systemv;
 use crate::isa::{
@@ -31,7 +31,7 @@ use graphene::core::Graph;
 use graphene::core::GraphMut;
 use graphene::core::property::Rooted;
 use regalloc2::Function as RegFunc;
-use scry_isa::AluVariant;
+use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
 use std::collections::{HashMap, HashSet};
 use std::iter::once;
 use target_lexicon::{Architecture, Triple};
@@ -418,7 +418,7 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>) {
                     MInst::Alu1 { out, .. } | MInst::Load { out, .. } | MInst::Cast { out, .. } => {
                         *out = ref_dists[&0];
                     }
-                    MInst::Echo { outs, .. } => outs
+                    MInst::Echo { outs, .. } | MInst::Alu2 { outs, .. } => outs
                         .iter_mut()
                         .enumerate()
                         .for_each(|(i, out)| *out = ref_dists[&i]),
@@ -535,9 +535,11 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
         }
 
         for inst in bb.inst.iter() {
+            log::trace!("Inst: {:?}", inst);
+            log::trace!("Map: {:?}", type_map);
             use MInst::*;
             match inst {
-                IntAdd { rd, rs1, rs2 } => {
+                IntAddWrap { rd, rs1, rs2 } => {
                     let t1 = type_map.get(rs1).unwrap();
                     let t2 = type_map.get(rs2).unwrap();
 
@@ -574,7 +576,14 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                     type_map.insert(*rs2, refined);
                     type_map.insert(rd.to_reg(), IsaType::Known(scry_isa::Type::Uint(0)));
                 }
-                Extend { sign, rd, rs } => {
+                Resize { var, rd, rs }
+                    if *var == ResizeVariant::Uextend || *var == ResizeVariant::Sextend =>
+                {
+                    let sign = match var {
+                        ResizeVariant::Uextend => false,
+                        ResizeVariant::Sextend => true,
+                        _ => unreachable!(),
+                    };
                     let rs_t = type_map.get(rs).unwrap();
                     let rd_t = type_to_isatype(vreg_type(rd.to_reg()));
 
@@ -583,14 +592,56 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                     // Both operands need to be set to the specified signedness
                     type_map.insert(
                         *rs,
-                        rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), *sign))
+                        rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), sign))
                             .unwrap(),
                     );
                     type_map.insert(
                         rd.to_reg(),
-                        rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), *sign))
+                        rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), sign))
                             .unwrap(),
                     );
+                }
+                Resize {
+                    var: ResizeVariant::Reduce,
+                    rd,
+                    rs,
+                } => {
+                    let rs_t = type_map.get(rs).unwrap();
+                    let rd_t = type_to_isatype(vreg_type(rd.to_reg()));
+
+                    assert!(rs_t.size_pow2() > rd_t.size_pow2());
+
+                    if rs_t.is_same_signedness(&rd_t) {
+                        // They are the same, just assign rd
+                        type_map.insert(rd.to_reg(), rd_t);
+                    } else if rs_t.is_known() && rd_t.is_known() {
+                        panic!(
+                            "Incompatible type requirements: rs_t {:?}, rd_t {:?}",
+                            rs_t, rd_t
+                        );
+                    } else if rs_t.is_known() || rd_t.is_known() {
+                        // One is known, so use its signedness
+                        let sign = rs_t.is_signed_int() || rd_t.is_signed_int();
+                        type_map.insert(
+                            *rs,
+                            rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), sign))
+                                .unwrap(),
+                        );
+                        type_map.insert(
+                            rd.to_reg(),
+                            rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), sign))
+                                .unwrap(),
+                        );
+                    } else {
+                        type_map.insert(
+                            *rs,
+                            rs_t.refine(IsaType::Integer(rs_t.size_pow2())).unwrap(),
+                        );
+                        type_map.insert(
+                            rd.to_reg(),
+                            rd_t.refine(IsaType::Integer(rd_t.size_pow2())).unwrap(),
+                        );
+                    }
                 }
                 Const { rd, .. } => {
                     type_map.insert(rd.to_reg(), type_to_isatype(vreg_type(rd.to_reg())));
@@ -635,54 +686,53 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
 
     // Resolve type specific instructions into Scry instructions
     for (_, bb) in cfg.0.all_vertices_weighted_mut() {
-        'a: loop {
-            for (_, inst) in bb.inst.iter_mut().enumerate() {
-                match inst {
-                    MInst::IntAdd { rd, rs1, rs2 } => {
-                        *inst = MInst::Alu1 {
-                            var: AluVariant::Add,
-                            rd: *rd,
-                            rss: vec![*rs1, *rs2],
-                            out: 0,
-                        };
-                    }
-                    MInst::IntCmp { cc, rd, rs1, rs2 } => {
-                        let var = match cc {
-                            IntCC::Equal => AluVariant::Equal,
-                            _ => unimplemented!(),
-                        };
-                        *inst = MInst::Alu1 {
-                            var,
-                            rd: *rd,
-                            rss: vec![*rs1, *rs2],
-                            out: 0,
-                        };
-                    }
-                    MInst::Extend { rd, rs, .. } => {
-                        let rd_t = type_map.get(&rd.to_reg()).unwrap();
-                        let rs_t = type_map.get(rs).unwrap();
-
-                        assert!(rd_t != rs_t);
-                        assert!(rd_t.is_same_signedness(rs_t));
-
-                        *inst = MInst::Cast {
-                            rd: *rd,
-                            ty: *rd_t,
-                            rs: *rs,
-                            out: 0,
-                        };
-                    }
-                    MInst::Const { ty, rd, .. } => {
-                        let rd_t = type_map.get(&rd.to_reg()).unwrap();
-
-                        assert!(rd_t.is_int());
-
-                        *ty = *rd_t;
-                    }
-                    _ => (),
+        for (_, inst) in bb.inst.iter_mut().enumerate() {
+            match inst {
+                MInst::IntAddWrap { rd, rs1, rs2 } => {
+                    *inst = MInst::Alu2 {
+                        var: Alu2Variant::Add,
+                        out_var: Alu2OutputVariant::Low,
+                        rds: vec![*rd],
+                        rss: vec![*rs1, *rs2],
+                        outs: vec![0],
+                    };
                 }
+                MInst::IntCmp { cc, rd, rs1, rs2 } => {
+                    let var = match cc {
+                        IntCC::Equal => AluVariant::Equal,
+                        _ => unimplemented!(),
+                    };
+                    *inst = MInst::Alu1 {
+                        var,
+                        rd: *rd,
+                        rss: vec![*rs1, *rs2],
+                        out: 0,
+                    };
+                }
+                MInst::Resize { rd, rs, var } => {
+                    let rd_t = type_map.get(&rd.to_reg()).unwrap();
+                    let rs_t = type_map.get(rs).unwrap();
+
+                    assert_ne!(rd_t, rs_t);
+                    assert!(*var == ResizeVariant::Reduce || rd_t.is_same_signedness(rs_t));
+                    assert!(*var != ResizeVariant::Reduce || (rd_t.is_int() && rs_t.is_int()));
+
+                    *inst = MInst::Cast {
+                        rd: *rd,
+                        ty: *rd_t,
+                        rs: *rs,
+                        out: 0,
+                    };
+                }
+                MInst::Const { ty, rd, .. } => {
+                    let rd_t = type_map.get(&rd.to_reg()).unwrap();
+
+                    assert!(rd_t.is_int());
+
+                    *ty = *rd_t;
+                }
+                _ => (),
             }
-            break;
         }
     }
 }

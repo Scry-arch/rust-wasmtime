@@ -27,6 +27,8 @@ type RegVec = Vec<Reg>;
 type WritableRegVec = Vec<WritableReg>;
 type U16Vec = Vec<u16>;
 type AluVariant = scry_isa::AluVariant;
+type Alu2Variant = scry_isa::Alu2Variant;
+type Alu2OutputVariant = scry_isa::Alu2OutputVariant;
 
 pub(crate) struct ScryIsleContext<'a, 'b, I, B>
 where
