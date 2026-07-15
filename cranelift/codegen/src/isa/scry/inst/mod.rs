@@ -22,7 +22,7 @@ pub use self::emit::*;
 
 use crate::isa::scry::abi::ScryMachineDeps;
 
-pub use crate::isa::scry::lower::isle::generated_code::MInst;
+pub use crate::isa::scry::lower::isle::generated_code::{MInst, ResizeVariant};
 use crate::opts::{I8, I16, I32, I64};
 
 use byteorder::{ByteOrder, LittleEndian};
@@ -65,7 +65,7 @@ impl MachInst for MInst {
                     collector.reg_use(r);
                 });
             }
-            IntAdd { rd, rs1, rs2 } | IntCmp { rd, rs1, rs2, .. } => {
+            IntAddWrap { rd, rs1, rs2 } | IntCmp { rd, rs1, rs2, .. } => {
                 collector.reg_def(rd);
                 collector.reg_use(rs1);
                 collector.reg_use(rs2);
@@ -78,7 +78,7 @@ impl MachInst for MInst {
             Const { rd, .. } => {
                 collector.reg_def(rd);
             }
-            Echo { rds, rss, .. } => {
+            Echo { rds, rss, .. } | Alu2 { rds, rss, .. } => {
                 rds.iter_mut().for_each(|r| collector.reg_def(r));
                 rss.iter_mut().for_each(|r| {
                     collector.reg_use(r);
@@ -101,7 +101,7 @@ impl MachInst for MInst {
                 collector.reg_use(rd);
                 collector.reg_use(rs);
             }
-            Load { rd, rs, .. } | Extend { rd, rs, .. } | Cast { rd, rs, .. } => {
+            Load { rd, rs, .. } | Resize { rd, rs, .. } | Cast { rd, rs, .. } => {
                 collector.reg_def(rd);
                 collector.reg_use(rs);
             }
@@ -151,9 +151,10 @@ impl MachInst for MInst {
             | JumpTrigger { .. }
             | ImmJump { .. }
             | Alu1 { .. }
-            | IntAdd { .. }
+            | Alu2 { .. }
+            | IntAddWrap { .. }
             | IntCmp { .. }
-            | Extend { .. }
+            | Resize { .. }
             | Cast { .. } => None,
             Echo { rds, rss, .. } => {
                 if rds.len() == 1 && rds.len() == rss.len() {
@@ -280,11 +281,27 @@ impl MInst {
             Rets { rets } => join("Rets", rets.iter().map(|p| reg_name(p.vreg))),
             Alu1 { var, rd, rss, out } => join(
                 "Alu1",
-                [format!("var: {:?}", var), wreg_name(*rd)]
+                [format!("var: {:?}", var), "rd: ".into(), wreg_name(*rd)]
                     .into_iter()
                     .chain(once("rss:".into()))
                     .chain(rss.iter().map(|r| reg_name(*r)))
                     .chain(once(format!("out: {:?}", out))),
+            ),
+            Alu2 {
+                var,
+                out_var,
+                rds,
+                rss,
+                outs,
+            } => join(
+                "Alu2",
+                [format!("var: {:?}, var_out {:?}", var, out_var)]
+                    .into_iter()
+                    .chain(once("rds:".into()))
+                    .chain(rds.iter().map(|r| wreg_name(*r)))
+                    .chain(once("rss:".into()))
+                    .chain(rss.iter().map(|r| reg_name(*r)))
+                    .chain(once(format!("outs: {:?}", outs))),
             ),
             Const { ty, rd, imm } => join(
                 "Const",
@@ -372,10 +389,10 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
-            Extend { sign, rd, rs } => join(
-                "Extend",
+            Resize { var, rd, rs } => join(
+                "Resize",
                 [
-                    format!("sign: {}", sign),
+                    format!("var: {:?}", var),
                     "rd:".into(),
                     wreg_name(*rd),
                     "rs:".into(),
@@ -383,8 +400,8 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
-            IntAdd { rd, rs1, rs2 } => join(
-                "IntAdd",
+            IntAddWrap { rd, rs1, rs2 } => join(
+                "IntAddWrap",
                 [
                     "rd:".into(),
                     wreg_name(*rd),
@@ -479,9 +496,11 @@ impl MInst {
                 .iterate()
                 .map(|p| reference([(p.vreg)]))
                 .collect::<Vec<_>>(),
-            Echo { rss, .. } | Alu1 { rss, .. } => rss.iterate().collect::<Vec<_>>(),
-            IntAdd { rs1, rs2, .. } | IntCmp { rs1, rs2, .. } => vec![rs1, rs2],
-            Duplicate { rs, .. } | Load { rs, .. } | Extend { rs, .. } | Cast { rs, .. } => {
+            Echo { rss, .. } | Alu1 { rss, .. } | Alu2 { rss, .. } => {
+                rss.iterate().collect::<Vec<_>>()
+            }
+            IntAddWrap { rs1, rs2, .. } | IntCmp { rs1, rs2, .. } => vec![rs1, rs2],
+            Duplicate { rs, .. } | Load { rs, .. } | Resize { rs, .. } | Cast { rs, .. } => {
                 vec![rs]
             }
             Store { rd, rs } => vec![rd, rs],
@@ -509,15 +528,17 @@ impl MInst {
             | Store { .. }
             | JumpTrigger { .. }
             | ImmJump { .. } => vec![],
-            Echo { rds, .. } => rds.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>(),
+            Echo { rds, .. } | Alu2 { rds, .. } => {
+                rds.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>()
+            }
             Duplicate { rd1, rd2, .. } | Reorder { rd1, rd2, .. } => {
                 vec![rd1.to_reg(), rd2.to_reg()]
             }
             Alu1 { rd, .. }
             | Load { rd, .. }
-            | IntAdd { rd, .. }
+            | IntAddWrap { rd, .. }
             | IntCmp { rd, .. }
-            | Extend { rd, .. }
+            | Resize { rd, .. }
             | Cast { rd, .. } => {
                 vec![rd.to_reg()]
             }

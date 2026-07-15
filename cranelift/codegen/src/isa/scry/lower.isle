@@ -25,12 +25,17 @@
 
 (rule
     (lower (has_type ty (uextend rs)))
-    (ext_brr false ty rs)
+    (resize_vrr (ResizeVariant.Uextend) ty rs)
 )
 
 (rule
     (lower (has_type ty (sextend rs)))
-    (ext_brr true ty rs)
+    (resize_vrr (ResizeVariant.Sextend)  ty rs)
+)
+
+(rule
+    (lower (has_type ty (ireduce rs)))
+    (resize_vrr (ResizeVariant.Reduce)  ty rs)
 )
 
 (rule

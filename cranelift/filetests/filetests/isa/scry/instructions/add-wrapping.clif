@@ -1,0 +1,23 @@
+test interpret
+test run
+target scry32
+
+function %add_one_i32(i32) -> i32 {
+block1(v0: i32):
+    v1 = iadd_imm v0, 1
+    return v1
+}
+; run: %add_one_i32(0) == 1
+; run: %add_one_i32(100) == 101
+; run: %add_one_i32(-10) == -9
+; run: %add_one_i32(4294967295) == 0
+
+function %add_self(i32) -> i32 {
+block1(v0: i32):
+    v1 = iadd v0, v0
+    return v1
+}
+; run: %add_self(0) == 0
+; run: %add_self(88) == 176
+; run: %add_self(-11) == -22
+; run: %add_self(4294967295) == 4294967294

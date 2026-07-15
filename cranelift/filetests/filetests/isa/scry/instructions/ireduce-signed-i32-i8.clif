@@ -1,0 +1,15 @@
+test interpret
+test run
+target scry32
+
+function %add_one_to_i8(i32) -> i32 {
+block0(v0: i32):
+	v1 = ireduce.i8 v0
+	v2 = iadd_imm v1, 1
+	v3 = sextend.i32 v2
+    return v3
+}
+
+; run: %add_one_to_i8(0) == 1
+; run: %add_one_to_i8(10) == 11
+; run: %add_one_to_i8(255) == 0
