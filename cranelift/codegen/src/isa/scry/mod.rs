@@ -4,6 +4,9 @@ use crate::CodegenError;
 use crate::dominator_tree::DominatorTree;
 use crate::ir::pcc;
 use crate::ir::{Function, Type};
+use crate::isa::scry::inst::MInst::{
+    Const, Duplicate, Echo, IntAddWrap, IntCmp, Load, Reorder, Resize,
+};
 use crate::isa::scry::inst::{EmitInfo, MInst, ResizeVariant};
 use crate::isa::scry::settings as scry_settings;
 use crate::isa::unwind::systemv;
@@ -16,6 +19,7 @@ use crate::machinst::{
     MachTextSectionBuilder, Reg, SigSet, TextSectionBuilder, VCode, VCodeBuildDirection,
     VCodeBuilder, VRegAllocator,
 };
+use crate::opts::IntCC;
 use crate::result::CodegenResult;
 use crate::settings::{self as shared_settings, Flags};
 use crate::timing;
@@ -23,7 +27,9 @@ use crate::trace;
 use crate::{VCodeConstants, ir};
 use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
+use core::borrow::Borrow;
 use core::fmt;
+use core::fmt::{Debug, Formatter};
 use cranelift_control::ControlPlane;
 use graphene::algo::Bfs;
 use graphene::algo::Retainable;
@@ -32,17 +38,15 @@ use graphene::core::GraphMut;
 use graphene::core::property::Rooted;
 use regalloc2::Function as RegFunc;
 use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
-use std::collections::{HashMap, HashSet};
-use std::iter::once;
+use std::collections::{HashMap, HashSet, VecDeque};
 use target_lexicon::{Architecture, Triple};
+use vcode_cfg::*;
 
 mod abi;
 pub(crate) mod inst;
 mod lower;
 mod settings;
 mod vcode_cfg;
-use crate::opts::IntCC;
-use vcode_cfg::*;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum IsaType {
@@ -89,13 +93,6 @@ impl IsaType {
         }
     }
 
-    fn is_unsigned_int(&self) -> bool {
-        match self {
-            IsaType::Known(t) => t.is_unsigned_int(),
-            _ => false,
-        }
-    }
-
     fn is_same_signedness(&self, other: &IsaType) -> bool {
         match (self, other) {
             (IsaType::Known(a), IsaType::Known(b)) => {
@@ -135,6 +132,64 @@ impl IsaType {
             IsaType::Known(t) => Some(*t),
             _ => None,
         }
+    }
+
+    fn as_size_pow2(&self, size: u8) -> Option<IsaType> {
+        match self {
+            IsaType::Invalid => None,
+            IsaType::Integer(_) => Some(IsaType::Integer(size)),
+            IsaType::Known(scry_isa::Type::Int(_)) => {
+                Some(IsaType::Known(scry_isa::Type::Int(size)))
+            }
+            IsaType::Known(scry_isa::Type::Uint(_)) => {
+                Some(IsaType::Known(scry_isa::Type::Uint(size)))
+            }
+        }
+    }
+}
+
+/// Maps registers to IsaTypes
+///
+/// Takes a closure that returns the CLIF type of a register, which is used to assign default types
+/// to registers.
+struct TypeMap<F: Fn(Reg) -> Type> {
+    map: HashMap<Reg, IsaType>,
+    vreg_type: F,
+}
+
+impl<F: Fn(Reg) -> Type> TypeMap<F> {
+    fn new(vreg_type: F) -> Self {
+        Self {
+            map: HashMap::new(),
+            vreg_type,
+        }
+    }
+
+    /// Returns the assigned type of the register or the default type if none was assigned.
+    fn get(&self, reg: Reg) -> IsaType {
+        self.map
+            .get(&reg)
+            .cloned()
+            .unwrap_or(type_to_isatype((self.vreg_type)(reg)))
+    }
+
+    /// Updates the type assigned to the register.
+    ///
+    /// Returns whether the new value is different from the existing value or default if none
+    fn update(&mut self, reg: Reg, ty: IsaType) -> bool {
+        let ty_old = self.get(reg);
+        if ty != ty_old {
+            log::trace!("New type assignment: {:?}({:?}) <- {:?}", reg, ty_old, ty);
+            self.map.insert(reg, ty);
+            return true;
+        }
+        false
+    }
+}
+
+impl<F: Fn(Reg) -> Type> Debug for TypeMap<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        self.map.fmt(f)
     }
 }
 
@@ -510,50 +565,73 @@ fn type_to_isatype(t: Type) -> IsaType {
     }
 }
 
-fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
-    log::trace!("type_resolution");
+fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) -> TypeMap<F> {
+    log::trace!("Type Analysis");
 
-    let mut type_map = HashMap::new();
+    let bb_dfg = cfg.dataflow_graph();
+    let mut type_map = TypeMap::new(vreg_type);
 
-    for (_, bb) in once(cfg.0.root())
-        .chain(Bfs::new(&cfg.0).retain(&cfg.0))
-        .map(|v| (v, cfg.0.vertex_weight(v).unwrap()))
+    // Resolve instruction types in each BB
+    let mut bb_worklist: VecDeque<usize> = VecDeque::new();
+    bb_worklist.push_back(cfg.0.root());
+
+    while let Some((bb_v, bb)) = bb_worklist
+        .pop_front()
+        .map(|bb_v| (bb_v, cfg.0.vertex_weight(bb_v).unwrap()))
     {
-        // Resolve parameters
-        for p in bb.params.iter() {
-            let t = type_to_isatype(vreg_type(*p));
-            let t2 = if let Some(refined) = type_map
-                .get(p)
-                .map(|t2| t.refine(*t2).expect("Block paramter type conflict"))
-            {
-                refined
-            } else {
-                t
+        log::trace!("BB idx: {}", bb_v);
+        let mut changed_regs = HashSet::<Reg>::new();
+
+        let inst_dfg = bb.dataflow_graph();
+        log::trace!("Inst DFG: {:?}", inst_dfg);
+
+        let mut inst_worklist = HashSet::new();
+
+        // All instructions are analyzed at least once
+        inst_worklist.extend(0..bb.inst.len());
+
+        while let Some(inst_idx) = inst_worklist.iter().cloned().next() {
+            inst_worklist.remove(&inst_idx);
+            let inst = &bb.inst[inst_idx];
+            log::trace!("Inst {}: {:?}", inst_idx, inst);
+
+            // Checks if the given type is different from the given registers existing type.
+            // If so, assigns it and updates worklists for instructions and BBs
+            let mut update_changed = |r: &Reg, new_type: IsaType, map: &mut TypeMap<_>| {
+                let refined = map.get(*r).refine(new_type).unwrap();
+                if map.update(*r, refined) {
+                    changed_regs.insert(*r);
+                    inst_dfg
+                        .edges_incident_on(inst_idx)
+                        .filter(|(_, dep_r)| dep_r.borrow() == r)
+                        .for_each(|(dep_i, _)| {
+                            log::trace!("To worklist: {}({:?})", dep_i, bb.inst[dep_i]);
+                            inst_worklist.insert(dep_i);
+                        })
+                }
             };
 
-            type_map.insert(*p, t2);
-        }
-
-        for inst in bb.inst.iter() {
-            log::trace!("Inst: {:?}", inst);
-            log::trace!("Map: {:?}", type_map);
-            use MInst::*;
             match inst {
                 IntAddWrap { rd, rs1, rs2 } => {
-                    let t1 = type_map.get(rs1).unwrap();
-                    let t2 = type_map.get(rs2).unwrap();
+                    let t1 = type_map.get(*rs1);
+                    let t2 = type_map.get(*rs2);
+                    let td = type_map.get(rd.to_reg());
 
-                    let refined = t1.refine(*t2).unwrap();
+                    let refined = t1.refine(t2).unwrap().refine(td).unwrap();
 
-                    type_map.insert(*rs1, refined);
-                    type_map.insert(*rs2, refined);
-                    type_map.insert(rd.to_reg(), refined);
+                    update_changed(rs1, refined, &mut type_map);
+                    update_changed(rs2, refined, &mut type_map);
+                    update_changed(&rd.to_reg(), refined, &mut type_map);
                 }
                 IntCmp { rd, rs1, rs2, cc } => {
-                    let t1 = type_map.get(rs1).unwrap();
-                    let t2 = type_map.get(rs2).unwrap();
+                    let t1 = type_map.get(*rs1);
+                    let t2 = type_map.get(*rs2);
+                    let td = type_map
+                        .get(rd.to_reg())
+                        .refine(IsaType::Known(scry_isa::Type::Uint(0)))
+                        .unwrap();
 
-                    let refined = t1.refine(*t2).unwrap();
+                    let refined = t1.refine(t2).unwrap();
 
                     // Make sure inputs match comparison
                     let refined = match cc {
@@ -572,9 +650,18 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                         _ => refined,
                     };
 
-                    type_map.insert(*rs1, refined);
-                    type_map.insert(*rs2, refined);
-                    type_map.insert(rd.to_reg(), IsaType::Known(scry_isa::Type::Uint(0)));
+                    // Sure inputs have the same signedness (if any) as the output
+
+                    let in_refined = refined
+                        .refine(td.as_size_pow2(refined.size_pow2()).unwrap())
+                        .unwrap();
+                    let out_refined = td
+                        .refine(refined.as_size_pow2(td.size_pow2()).unwrap())
+                        .unwrap();
+
+                    update_changed(rs1, in_refined, &mut type_map);
+                    update_changed(rs2, in_refined, &mut type_map);
+                    update_changed(&rd.to_reg(), out_refined, &mut type_map);
                 }
                 Resize { var, rd, rs }
                     if *var == ResizeVariant::Uextend || *var == ResizeVariant::Sextend =>
@@ -584,21 +671,23 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                         ResizeVariant::Sextend => true,
                         _ => unreachable!(),
                     };
-                    let rs_t = type_map.get(rs).unwrap();
-                    let rd_t = type_to_isatype(vreg_type(rd.to_reg()));
+                    let rs_t = type_map.get(*rs);
+                    let rd_t = type_map.get(rd.to_reg());
 
                     assert!(rs_t.size_pow2() < rd_t.size_pow2());
 
                     // Both operands need to be set to the specified signedness
-                    type_map.insert(
-                        *rs,
+                    update_changed(
+                        rs,
                         rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), sign))
                             .unwrap(),
+                        &mut type_map,
                     );
-                    type_map.insert(
-                        rd.to_reg(),
+                    update_changed(
+                        &rd.to_reg(),
                         rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), sign))
                             .unwrap(),
+                        &mut type_map,
                     );
                 }
                 Resize {
@@ -606,14 +695,14 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                     rd,
                     rs,
                 } => {
-                    let rs_t = type_map.get(rs).unwrap();
-                    let rd_t = type_to_isatype(vreg_type(rd.to_reg()));
+                    let rs_t = type_map.get(*rs);
+                    let rd_t = type_map.get(rd.to_reg());
 
                     assert!(rs_t.size_pow2() > rd_t.size_pow2());
 
                     if rs_t.is_same_signedness(&rd_t) {
                         // They are the same, just assign rd
-                        type_map.insert(rd.to_reg(), rd_t);
+                        update_changed(&rd.to_reg(), rd_t, &mut type_map);
                     } else if rs_t.is_known() && rd_t.is_known() {
                         panic!(
                             "Incompatible type requirements: rs_t {:?}, rd_t {:?}",
@@ -622,67 +711,102 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                     } else if rs_t.is_known() || rd_t.is_known() {
                         // One is known, so use its signedness
                         let sign = rs_t.is_signed_int() || rd_t.is_signed_int();
-                        type_map.insert(
-                            *rs,
+
+                        update_changed(
+                            rs,
                             rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), sign))
                                 .unwrap(),
+                            &mut type_map,
                         );
-                        type_map.insert(
-                            rd.to_reg(),
+                        update_changed(
+                            &rd.to_reg(),
                             rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), sign))
                                 .unwrap(),
+                            &mut type_map,
                         );
                     } else {
-                        type_map.insert(
-                            *rs,
+                        update_changed(
+                            rs,
                             rs_t.refine(IsaType::Integer(rs_t.size_pow2())).unwrap(),
+                            &mut type_map,
                         );
-                        type_map.insert(
-                            rd.to_reg(),
+                        update_changed(
+                            &rd.to_reg(),
                             rd_t.refine(IsaType::Integer(rd_t.size_pow2())).unwrap(),
+                            &mut type_map,
                         );
                     }
                 }
                 Const { rd, .. } => {
-                    type_map.insert(rd.to_reg(), type_to_isatype(vreg_type(rd.to_reg())));
+                    let rd_t = type_map.get(rd.to_reg());
+                    update_changed(&rd.to_reg(), rd_t, &mut type_map);
                 }
                 Echo { rds, rss, .. } => {
                     if rss.len() != 0 {
-                        // This echo handle block arguments
+                        // This echo handles block arguments
                         assert_eq!(rds.len(), rss.len());
                         rss.iter().zip(rds.iter()).for_each(|(rs, rd)| {
-                            type_map.insert(rd.to_reg(), *type_map.get(rs).unwrap());
+                            update_changed(&rd.to_reg(), type_map.get(*rs), &mut type_map);
                         });
                     }
                 }
                 Reorder {
                     rd1, rd2, rs1, rs2, ..
                 } => {
-                    type_map.insert(rd1.to_reg(), *type_map.get(rs1).unwrap());
-                    type_map.insert(rd2.to_reg(), *type_map.get(rs2).unwrap());
+                    update_changed(&rd1.to_reg(), type_map.get(*rs1), &mut type_map);
+                    update_changed(&rd2.to_reg(), type_map.get(*rs2), &mut type_map);
                 }
                 Duplicate { rd1, rd2, rs, .. } => {
-                    let t = *type_map.get(rs).unwrap();
-                    type_map.insert(rd1.to_reg(), t);
-                    type_map.insert(rd2.to_reg(), t);
+                    let rs_t = type_map.get(*rs);
+                    let rd1_t = type_map.get(rd1.to_reg());
+                    let rd2_t = type_map.get(rd2.to_reg());
+
+                    let merged_t = rs_t.refine(rd1_t).unwrap().refine(rd2_t).unwrap();
+
+                    update_changed(rs, merged_t, &mut type_map);
+                    update_changed(&rd1.to_reg(), merged_t, &mut type_map);
+                    update_changed(&rd2.to_reg(), merged_t, &mut type_map);
                 }
                 Load { rd, rs, .. } => {
-                    type_map.insert(
-                        *rs,
+                    update_changed(
+                        rs,
                         type_map
-                            .get(rs)
-                            .expect("Load source missing type")
+                            .get(*rs)
                             .refine(IsaType::Known(scry_isa::Type::Uint(2)))
                             .expect("Load source refine fail"),
+                        &mut type_map,
                     );
-                    type_map.insert(rd.to_reg(), IsaType::Known(scry_isa::Type::Uint(2)));
+                    update_changed(
+                        &rd.to_reg(),
+                        IsaType::Known(scry_isa::Type::Uint(2)),
+                        &mut type_map,
+                    );
                 }
                 _ => (),
             }
         }
-    }
 
-    log::trace!("Type map: {:?}", type_map);
+        // Add any BBs to the worklist if they depend on a register that was updated by this BB
+        for changed_r in changed_regs.into_iter() {
+            for (other_v, weight) in bb_dfg.edges_incident_on(bb_v) {
+                let (_, dep_regs) = weight.borrow();
+                if dep_regs.contains(&changed_r) {
+                    if bb_worklist.iter().all(|v| other_v != *v) {
+                        bb_worklist.push_back(other_v);
+                    }
+                }
+            }
+        }
+    }
+    log::trace!("Resolved types: {:?}", type_map);
+
+    type_map
+}
+
+fn resolve_instruction_types(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
+    let type_map = type_analysis(cfg, vreg_type);
+
+    log::trace!("Resolve instruction types");
 
     // Resolve type specific instructions into Scry instructions
     for (_, bb) in cfg.0.all_vertices_weighted_mut() {
@@ -710,26 +834,26 @@ fn type_resolution(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
                     };
                 }
                 MInst::Resize { rd, rs, var } => {
-                    let rd_t = type_map.get(&rd.to_reg()).unwrap();
-                    let rs_t = type_map.get(rs).unwrap();
+                    let rd_t = type_map.get(rd.to_reg());
+                    let rs_t = type_map.get(*rs);
 
                     assert_ne!(rd_t, rs_t);
-                    assert!(*var == ResizeVariant::Reduce || rd_t.is_same_signedness(rs_t));
+                    assert!(*var == ResizeVariant::Reduce || rd_t.is_same_signedness(&rs_t));
                     assert!(*var != ResizeVariant::Reduce || (rd_t.is_int() && rs_t.is_int()));
 
                     *inst = MInst::Cast {
                         rd: *rd,
-                        ty: *rd_t,
+                        ty: rd_t,
                         rs: *rs,
                         out: 0,
                     };
                 }
                 MInst::Const { ty, rd, .. } => {
-                    let rd_t = type_map.get(&rd.to_reg()).unwrap();
+                    let rd_t = type_map.get(*&rd.to_reg());
 
                     assert!(rd_t.is_int());
 
-                    *ty = *rd_t;
+                    *ty = rd_t;
                 }
                 _ => (),
             }
@@ -785,7 +909,7 @@ impl TargetIsa for ScryBackend {
 
         log::trace!("VCodeCFG: {:?}", cfg);
 
-        type_resolution(&mut cfg, reg_type);
+        resolve_instruction_types(&mut cfg, reg_type);
         insert_duplicates(&mut cfg, &mut new_vreg);
         insert_ref_distances(&mut cfg);
         fix_orderings(&mut cfg, &mut new_vreg);

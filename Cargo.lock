@@ -1723,7 +1723,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 [[package]]
 name = "graphene"
 version = "0.1.5"
-source = "git+https://github.com/emoun/graphene.git#5896221a2a14fbd08408caf547440cabaac39ea8"
+source = "git+https://github.com/emoun/graphene.git#b906bb5997d7b94f5c046e2c13522a6582e9d455"
 dependencies = [
  "delegate",
  "duplicate 2.0.1",
