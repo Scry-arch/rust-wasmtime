@@ -14,13 +14,13 @@
 )
 
 (rule
-    (lower (iadd lhs rhs))
-    (add_rrr lhs rhs)
+    (lower (has_type ty (iadd lhs rhs)))
+    (add_trrr ty lhs rhs)
 )
 
 (rule
-    (lower (icmp cc lhs rhs))
-    (icmp_crrr cc lhs rhs)
+    (lower (has_type ty (icmp cc lhs rhs)))
+    (icmp_tcrrr ty cc lhs rhs)
 )
 
 (rule
@@ -49,8 +49,8 @@
 )
 
 (rule
-    (lower (load flags ptr offset))
-    (ld_rfo ptr flags offset)
+    (lower (has_type ty (load flags ptr offset)))
+    (ld_trfo ty ptr flags offset)
 )
 
 ;; Helper to extract register arguments from BlockCall

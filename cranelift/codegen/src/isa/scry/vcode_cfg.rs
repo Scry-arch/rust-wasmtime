@@ -1,9 +1,10 @@
 use crate::ir::RelSourceLoc;
 use crate::machinst::{BlockIndex, VCode, VCodeBuilder};
 use crate::{Reg, VCodeInst};
-use graphene::common::AdjListGraph;
+use core::fmt::Debug;
+use graphene::common::{AdjListGraph, VertexMapGraph};
 use graphene::core::property::*;
-use graphene::core::{Ensure, Graph, GraphMut};
+use graphene::core::{Directed, Ensure, Graph, GraphMut};
 use hashbrown::HashMap;
 use regalloc2::{Function, OperandKind};
 use std::collections::{HashSet, VecDeque};
@@ -44,16 +45,6 @@ impl<I: VCodeInst> VCodeBB<I> {
         self.reg_op_kind(reg, OperandKind::Def)
     }
 
-    /// Gets the index of the instruction that defines the given register.
-    ///
-    /// May panic if the register is defined multiple times
-    pub fn reg_def(&self, reg: Reg) -> usize {
-        let mut defs = self.reg_defs(reg);
-        let def = defs.next().unwrap();
-        assert!(defs.next().is_none());
-        def
-    }
-
     pub fn inst_defs(&self) -> impl Iterator<Item = (usize, Reg)> {
         self.inst.iter().enumerate().flat_map(|(idx, inst)| {
             let mut defs = vec![];
@@ -64,6 +55,26 @@ impl<I: VCodeInst> VCodeBB<I> {
             });
             defs.into_iter().map(move |inst| (idx, inst))
         })
+    }
+
+    pub fn dataflow_graph(
+        &self,
+    ) -> impl Graph<Vertex = usize, VertexWeight = (), EdgeWeight = Reg, Directedness = Directed> + Debug
+    {
+        let mut dfg = VertexMapGraph::<usize, AdjListGraph<_, _, _>>::new();
+        for (inst_idx, inst) in self.inst.iter().enumerate() {
+            dfg.add_vertex(inst_idx).unwrap();
+
+            inst.clone().get_operands(&mut |r: &mut Reg, _, k, _| {
+                if k == OperandKind::Use {
+                    if let Some(def_inst_idx) = self.reg_defs(*r).next() {
+                        dfg.add_edge_weighted(def_inst_idx, inst_idx, *r).unwrap();
+                    }
+                }
+            })
+        }
+
+        dfg
     }
 }
 
@@ -159,5 +170,59 @@ impl<I: VCodeInst> VCodeCFG<I> {
             builder.push(inst.clone(), RelSourceLoc::default());
         }
         builder.end_bb();
+    }
+
+    /// Returns the dataflow graph over the basic blocks of the given CFG.
+    ///
+    /// The vertices in the graph are the same as the vertices of each BB in the CFG.
+    /// The directed edges go from a registers producer BB to a consumer BB.
+    /// A value may have a different register in the producer than the consumer (e.g., producer branches using r1, but consumer calls it r2)
+    /// All registers referring to the same value will be put on the same edge.
+    ///
+    /// Each edge has an index (referring to the operand position) a set of registers that are the dependency between the blocks.
+    ///
+    pub fn dataflow_graph(
+        &self,
+    ) -> impl Graph<
+        Vertex = usize,
+        VertexWeight = (),
+        EdgeWeight = (usize, HashSet<Reg>),
+        Directedness = Directed,
+    > + Debug {
+        let mut dfg = VertexMapGraph::<usize, AdjListGraph<_, _, _>>::new();
+
+        for (v, bb) in self.0.all_vertices_weighted() {
+            dfg.add_vertex(v).unwrap();
+
+            for (pred, _) in self.0.edges_sinked_in(v) {
+                let pred_bb = self.0.vertex_weight(pred).unwrap();
+
+                assert_eq!(pred_bb.branch_params.len(), bb.params.len());
+
+                for (idx, (out_r, in_r)) in pred_bb
+                    .branch_params
+                    .iter()
+                    .zip(bb.params.iter())
+                    .enumerate()
+                {
+                    let edge = if let Some(edge) =
+                        dfg.edges_between_mut(pred, v).find(|(i, _)| *i == idx)
+                    {
+                        edge
+                    } else {
+                        dfg.add_edge_weighted(pred, v, (idx, HashSet::new()))
+                            .unwrap();
+                        dfg.edges_between_mut(pred, v)
+                            .find(|(i, _)| *i == idx)
+                            .unwrap()
+                    };
+
+                    edge.1.insert(*out_r);
+                    edge.1.insert(*in_r);
+                }
+            }
+        }
+
+        dfg
     }
 }

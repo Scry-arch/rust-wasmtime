@@ -93,21 +93,15 @@ impl MachInstEmit for MInst {
                 let ty = if let Some(ty) = ty.get_known() {
                     ty
                 } else if ty.is_int() {
-                    scry_isa::Type::Int(ty.size_pow2())
+                    scry_isa::Type::Uint(ty.size_pow2())
                 } else {
                     unreachable!("Type: {:?}", ty)
                 };
 
-                let mut bits: i64 = imm.bits();
-                // if ty.is_signed_int() && ty.size_pow2() < 3 {
-                //     // Immediate is signed and smaller than i64
-                //     // Therefore, it must be sign-extended into i64
-                //     let shift_amount = i64::BITS - (8*(2u32.pow(ty.size_pow2() as u32)));
-                //     bits <<= shift_amount; // Shift up to the most significant bit
-                //     bits >>= shift_amount; // Right shift will use arithmetic shift
-                // }
-
-                Instruction::Constant(ty.try_into().unwrap(), Bits::try_from(bits as i32).unwrap())
+                Instruction::Constant(
+                    ty.try_into().unwrap(),
+                    Bits::try_from(imm.bits() as i32).unwrap(),
+                )
             }
             Echo { rds, outs, .. } => {
                 assert_eq!(

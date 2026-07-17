@@ -180,22 +180,22 @@
   )
 )
 
-(decl add_rrr (Reg Reg) Reg)
+(decl add_trrr (Type Reg Reg) Reg)
 (rule
-  (add_rrr src1 src2)
+  (add_trrr ty src1 src2)
   (let
-    ( (dst WritableReg (temp_writable_reg $I64))
+    ( (dst WritableReg (temp_writable_reg ty))
       (_ Unit (emit (MInst.IntAddWrap  dst src1 src2)))
     )
     dst
   )
 )
 
-(decl icmp_crrr (IntCC Reg Reg) Reg)
+(decl icmp_tcrrr (Type IntCC Reg Reg) Reg)
 (rule
-  (icmp_crrr cc lhs rhs)
+  (icmp_tcrrr ty cc lhs rhs)
   (let
-    ( (dst WritableReg (temp_writable_reg $I64))
+    ( (dst WritableReg (temp_writable_reg ty))
       (_ Unit (emit (MInst.IntCmp cc dst lhs rhs)))
     )
     dst
@@ -235,11 +235,11 @@
   )
 )
 
-(decl ld_rfo (Reg MemFlags Offset32) Reg)
+(decl ld_trfo (Type Reg MemFlags Offset32) Reg)
 (rule
-  (ld_rfo ptr flags off)
+  (ld_trfo ty ptr flags off)
   (let
-    ( (dst WritableReg (temp_writable_reg $I64))
+    ( (dst WritableReg (temp_writable_reg ty))
       (_ Unit (emit (MInst.Load dst ptr 0)))
     )
     dst
