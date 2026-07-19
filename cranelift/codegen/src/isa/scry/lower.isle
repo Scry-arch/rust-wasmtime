@@ -48,8 +48,11 @@
     (call_ind_srv sig_ref ptr args)
 )
 
+(decl imm64_from_offset (Imm64) Offset32)
+(extern extractor infallible imm64_from_offset imm64_from_offset)
+
 (rule
-    (lower (has_type ty (load flags ptr offset)))
+    (lower (has_type ty (load flags ptr (imm64_from_offset offset))))
     (ld_trfo ty ptr flags offset)
 )
 

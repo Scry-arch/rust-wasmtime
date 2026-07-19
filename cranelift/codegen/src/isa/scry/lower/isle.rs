@@ -93,6 +93,15 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
         IsaType::Invalid
     }
 
+    #[inline]
+    fn imm64_from_offset(&mut self, off: Offset32) -> Imm64 {
+        Imm64::new(i64::from(off))
+    }
+
+    fn nonzero_imm64(&mut self, imm: Imm64) -> Option<Imm64> {
+        if imm.bits() != 0 { Some(imm) } else { None }
+    }
+
     fn block_call_regs(&mut self, block_call: BlockCall) -> RegVec {
         log::trace!("block_call_regs: {:?}", block_call);
         let args: Vec<_> = block_call

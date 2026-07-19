@@ -15,7 +15,7 @@ block0(v0: i32, v1: i32):
 ; block0:
 ;   Echo(rds:, v(192), v(193), rss:, outs: [2, 0], )
 ;   Duplicate(rd1:, v(199), rd2:, v(200), rs:, v(193), out1: 0, out2: 3, )
-;   Load(rd:, v(198), rs:, v(199), out: 1, )
+;   Load(ty: Known(Uint(2)), rd:, v(198), rs:, v(199), out: 1, )
 ;   Call(link:, v(196), fn_ptr:, v(192), trig: 0, )
 ;   CallArgs(link:, v(196), rets:, v(197), args:, v(198), )
 ;   Reorder(rd1:, v(201), rd2:, v(202), rs1:, v(200), rs2:, v(197), out: 0, )
@@ -27,7 +27,7 @@ block0(v0: i32, v1: i32):
 ; block0: ; offset 0x0
 ; echo =>2, =>0
 ; dup =>0, =>3
-; ld i32, =>1
+; ld u32, =>1
 ; call 0
 ; echo =>0, =>0
 ; st 
