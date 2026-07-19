@@ -767,7 +767,7 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
                     update_changed(&rd1.to_reg(), merged_t, &mut type_map);
                     update_changed(&rd2.to_reg(), merged_t, &mut type_map);
                 }
-                Load { rd, rs, .. } => {
+                Load { rs, .. } => {
                     update_changed(
                         rs,
                         type_map
@@ -776,11 +776,8 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
                             .expect("Load source refine fail"),
                         &mut type_map,
                     );
-                    update_changed(
-                        &rd.to_reg(),
-                        IsaType::Known(scry_isa::Type::Uint(2)),
-                        &mut type_map,
-                    );
+
+                    // We don't assign the type of the destination since we must get the type requirements from other instructions
                 }
                 _ => (),
             }
@@ -854,6 +851,18 @@ fn resolve_instruction_types(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) 
                     assert!(rd_t.is_int());
 
                     *ty = rd_t;
+                }
+                MInst::Load { ty, rd, .. } => {
+                    let rd_t = type_map.get(*&rd.to_reg());
+
+                    if rd_t.is_known() {
+                        *ty = rd_t;
+                    } else if rd_t.is_int() {
+                        // When signedness is unknown, default to unsigned.
+                        *ty = IsaType::new_known_int(rd_t.size_pow2(), false);
+                    } else {
+                        panic!("Invalid load type: {:?}", rd_t);
+                    }
                 }
                 _ => (),
             }

@@ -140,8 +140,8 @@ impl MachInstEmit for MInst {
                 Bits::try_from(*out2 as i32).unwrap(),
             ),
             Store { .. } => Instruction::Store,
-            Load { out, .. } => Instruction::Load(
-                scry_isa::Type::Int(2).try_into().unwrap(),
+            Load { ty, out, .. } => Instruction::Load(
+                ty.get_known().unwrap().try_into().unwrap(),
                 Bits::try_from(*out as i32).unwrap(),
             ),
             Cast { out, ty, .. } => Instruction::Cast(

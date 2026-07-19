@@ -51,14 +51,13 @@ impl ABIMachineSpec for ScryMachineDeps {
         for p in params {
             assert_eq!(p.purpose, ArgumentPurpose::Normal);
             assert_eq!(p.extension, ArgumentExtension::None);
-            assert_eq!(p.value_type, Type::int(32).unwrap());
 
             args.push(ABIArg::Slots {
                 slots: SmallVec::<[ABIArgSlot; 1]>::from_vec(vec![ABIArgSlot::Reg {
                     reg: Reg::from_real_reg(PReg::new(0, RegClass::Int))
                         .to_real_reg()
                         .unwrap(),
-                    ty: Default::default(),
+                    ty: p.value_type,
                     extension: ArgumentExtension::None,
                 }]),
                 purpose: p.purpose,

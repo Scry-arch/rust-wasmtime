@@ -366,9 +366,10 @@ impl MInst {
                 "Store",
                 ["rd:".into(), reg_name(*rd), "rs:".into(), reg_name(*rs)].into_iter(),
             ),
-            Load { rd, rs, out } => join(
+            Load { ty, rd, rs, out } => join(
                 "Load",
                 [
+                    format!("ty: {:?}", ty).into(),
                     "rd:".into(),
                     wreg_name(*rd),
                     "rs:".into(),

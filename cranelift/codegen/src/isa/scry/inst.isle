@@ -109,6 +109,7 @@
     )
 
     (Load
+      (ty IsaType)     ;; Type of loaded value
       (rd WritableReg) ;; Loaded value
       (rs Reg)         ;; Address to load from
       (out u16)        ;; Output reference
@@ -235,12 +236,34 @@
   )
 )
 
-(decl ld_trfo (Type Reg MemFlags Offset32) Reg)
-(rule
-  (ld_trfo ty ptr flags off)
+
+; Accepts only non-zero Imm64
+(decl nonzero_imm64 (Imm64) Imm64)
+(extern extractor nonzero_imm64 nonzero_imm64)
+
+(decl ld_trfo (Type Reg MemFlags Imm64) Reg)
+
+; Catches loads with non-zero offsets
+(rule 10
+  (ld_trfo ty ptr flags (nonzero_imm64 off))
   (let
-    ( (dst WritableReg (temp_writable_reg ty))
-      (_ Unit (emit (MInst.Load dst ptr 0)))
+    (
+      (offset_r Reg (const_r $I32 off))
+      (ptr_off_r Reg (add_trrr $I32 offset_r ptr))
+      (dst WritableReg (temp_writable_reg ty))
+      (_ Unit (emit (MInst.Load (isatype_invalid) dst ptr_off_r 0)))
+    )
+    dst
+  )
+)
+
+; Catches loads with zero offsets
+(rule 0
+  (ld_trfo ty ptr flags _)
+  (let
+    (
+      (dst WritableReg (temp_writable_reg ty))
+      (_ Unit (emit (MInst.Load (isatype_invalid) dst ptr 0)))
     )
     dst
   )
