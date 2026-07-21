@@ -6,8 +6,7 @@
 (type Alu2Variant (primitive Alu2Variant))
 (type Alu2OutputVariant (primitive Alu2OutputVariant))
 (type IsaType (primitive IsaType))
-
-
+(type Signature (primitive Signature))
 
 (decl gen_machlabel (MachLabelSlice) MachLabel)
 (extern constructor gen_machlabel gen_machlabel)
@@ -71,6 +70,7 @@
       (link Reg)         ;; Link to the call instruction, not actually used
       (rets CallRetList) ;; Return operands
       (args CallArgList) ;; call arguments
+      (sig Signature)    ;; Signature of the called function
     )
 
     (Const
@@ -220,6 +220,10 @@
   (side_effect (SideEffectNoResult.Inst (MInst.Store dst val)))
 )
 
+; Gets the full signature of the given sigref
+(decl get_signature (SigRef) Signature)
+(extern constructor get_signature get_signature)
+
 (decl call_ind_srv (SigRef Reg ValueRegsVec) ValueRegsVec)
 (rule
   (call_ind_srv sig_ref ptr args)
@@ -227,10 +231,11 @@
     ( (call_trig_link WritableReg (temp_writable_reg $I64))
       (output ValueRegsVec (gen_call_output sig_ref))
       (abi Sig (abi_sig sig_ref))
+      (sig Signature (get_signature sig_ref))
       (uses CallArgList (gen_call_args abi args))
       (defs CallRetList (gen_call_rets abi output))
       (_ Unit (emit (MInst.Call call_trig_link ptr 0)))
-      (_ Unit (emit (MInst.CallArgs call_trig_link defs uses)))
+      (_ Unit (emit (MInst.CallArgs call_trig_link defs uses sig)))
     )
     output
   )

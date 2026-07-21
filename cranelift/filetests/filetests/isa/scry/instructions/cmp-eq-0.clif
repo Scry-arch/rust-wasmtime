@@ -2,7 +2,7 @@ test interpret
 test run
 target scry32
 
-function %zero_add_one(i32) -> i32 {
+function %zero_add_one(i32 uext) -> i32 uext {
 block0(v0: i32):
 	v1 = icmp_imm eq v0, 0
     brif v1, block2(v0), block3(v0)

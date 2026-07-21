@@ -437,13 +437,19 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
-            CallArgs { link, rets, args } => join(
+            CallArgs {
+                link,
+                rets,
+                args,
+                sig,
+            } => join(
                 "CallArgs",
                 ["link:".into(), reg_name(*link), "rets:".into()]
                     .into_iter()
                     .chain(rets.iter().map(|p| wreg_name(p.vreg)))
                     .chain(once("args:".into()))
-                    .chain(args.iter().map(|p| reg_name(p.vreg))),
+                    .chain(args.iter().map(|p| reg_name(p.vreg)))
+                    .chain(once(format!("sig: {:?}", sig))),
             ),
             JumpIssue { link, dst } => join(
                 "JumpIssue",
