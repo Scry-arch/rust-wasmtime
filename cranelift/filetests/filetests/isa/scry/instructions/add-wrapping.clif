@@ -2,17 +2,27 @@ test interpret
 test run
 target scry32
 
-function %add_one_i32(i32) -> i32 {
+function %add_one_i8(i8 sext) -> i8 sext{
+block1(v0: i8):
+    v1 = iadd_imm v0, 1
+    return v1
+}
+; run: %add_one_i8(0) == 1
+; run: %add_one_i8(100) == 101
+; run: %add_one_i8(-10) == -9
+; run: %add_one_i8(127) == -128
+
+function %add_one_u32(i32 uext) -> i32 uext{
 block1(v0: i32):
     v1 = iadd_imm v0, 1
     return v1
 }
-; run: %add_one_i32(0) == 1
-; run: %add_one_i32(100) == 101
-; run: %add_one_i32(-10) == -9
-; run: %add_one_i32(4294967295) == 0
+; run: %add_one_u32(0) == 1
+; run: %add_one_u32(100) == 101
+; run: %add_one_u32(-10) == -9
+; run: %add_one_u32(4294967295) == 0
 
-function %add_self(i32) -> i32 {
+function %add_self(i32 uext) -> i32 uext{
 block1(v0: i32):
     v1 = iadd v0, v0
     return v1
@@ -22,12 +32,11 @@ block1(v0: i32):
 ; run: %add_self(-11) == -22
 ; run: %add_self(4294967295) == 4294967294
 
-function %add_2(i32, i32) -> i32 {
+function %add_2(i32 uext, i32 uext) -> i32 uext{
 block1(v0: i32, v1: i32):
     v2 = iadd v0, v1
     return v2
 }
-
 ; run: %add_2(0, 0) == 0
 ; run: %add_2(1, 0) == 1
 ; run: %add_2(0, 1) == 1

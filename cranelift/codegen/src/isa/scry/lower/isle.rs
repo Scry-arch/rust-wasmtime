@@ -102,6 +102,10 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
         if imm.bits() != 0 { Some(imm) } else { None }
     }
 
+    fn get_signature(&mut self, arg0: SigRef) -> Signature {
+        self.lower_ctx.dfg().signatures[arg0].clone()
+    }
+
     fn block_call_regs(&mut self, block_call: BlockCall) -> RegVec {
         log::trace!("block_call_regs: {:?}", block_call);
         let args: Vec<_> = block_call

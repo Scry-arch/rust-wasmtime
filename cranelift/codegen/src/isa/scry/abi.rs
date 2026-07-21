@@ -50,7 +50,6 @@ impl ABIMachineSpec for ScryMachineDeps {
     ) -> CodegenResult<(u32, Option<usize>)> {
         for p in params {
             assert_eq!(p.purpose, ArgumentPurpose::Normal);
-            assert_eq!(p.extension, ArgumentExtension::None);
 
             args.push(ABIArg::Slots {
                 slots: SmallVec::<[ABIArgSlot; 1]>::from_vec(vec![ABIArgSlot::Reg {
@@ -58,7 +57,7 @@ impl ABIMachineSpec for ScryMachineDeps {
                         .to_real_reg()
                         .unwrap(),
                     ty: p.value_type,
-                    extension: ArgumentExtension::None,
+                    extension: p.extension,
                 }]),
                 purpose: p.purpose,
             });
@@ -86,14 +85,15 @@ impl ABIMachineSpec for ScryMachineDeps {
         _from_bits: u8,
         _to_bits: u8,
     ) -> MInst {
-        unimplemented!()
+        unreachable!("Scry should not need any function argument extension")
     }
 
     fn get_ext_mode(
         _call_conv: isa::CallConv,
-        specified: ir::ArgumentExtension,
+        _specified: ir::ArgumentExtension,
     ) -> ir::ArgumentExtension {
-        specified
+        // Scry does not need to extend any function arguments
+        ArgumentExtension::None
     }
 
     fn gen_args(args: Vec<ArgPair>) -> MInst {

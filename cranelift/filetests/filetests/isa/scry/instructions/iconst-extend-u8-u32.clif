@@ -2,7 +2,7 @@ test interpret
 test run
 target scry32
 
-function %add_to_const_unsigned(i32) -> i32 {
+function %add_to_const_unsigned(i32 uext) -> i32 uext {
 block0(v0: i32):
 	v1 = iconst.i8 255
 	v2 = uextend.i32 v1

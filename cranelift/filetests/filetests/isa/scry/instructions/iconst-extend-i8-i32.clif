@@ -2,7 +2,7 @@ test interpret
 test run
 target scry32
 
-function %add_to_const_signed(i8) -> i32 {
+function %add_to_const_signed(i8 sext) -> i32 sext {
 block0(v0: i8):
 	v1 = iconst.i8 -1
 	v2 = iadd v0,v1

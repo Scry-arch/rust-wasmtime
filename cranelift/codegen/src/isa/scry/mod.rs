@@ -2,11 +2,8 @@
 
 use crate::CodegenError;
 use crate::dominator_tree::DominatorTree;
-use crate::ir::pcc;
+use crate::ir::{AbiParam, ArgumentExtension, pcc};
 use crate::ir::{Function, Type};
-use crate::isa::scry::inst::MInst::{
-    Const, Duplicate, Echo, IntAddWrap, IntCmp, Load, Reorder, Resize,
-};
 use crate::isa::scry::inst::{EmitInfo, MInst, ResizeVariant};
 use crate::isa::scry::settings as scry_settings;
 use crate::isa::unwind::systemv;
@@ -565,6 +562,15 @@ fn type_to_isatype(t: Type) -> IsaType {
     }
 }
 
+fn abi_param_to_isatype(p: &AbiParam) -> IsaType {
+    let t = type_to_isatype(p.value_type);
+    match p.extension {
+        ArgumentExtension::None => t,
+        ArgumentExtension::Sext => IsaType::new_known_int(t.size_pow2(), true),
+        ArgumentExtension::Uext => IsaType::new_known_int(t.size_pow2(), false),
+    }
+}
+
 fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) -> TypeMap<F> {
     log::trace!("Type Analysis");
 
@@ -611,6 +617,7 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
                 }
             };
 
+            use MInst::*;
             match inst {
                 IntAddWrap { rd, rs1, rs2 } => {
                     let t1 = type_map.get(*rs1);
@@ -778,6 +785,26 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
                     );
 
                     // We don't assign the type of the destination since we must get the type requirements from other instructions
+                }
+                CallArgs {
+                    rets, args, sig, ..
+                } => {
+                    assert_eq!(rets.len(), sig.returns.len());
+                    assert_eq!(args.len(), sig.params.len());
+
+                    for (r, p) in rets.iter().map(|p| p.vreg).zip(sig.returns.iter()) {
+                        let ty = abi_param_to_isatype(p);
+                        update_changed(
+                            &r.to_reg(),
+                            type_map.get(r.to_reg()).refine(ty).unwrap(),
+                            &mut type_map,
+                        );
+                    }
+
+                    for (r, p) in args.iter().map(|p| p.vreg).zip(sig.params.iter()) {
+                        let ty = abi_param_to_isatype(p);
+                        update_changed(&r, type_map.get(r).refine(ty).unwrap(), &mut type_map);
+                    }
                 }
                 _ => (),
             }
@@ -1049,7 +1076,7 @@ impl TargetIsa for ScryBackend {
     }
 
     fn default_argument_extension(&self) -> ir::ArgumentExtension {
-        ir::ArgumentExtension::Sext
+        ir::ArgumentExtension::None
     }
 
     fn remove_constant_phis(&self) -> bool {

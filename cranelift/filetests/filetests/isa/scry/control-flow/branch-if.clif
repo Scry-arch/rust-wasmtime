@@ -2,7 +2,7 @@ test interpret
 test run
 target scry32
 
-function %maybe_add_one(i32) -> i32 {
+function %maybe_add_one(i32 uext) -> i32 uext {
 block0(v0: i32):
     brif v0, block2(v0), block3(v0)
 

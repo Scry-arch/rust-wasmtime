@@ -4,25 +4,25 @@ target scry32
 
 
 ; Tests that a sign assignment (sextend) will transfer several instructions back (to the ireduce)
-function %double_as_signed_i8(i32) -> i32 {
+function %double_as_i8(i32 sext) -> i32 sext {
 block1(v0: i32):
 	v1 = ireduce.i8 v0
     v2 = iadd v1, v1
 	v3 = sextend.i32 v2
     return v3
 }
-; run: %double_as_signed_i8(0) == 0
-; run: %double_as_signed_i8(50) == 100
-; run: %double_as_signed_i8(100) == -56
+; run: %double_as_i8(0) == 0
+; run: %double_as_i8(50) == 100
+; run: %double_as_i8(100) == -56
 
 ; Tests that a sign assignment (uextend) will transfer several instructions back (to the ireduce)
-function %double_as_unsigned_i8(i32) -> i32 {
+function %double_as_u8(i32 uext) -> i32 uext {
 block1(v0: i32):
 	v1 = ireduce.i8 v0
     v2 = iadd v1, v1
 	v3 = uextend.i32 v2
     return v3
 }
-; run: %double_as_unsigned_i8(0) == 0
-; run: %double_as_unsigned_i8(50) == 100
-; run: %double_as_unsigned_i8(200) == 144
+; run: %double_as_u8(0) == 0
+; run: %double_as_u8(50) == 100
+; run: %double_as_u8(200) == 144
