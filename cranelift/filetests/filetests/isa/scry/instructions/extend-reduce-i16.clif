@@ -1,0 +1,43 @@
+test interpret
+test run
+target scry32
+
+; Exercises uextend/sextend/ireduce with i16 as source or destination,
+; covering the size_pow2 == 1 paths in type analysis and Cast emission.
+
+function %uext_i16_i32(i16 uext) -> i32 uext {
+block0(v0: i16):
+    v1 = uextend.i32 v0
+    return v1
+}
+; run: %uext_i16_i32(0) == 0
+; run: %uext_i16_i32(65535) == 65535
+; run: %uext_i16_i32(1234) == 1234
+
+function %sext_i16_i32(i16 sext) -> i32 sext {
+block0(v0: i16):
+    v1 = sextend.i32 v0
+    return v1
+}
+; run: %sext_i16_i32(0) == 0
+; run: %sext_i16_i32(-1) == -1
+; run: %sext_i16_i32(-32768) == -32768
+
+function %sext_i8_i16(i8 sext) -> i16 sext {
+block0(v0: i8):
+    v1 = sextend.i16 v0
+    return v1
+}
+; run: %sext_i8_i16(-1) == -1
+; run: %sext_i8_i16(-128) == -128
+; run: %sext_i8_i16(127) == 127
+
+function %reduce_i32_i16(i32 sext) -> i16 sext {
+block0(v0: i32):
+    v1 = ireduce.i16 v0
+    return v1
+}
+; run: %reduce_i32_i16(0) == 0
+; run: %reduce_i32_i16(-1) == -1
+; run: %reduce_i32_i16(65536) == 0
+; run: %reduce_i32_i16(65537) == 1

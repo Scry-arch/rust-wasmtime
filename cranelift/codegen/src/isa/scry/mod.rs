@@ -2,7 +2,7 @@
 
 use crate::CodegenError;
 use crate::dominator_tree::DominatorTree;
-use crate::ir::{AbiParam, ArgumentExtension, pcc};
+use crate::ir::{AbiParam, ArgumentExtension, Signature, pcc};
 use crate::ir::{Function, Type};
 use crate::isa::scry::inst::{EmitInfo, MInst, ResizeVariant};
 use crate::isa::scry::settings as scry_settings;
@@ -24,18 +24,18 @@ use crate::trace;
 use crate::{VCodeConstants, ir};
 use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
-use core::borrow::Borrow;
 use core::fmt;
 use core::fmt::{Debug, Formatter};
 use cranelift_control::ControlPlane;
 use graphene::algo::Bfs;
 use graphene::algo::Retainable;
-use graphene::core::Graph;
 use graphene::core::GraphMut;
 use graphene::core::property::Rooted;
+use graphene::core::{Graph, MaybeOwned};
 use regalloc2::Function as RegFunc;
 use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::iter::once;
 use target_lexicon::{Architecture, Triple};
 use vcode_cfg::*;
 
@@ -571,15 +571,34 @@ fn abi_param_to_isatype(p: &AbiParam) -> IsaType {
     }
 }
 
-fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) -> TypeMap<F> {
+fn type_analysis<F: Fn(Reg) -> Type>(
+    cfg: &mut VCodeCFG<MInst>,
+    vreg_type: F,
+    func_sig: &Signature,
+) -> TypeMap<F> {
     log::trace!("Type Analysis");
 
     let bb_dfg = cfg.dataflow_graph();
     let mut type_map = TypeMap::new(vreg_type);
 
+    // Map function parameters to entry block registers
+    for (r, p) in cfg
+        .0
+        .root_weight()
+        .params
+        .iter()
+        .zip(func_sig.params.iter())
+    {
+        let ty = abi_param_to_isatype(p);
+        let refined = type_map.get(*r).refine(ty).unwrap();
+        type_map.update(*r, refined);
+    }
+
     // Resolve instruction types in each BB
     let mut bb_worklist: VecDeque<usize> = VecDeque::new();
-    bb_worklist.push_back(cfg.0.root());
+
+    // All blocks analyzed at least once
+    bb_worklist.extend(cfg.0.all_vertices());
 
     while let Some((bb_v, bb)) = bb_worklist
         .pop_front()
@@ -609,7 +628,7 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
                     changed_regs.insert(*r);
                     inst_dfg
                         .edges_incident_on(inst_idx)
-                        .filter(|(_, dep_r)| dep_r.borrow() == r)
+                        .filter(|(_, dep_r)| **dep_r == *r)
                         .for_each(|(dep_i, _)| {
                             log::trace!("To worklist: {}({:?})", dep_i, bb.inst[dep_i]);
                             inst_worklist.insert(dep_i);
@@ -640,35 +659,28 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
 
                     let refined = t1.refine(t2).unwrap();
 
-                    // Make sure inputs match comparison
-                    let refined = match cc {
+                    let in_refined = match cc {
                         IntCC::UnsignedGreaterThan
                         | IntCC::UnsignedLessThan
                         | IntCC::UnsignedGreaterThanOrEqual
                         | IntCC::UnsignedLessThanOrEqual => refined
-                            .refine(IsaType::Known(scry_isa::Type::Uint(refined.size_pow2())))
+                            .refine(IsaType::new_known_int(refined.size_pow2(), false))
                             .unwrap(),
                         IntCC::SignedGreaterThan
                         | IntCC::SignedLessThan
                         | IntCC::SignedGreaterThanOrEqual
                         | IntCC::SignedLessThanOrEqual => refined
-                            .refine(IsaType::Known(scry_isa::Type::Int(refined.size_pow2())))
+                            .refine(IsaType::new_known_int(refined.size_pow2(), true))
                             .unwrap(),
-                        _ => refined,
+                        IntCC::Equal | IntCC::NotEqual => {
+                            // Equality put no constraint on operand signedness
+                            refined
+                        }
                     };
-
-                    // Sure inputs have the same signedness (if any) as the output
-
-                    let in_refined = refined
-                        .refine(td.as_size_pow2(refined.size_pow2()).unwrap())
-                        .unwrap();
-                    let out_refined = td
-                        .refine(refined.as_size_pow2(td.size_pow2()).unwrap())
-                        .unwrap();
 
                     update_changed(rs1, in_refined, &mut type_map);
                     update_changed(rs2, in_refined, &mut type_map);
-                    update_changed(&rd.to_reg(), out_refined, &mut type_map);
+                    update_changed(&rd.to_reg(), td, &mut type_map);
                 }
                 Resize { var, rd, rs }
                     if *var == ResizeVariant::Uextend || *var == ResizeVariant::Sextend =>
@@ -732,6 +744,10 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
                             &mut type_map,
                         );
                     } else {
+                        // Neither side's signedness is known yet. This is a transient state during
+                        // the type-analysis fixpoint (signedness has not propagated here from a
+                        // pinned use yet); keep the sizes as bare integers and let a later
+                        // iteration refine the signedness.
                         update_changed(
                             rs,
                             rs_t.refine(IsaType::Integer(rs_t.size_pow2())).unwrap(),
@@ -750,11 +766,13 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
                 }
                 Echo { rds, rss, .. } => {
                     if rss.len() != 0 {
-                        // This echo handles block arguments
                         assert_eq!(rds.len(), rss.len());
                         rss.iter().zip(rds.iter()).for_each(|(rs, rd)| {
                             update_changed(&rd.to_reg(), type_map.get(*rs), &mut type_map);
                         });
+                    } else {
+                        assert!(!rds.is_empty());
+                        // This echo handles block parameters. Do nothing.
                     }
                 }
                 Reorder {
@@ -806,6 +824,45 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
                         update_changed(&r, type_map.get(r).refine(ty).unwrap(), &mut type_map);
                     }
                 }
+                Rets { rets } => {
+                    assert_eq!(rets.len(), func_sig.returns.len());
+                    for (r, p) in rets.iter().map(|p| p.vreg).zip(func_sig.returns.iter()) {
+                        let ty = abi_param_to_isatype(p);
+                        update_changed(&r, type_map.get(r).refine(ty).unwrap(), &mut type_map);
+                    }
+                }
+                JumpTrigger { args, .. } => {
+                    for arg_r in args.iter() {
+                        let arg_ty = type_map.get(*arg_r);
+
+                        let shared_ty = bb_dfg
+                            .edges_sourced_in(bb_v)
+                            .filter(|(_, deps)| deps.1.contains(arg_r))
+                            .flat_map(|(_, deps)| {
+                                deps.into_borrowed()
+                                    .unwrap()
+                                    .1
+                                    .iter()
+                                    .map(|d| type_map.get(*d))
+                            })
+                            .fold(arg_ty, |acc_ty, d_ty| acc_ty.refine(d_ty).unwrap());
+
+                        once(*arg_r)
+                            .chain(
+                                bb_dfg
+                                    .edges_sourced_in(bb_v)
+                                    .filter_map(|(_, deps)| {
+                                        if deps.1.contains(arg_r) {
+                                            Some(deps.into_borrowed().unwrap().1.iter().cloned())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .flatten(),
+                            )
+                            .for_each(|r| update_changed(&r, shared_ty, &mut type_map));
+                    }
+                }
                 _ => (),
             }
         }
@@ -813,7 +870,7 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
         // Add any BBs to the worklist if they depend on a register that was updated by this BB
         for changed_r in changed_regs.into_iter() {
             for (other_v, weight) in bb_dfg.edges_incident_on(bb_v) {
-                let (_, dep_regs) = weight.borrow();
+                let dep_regs = &weight.1;
                 if dep_regs.contains(&changed_r) {
                     if bb_worklist.iter().all(|v| other_v != *v) {
                         bb_worklist.push_back(other_v);
@@ -827,8 +884,12 @@ fn type_analysis<F: Fn(Reg) -> Type>(cfg: &mut VCodeCFG<MInst>, vreg_type: F) ->
     type_map
 }
 
-fn resolve_instruction_types(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) -> Type) {
-    let type_map = type_analysis(cfg, vreg_type);
+fn resolve_instruction_types(
+    cfg: &mut VCodeCFG<MInst>,
+    vreg_type: impl Fn(Reg) -> Type,
+    func_sig: &Signature,
+) {
+    let type_map = type_analysis(cfg, vreg_type, func_sig);
 
     log::trace!("Resolve instruction types");
 
@@ -848,7 +909,11 @@ fn resolve_instruction_types(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) 
                 MInst::IntCmp { cc, rd, rs1, rs2 } => {
                     let var = match cc {
                         IntCC::Equal => AluVariant::Equal,
-                        _ => unimplemented!(),
+                        IntCC::SignedLessThan | IntCC::UnsignedLessThan => AluVariant::LessThan,
+                        IntCC::SignedGreaterThan | IntCC::UnsignedGreaterThan => {
+                            AluVariant::GreaterThan
+                        }
+                        _ => unimplemented!("icmp condition {:?} is not yet supported", cc),
                     };
                     *inst = MInst::Alu1 {
                         var,
@@ -884,9 +949,6 @@ fn resolve_instruction_types(cfg: &mut VCodeCFG<MInst>, vreg_type: impl Fn(Reg) 
 
                     if rd_t.is_known() {
                         *ty = rd_t;
-                    } else if rd_t.is_int() {
-                        // When signedness is unknown, default to unsigned.
-                        *ty = IsaType::new_known_int(rd_t.size_pow2(), false);
                     } else {
                         panic!("Invalid load type: {:?}", rd_t);
                     }
@@ -908,6 +970,8 @@ impl TargetIsa for ScryBackend {
         log::debug!("Beginning Scry compile");
         log::trace!("func: {:?}", func);
         let (vcode, mut new_vregs) = self.compile_vcode(func, domtree, ctrl_plane)?;
+
+        log::trace!("func signature: {:?}", vcode.abi.signature());
 
         let mut new_vreg = || {
             new_vregs
@@ -945,7 +1009,7 @@ impl TargetIsa for ScryBackend {
 
         log::trace!("VCodeCFG: {:?}", cfg);
 
-        resolve_instruction_types(&mut cfg, reg_type);
+        resolve_instruction_types(&mut cfg, reg_type, vcode.abi.signature());
         insert_duplicates(&mut cfg, &mut new_vreg);
         insert_ref_distances(&mut cfg);
         fix_orderings(&mut cfg, &mut new_vreg);
