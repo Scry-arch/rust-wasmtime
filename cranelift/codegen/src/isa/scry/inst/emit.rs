@@ -89,20 +89,13 @@ impl MachInstEmit for MInst {
                 assert_eq!(outs.len(), 1);
                 Instruction::Alu2(*var, *out_var, Bits::try_from(outs[0] as i32).unwrap())
             }
-            Const { ty, imm, .. } => {
-                let ty = if let Some(ty) = ty.get_known() {
-                    ty
-                } else if ty.is_int() {
-                    scry_isa::Type::Uint(ty.size_pow2())
-                } else {
-                    unreachable!("Type: {:?}", ty)
-                };
-
-                Instruction::Constant(
-                    ty.try_into().unwrap(),
-                    Bits::try_from(imm.bits() as i32).unwrap(),
-                )
-            }
+            Const { ty, imm, .. } => Instruction::Constant(
+                ty.get_known()
+                    .expect("Missing a well-defined type for constant")
+                    .try_into()
+                    .unwrap(),
+                Bits::try_from(imm.bits() as i32).unwrap(),
+            ),
             Echo { rds, outs, .. } => {
                 assert_eq!(
                     rds.len(),
