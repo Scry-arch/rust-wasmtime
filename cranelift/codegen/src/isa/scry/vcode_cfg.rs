@@ -2,20 +2,42 @@ use crate::ir::RelSourceLoc;
 use crate::machinst::{BlockIndex, VCode, VCodeBuilder};
 use crate::{Reg, VCodeInst};
 use core::fmt::Debug;
+use graphene::algo::Retainable;
+use graphene::algo::search::Topo;
 use graphene::common::{AdjListGraph, VertexMapGraph};
 use graphene::core::property::*;
-use graphene::core::{Directed, Ensure, Graph, GraphMut};
+use graphene::core::{BaseGraphGuard, Directed, Ensure, Graph, GraphMut};
 use hashbrown::HashMap;
-use regalloc2::{Function, OperandKind};
+use regalloc2::{Block, Function, OperandKind};
 use std::collections::{HashSet, VecDeque};
+use std::iter::once;
 use std::ops::Index;
 use std::vec::Vec;
 
 #[derive(Debug)]
 pub struct VCodeBB<I: VCodeInst> {
+    /// The [`Block`] in the vcode corresponding to this block
+    pub vcode_bb: Block,
+
+    /// Instructions in the block
     pub inst: Vec<I>,
+
+    /// The block's parameters (inputs)
     pub params: Vec<Reg>,
-    pub branch_params: Vec<Reg>,
+
+    pub branch_params: HashMap<Block, Vec<Reg>>,
+
+    /// Ordered list of inputs to the block
+    ///
+    /// May differ from [`self.params`] if the caller outputs more parameters than this block needs.
+    /// E.g., on a conditional branch where one block takes more inputs than the other.
+    /// This order should be identical for all successor blocks of a conditional/switch branch.
+    pub param_order: Vec<Option<Reg>>,
+
+    /// Ordered list of output of this block
+    ///
+    /// May differ from `params` of successor blocks. See [`self.param_order`].
+    pub branch_param_order: Vec<Option<Reg>>,
 }
 
 impl<I: VCodeInst> VCodeBB<I> {
@@ -78,10 +100,24 @@ impl<I: VCodeInst> VCodeBB<I> {
     }
 }
 
+/// Specifies ordering dependency requirements between blocks
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ordering {
+    /// Source block must come before the sink block in the binary
+    Before,
+
+    /// The source block must come immediately before the sink block in the binary, with no other blocks between.
+    Precede,
+}
+
 #[derive(Debug)]
-pub struct VCodeCFG<I: VCodeInst>(
-    pub UniqueGraph<WeakGraph<RootedGraph<AdjListGraph<VCodeBB<I>, ()>>>>,
-);
+pub struct VCodeCFG<I: VCodeInst> {
+    pub graph: UniqueGraph<WeakGraph<RootedGraph<AdjListGraph<VCodeBB<I>, ()>>>>,
+
+    // A DAG of which blocks must come before other blocks in the function (i.e. at earlier addresses)
+    // An edge from v1 to v2 means v1 must come before v2.
+    pub block_order: AcyclicGraph<UniqueGraph<VertexMapGraph<usize, AdjListGraph<(), Ordering>>>>,
+}
 
 impl<I: VCodeInst> VCodeCFG<I> {
     pub fn from_vcode(vcode: &VCode<I>) -> Self {
@@ -94,7 +130,19 @@ impl<I: VCodeInst> VCodeCFG<I> {
         macro_rules! maybe_new_bb {
 			($($bb:tt)+) => {
 				if !bb_map.contains_key(&($($bb)+)) {
-					bb_map.insert(($($bb)+), graph.new_vertex_weighted(VCodeBB{inst: vec![], params: vec![], branch_params: vec![]}).unwrap());
+					bb_map.insert(
+                        ($($bb)+),
+                        graph.new_vertex_weighted(
+                            VCodeBB{
+                                vcode_bb: ($($bb)+),
+                                inst: vec![],
+                                params: vec![],
+                                branch_params: HashMap::new(),
+                                param_order: vec![],
+                                branch_param_order: vec![]
+                            }
+                        ).unwrap()
+                    );
 				}
 			};
 		}
@@ -104,10 +152,10 @@ impl<I: VCodeInst> VCodeCFG<I> {
 
         while let Some(bb) = worklist.pop_front() {
             maybe_new_bb!(bb);
-            let cfg_bb = graph.vertex_weight_mut(bb_map[&bb]).unwrap();
+            let cfg_bb_v = bb_map[&bb];
 
             // Copy parameters
-            cfg_bb.params.extend(
+            graph.vertex_weight_mut(cfg_bb_v).unwrap().params.extend(
                 vcode
                     .block_params(bb)
                     .iter()
@@ -116,18 +164,34 @@ impl<I: VCodeInst> VCodeCFG<I> {
 
             vcode.block_insns(bb).iter().for_each(|inst| {
                 // Copy instructions
-                cfg_bb.inst.push(vcode.index(inst).clone());
+                graph
+                    .vertex_weight_mut(cfg_bb_v)
+                    .unwrap()
+                    .inst
+                    .push(vcode.index(inst).clone());
 
-                for (i, _) in vcode.block_succs(bb).iter().enumerate() {
-                    let branch_params = vcode.branch_blockparams(bb, inst, i);
-                    let uneven_br_params = cfg_bb.branch_params.len() != branch_params.len();
-                    if uneven_br_params && cfg_bb.branch_params.len() == 0 {
-                        cfg_bb.branch_params = branch_params
-                            .iter()
-                            .map(|vreg| Reg::from_virtual_reg(*vreg))
-                            .collect();
-                    } else if uneven_br_params && branch_params.len() != 0 {
-                        unreachable!("Uneven branch params lengths")
+                for (i, succ_bb) in vcode.block_succs(bb).iter().enumerate() {
+                    maybe_new_bb!(*succ_bb);
+                    let branch_params = vcode
+                        .branch_blockparams(bb, inst, i)
+                        .into_iter()
+                        .map(|vreg| Reg::from_virtual_reg(*vreg))
+                        .collect();
+
+                    if let Some(p) = graph
+                        .vertex_weight(cfg_bb_v)
+                        .unwrap()
+                        .branch_params
+                        .get(succ_bb)
+                    {
+                        assert_eq!(*p, branch_params);
+                        // panic!("Multiple instruction in block targetting same successor block");
+                    } else {
+                        graph
+                            .vertex_weight_mut(cfg_bb_v)
+                            .unwrap()
+                            .branch_params
+                            .insert(*succ_bb, branch_params);
                     }
                 }
             });
@@ -135,10 +199,8 @@ impl<I: VCodeInst> VCodeCFG<I> {
             // Set edges
             for succ in vcode.block_succs(bb) {
                 maybe_new_bb!(*succ);
-                if !worklist.contains(succ)
-                    && !donelist.contains(succ)
-                    && graph.add_edge(bb_map[&bb], bb_map[succ]).is_ok()
-                {
+                graph.add_edge(cfg_bb_v, bb_map[succ]).unwrap();
+                if !worklist.contains(succ) && !donelist.contains(succ) {
                     worklist.push_back(*succ);
                 }
             }
@@ -146,28 +208,167 @@ impl<I: VCodeInst> VCodeCFG<I> {
             donelist.insert(bb);
         }
 
-        Self(Ensure::ensure_all(graph, (*(bb_map.get(&entry_bb).unwrap()), ())).unwrap())
+        let entry_v = bb_map.get(&entry_bb).unwrap();
+
+        // Initial block order just requires the entry block to be before all others
+        let mut block_order = VertexMapGraph::new();
+        graph.all_vertices().for_each(|v| {
+            block_order.add_vertex(v).unwrap();
+            if v != *entry_v {
+                block_order
+                    .add_edge_weighted(entry_v, v, Ordering::Before)
+                    .unwrap()
+            }
+        });
+
+        Self {
+            graph: Ensure::ensure_all(graph, (*(entry_v), ())).unwrap(),
+            block_order: block_order.guard_all().unwrap(),
+        }
     }
 
-    pub fn build_vcode(&self, builder: &mut VCodeBuilder<I>) {
-        for (_, bb) in self
-            .0
+    /// correct_machlabel: correct any machlabel by looking up the old index in the map (old->new)
+    pub fn build_vcode(
+        &self,
+        builder: &mut VCodeBuilder<I>,
+        correct_machlabel: impl Fn(I, &HashMap<usize, usize>) -> I,
+    ) {
+        log::trace!("building vcode2: {:?}", self);
+
+        let blocks = self.graph.all_vertices_weighted().collect::<Vec<_>>();
+
+        //TODO: Must sort the blocks in topological order while accounting for Ordering::Precede
+
+        // Create a graph where all nodes that have Order::Precede relations are merged into 1 node
+        // This can then be sorted and expanded again
+
+        let mut merged = AdjListGraph::<HashSet<usize>, ()>::new();
+
+        // Add nodes in their groups
+        for v in self.graph.all_vertices() {
+            if merged.all_vertices_weighted().all(|(_, w)| !w.contains(&v)) {
+                // v is not in the graph
+                if let Some((v2, _)) = self
+                    .block_order
+                    .edges_incident_on(v)
+                    .find(|(_, o)| **o == Ordering::Precede)
+                {
+                    if let Some((_, set)) = merged
+                        .all_vertices_weighted_mut()
+                        .find(|(_, w)| w.contains(&v2))
+                    {
+                        set.insert(v);
+                        continue;
+                    }
+                }
+                // v does not need to be merged or none of the others in its merge have already been inserted.
+                merged
+                    .new_vertex_weighted([v].into_iter().collect())
+                    .unwrap();
+            }
+        }
+
+        // add edges between groups
+        for (so, si, _) in self
+            .block_order
+            .all_edges()
+            .filter(|(_, _, o)| **o != Ordering::Precede)
+        {
+            let so_g = merged
+                .all_vertices_weighted()
+                .find(|(_, w)| w.contains(&so))
+                .unwrap()
+                .0;
+            let si_g = merged
+                .all_vertices_weighted()
+                .find(|(_, w)| w.contains(&si))
+                .unwrap()
+                .0;
+
+            merged.add_edge(so_g, si_g).unwrap(); // Could have multiple edges, but that doesn't matter
+        }
+
+        // Find the root vertex
+        let merge_root_v = merged
             .all_vertices_weighted()
-            .collect::<Vec<_>>()
+            .find(|(_, w)| w.contains(&self.graph.root()))
+            .unwrap()
+            .0;
+        let merged = VertexInGraph::<AcyclicGraph<AdjListGraph<_, _>>>::ensure_all(
+            merged,
+            ([merge_root_v], ()),
+        )
+        .unwrap();
+
+        let topo_sort = once(merge_root_v)
+            .chain(Topo::new(&merged).retain(&merged))
+            .flat_map(|mv| {
+                let merge_group = merged.vertex_weight(mv).unwrap();
+
+                let mut sorted_group = VecDeque::with_capacity(merge_group.len());
+                sorted_group.push_front(merge_group.iter().cloned().next().unwrap());
+
+                // Continuously add the previous and the next in the group
+                let mut found_more = true;
+                while found_more {
+                    found_more = false;
+
+                    if let Some((prec, _)) = self
+                        .block_order
+                        .edges_sinked_in(sorted_group[0])
+                        .find(|(_, o)| **o == Ordering::Precede)
+                    {
+                        sorted_group.push_front(prec);
+                        found_more |= true;
+                    }
+                    if let Some((succ, _)) = self
+                        .block_order
+                        .edges_sourced_in(sorted_group.back().cloned().unwrap())
+                        .find(|(_, o)| **o == Ordering::Precede)
+                    {
+                        sorted_group.push_back(succ);
+                        found_more |= true;
+                    }
+                }
+                sorted_group.into_iter()
+            })
+            .collect::<Vec<_>>();
+
+        // The new block order (and number) no longer fits with the original vcode.
+        // MachLabels in instructions depend on the block order and number, so they must be corrected
+        // to match the new order and number of the blocks.
+
+        let mut label_idx_map = HashMap::new(); // Old idx to new idx
+        let mut new_block_idx = blocks.len();
+        for v in topo_sort.iter().rev() {
+            let bb = self.graph.vertex_weight(v).unwrap();
+            new_block_idx -= 1;
+            label_idx_map.insert(bb.vcode_bb.index(), new_block_idx);
+        }
+
+        // Now that the order is settled, we begin building the new vcode and correcting MachLabels in instructions on the fly.
+        for v in topo_sort
             .into_iter()
             .rev()
-            .filter(|(v, _)| *v != self.0.root())
+            .filter(|v| *v != self.graph.root())
         {
+            let bb = self.graph.vertex_weight(v).unwrap();
             for inst in bb.inst.iter().rev() {
-                builder.push(inst.clone(), RelSourceLoc::default());
+                builder.push(
+                    correct_machlabel(inst.clone(), &label_idx_map),
+                    RelSourceLoc::default(),
+                );
             }
             builder.end_bb();
         }
 
         // Output root (entry BB) last
         builder.set_entry(BlockIndex::new(0));
-        for inst in self.0.root_weight().inst.iter().rev() {
-            builder.push(inst.clone(), RelSourceLoc::default());
+        for inst in self.graph.root_weight().inst.iter().rev() {
+            builder.push(
+                correct_machlabel(inst.clone(), &label_idx_map),
+                RelSourceLoc::default(),
+            );
         }
         builder.end_bb();
     }
@@ -188,19 +389,19 @@ impl<I: VCodeInst> VCodeCFG<I> {
         VertexWeight = (),
         EdgeWeight = (usize, HashSet<Reg>),
         Directedness = Directed,
-    > + Debug {
+    > + Debug
+    + use<I> {
         let mut dfg = VertexMapGraph::<usize, AdjListGraph<_, _, _>>::new();
 
-        for (v, bb) in self.0.all_vertices_weighted() {
+        for (v, bb) in self.graph.all_vertices_weighted() {
             dfg.add_vertex(v).unwrap();
 
-            for (pred, _) in self.0.edges_sinked_in(v) {
-                let pred_bb = self.0.vertex_weight(pred).unwrap();
+            for (pred, _) in self.graph.edges_sinked_in(v) {
+                let pred_bb = self.graph.vertex_weight(pred).unwrap();
 
-                assert_eq!(pred_bb.branch_params.len(), bb.params.len());
+                assert_eq!(pred_bb.branch_params[&bb.vcode_bb].len(), bb.params.len());
 
-                for (idx, (out_r, in_r)) in pred_bb
-                    .branch_params
+                for (idx, (out_r, in_r)) in pred_bb.branch_params[&bb.vcode_bb]
                     .iter()
                     .zip(bb.params.iter())
                     .enumerate()

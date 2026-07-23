@@ -1,0 +1,26 @@
+test interpret
+test run
+target scry32
+
+; Tests successors with different fully different parameters and counts
+function %maybe_sum(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1:i32):
+	v2 = iadd v0, v1
+    brif v0, block3(v2), block2(v0,v1); The two branch calls don't share operands
+
+block2(v3: i32, v4: i32):
+    v5 = iadd v3, v4
+    jump block4(v5)
+
+block3(v6: i32):
+    v7 = iadd v6, v6
+    jump block4(v7)
+
+block4(v8: i32):
+    return v8
+}
+
+; run: %maybe_sum(0,0) == 0
+; run: %maybe_sum(0,4) == 4
+; run: %maybe_sum(1,0) == 2
+; run: %maybe_sum(25,14) == 78

@@ -19,6 +19,11 @@
 )
 
 (rule
+    (lower (has_type ty (isub lhs rhs)))
+    (isub_wrap_trrr ty lhs rhs)
+)
+
+(rule
     (lower (has_type ty (icmp cc lhs rhs)))
     (icmp_tcrrr ty cc lhs rhs)
 )
@@ -87,9 +92,10 @@
 (rule
     (lower_branch (brif cond block_call_1 block_call_2) targets)
     (let
-      ( (_ Unit (assert_same_block_call_regs block_call_1 block_call_2))
+      ( ;(_ Unit (assert_same_block_call_regs block_call_1 block_call_2))
         (jmp_trig_link WritableReg (temp_writable_reg $I64))
-        (_ Unit (emit (MInst.BranchIssue jmp_trig_link (gen_machlabel targets) cond)))
+        ; "block_call_1" is taken if "cond" is true (non-zero). Scry branch is taken on non-zero only for backward branches
+        (_ Unit (emit (MInst.BranchIssue jmp_trig_link (gen_machlabel targets) false cond)))
       )
       (emit_side_effect
         (SideEffectNoResult.Inst

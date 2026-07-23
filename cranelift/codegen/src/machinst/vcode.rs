@@ -1514,6 +1514,11 @@ impl<I: VCodeInst> VCode<I> {
         self.block_order.lowered_order()[block.index()].orig_block()
     }
 
+    /// Get the type of a VReg, if it exists
+    pub fn vreg_type_maybe(&self, vreg: VReg) -> Option<Type> {
+        self.vreg_types.get(vreg.vreg()).map(|t| *t)
+    }
+
     /// Get the user stack map associated with the given forward instruction index.
     pub fn get_user_stack_map(&self, inst: InsnIndex) -> Option<&ir::UserStackMap> {
         let index = inst.to_backwards_insn_index(self.num_insts());
@@ -1713,6 +1718,11 @@ pub struct VRegAllocator<I> {
 }
 
 impl<I: VCodeInst> VRegAllocator<I> {
+    /// Get the type of a VReg.
+    pub fn vreg_type(&self, vreg: VReg) -> Type {
+        self.vreg_types[vreg.vreg()]
+    }
+
     /// Make a new VRegAllocator.
     pub fn with_capacity(capacity: usize) -> Self {
         let capacity = first_user_vreg_index() + capacity;
