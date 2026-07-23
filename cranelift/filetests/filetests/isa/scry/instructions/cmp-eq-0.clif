@@ -9,12 +9,16 @@ block0(v0: i32):
 
 block2(v2: i32):
     v3 = iadd_imm v2, 1
-    jump block3(v3)
+    jump block4(v3)
 
 block3(v4: i32):
-    return v4
+    v5 = iadd_imm v4, 4
+    jump block4(v5)
+
+block4(v6: i32):
+    return v6
 }
 
 ; run: %zero_add_one(0) == 1
-; run: %zero_add_one(16) == 16
-; run: %zero_add_one(-100) == -100
+; run: %zero_add_one(16) == 20
+; run: %zero_add_one(-100) == -96

@@ -1,0 +1,17 @@
+test interpret
+test run
+target scry32
+
+; Tests 3 inputs to a function
+function %sum_all(i32 sext, i32 sext, i32 sext) -> i32 sext{
+block1(v0: i32, v1: i32, v2: i32):
+	v3 = iadd v0, v1
+    v4 = iadd v3, v2
+	return v4
+}
+
+; run: %sum_all(0,0,0) == 0
+; run: %sum_all(1,0,0) == 1
+; run: %sum_all(0,1,0) == 1
+; run: %sum_all(0,0,1) == 1
+; run: %sum_all(13,7,3) == 23

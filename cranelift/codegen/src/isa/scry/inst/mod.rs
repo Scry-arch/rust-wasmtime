@@ -13,7 +13,8 @@ pub use crate::ir::condcodes::FloatCC;
 use alloc::string::String;
 use alloc::vec::Vec;
 use regalloc2::{RegClass, VReg};
-use scry_isa::Instruction;
+use scry_isa::{Alu2Variant, Instruction};
+use std::cmp::min;
 use std::iter::once;
 
 pub mod args;
@@ -22,9 +23,12 @@ pub use self::emit::*;
 
 use crate::isa::scry::abi::ScryMachineDeps;
 
-pub use crate::isa::scry::lower::isle::generated_code::{MInst, ResizeVariant};
+pub use crate::isa::scry::lower::isle::generated_code::{
+    BinaryAluOp, MInst, ResizeVariant, UnaryAluOp,
+};
 use crate::opts::{I8, I16, I32, I64};
 
+use crate::machinst::isle::WritableReg;
 use byteorder::{ByteOrder, LittleEndian};
 //=============================================================================
 // Instructions (top level): definition
@@ -53,6 +57,11 @@ impl MachInst for MInst {
         use MInst::*;
         match self {
             Nop | Ret { .. } | ImmJump { .. } => (),
+            Discard { rss } => {
+                rss.iter_mut().for_each(|r| {
+                    collector.reg_use(r);
+                });
+            }
             Args { args } => {
                 // We just treat function arguments as definition points
                 for p in args {
@@ -65,7 +74,7 @@ impl MachInst for MInst {
                     collector.reg_use(r);
                 });
             }
-            IntAddWrap { rd, rs1, rs2 } | IntCmp { rd, rs1, rs2, .. } => {
+            BinaryAlu { rd, rs1, rs2, .. } | IntCmp { rd, rs1, rs2, .. } => {
                 collector.reg_def(rd);
                 collector.reg_use(rs1);
                 collector.reg_use(rs2);
@@ -78,11 +87,33 @@ impl MachInst for MInst {
             Const { rd, .. } => {
                 collector.reg_def(rd);
             }
-            Echo { rds, rss, .. } | Alu2 { rds, rss, .. } => {
+            Echo { rds, rss, .. } | EchoLong { rds, rss, .. } | Alu2 { rds, rss, .. } => {
                 rds.iter_mut().for_each(|r| collector.reg_def(r));
-                rss.iter_mut().for_each(|r| {
-                    collector.reg_use(r);
-                });
+                rss.iter_mut().for_each(|r| collector.reg_use(r));
+            }
+            EchoChain {
+                rd1,
+                rd2,
+                rs1,
+                rs2,
+                rd_chain,
+                rs_chain,
+                ..
+            } => {
+                collector.reg_def(rd1);
+                collector.reg_def(rd2);
+                rd_chain.iter_mut().for_each(|r| collector.reg_def(r));
+                collector.reg_use(rs1);
+                collector.reg_use(rs2);
+                rs_chain.iter_mut().for_each(|r| collector.reg_use(r));
+            }
+            EchoSplit {
+                rd1, rd2, rs1, rs2, ..
+            } => {
+                collector.reg_def(rd1);
+                collector.reg_def(rd2);
+                collector.reg_use(rs1);
+                collector.reg_use(rs2);
             }
             Duplicate { rd1, rd2, rs, .. } => {
                 collector.reg_def(rd1);
@@ -101,7 +132,10 @@ impl MachInst for MInst {
                 collector.reg_use(rd);
                 collector.reg_use(rs);
             }
-            Load { rd, rs, .. } | Resize { rd, rs, .. } | Cast { rd, rs, .. } => {
+            UnaryAlu { rd, rs, .. }
+            | Load { rd, rs, .. }
+            | Resize { rd, rs, .. }
+            | Cast { rd, rs, .. } => {
                 collector.reg_def(rd);
                 collector.reg_use(rs);
             }
@@ -135,6 +169,11 @@ impl MachInst for MInst {
     fn is_move(&self) -> Option<(Writable<Reg>, Reg)> {
         use MInst::*;
         match self {
+            EchoLong { rds, rss, .. } | Echo { rds, rss, .. }
+                if rds.len() == 1 && rss.len() == 1 =>
+            {
+                Some((rds[0], rss[0]))
+            }
             Nop
             | Args { .. }
             | Ret { .. }
@@ -152,17 +191,16 @@ impl MachInst for MInst {
             | ImmJump { .. }
             | Alu1 { .. }
             | Alu2 { .. }
-            | IntAddWrap { .. }
+            | BinaryAlu { .. }
+            | UnaryAlu { .. }
             | IntCmp { .. }
             | Resize { .. }
-            | Cast { .. } => None,
-            Echo { rds, rss, .. } => {
-                if rds.len() == 1 && rds.len() == rss.len() {
-                    Some((rds[0], rss[0]))
-                } else {
-                    None
-                }
-            }
+            | Cast { .. }
+            | Discard { .. }
+            | EchoSplit { .. }
+            | EchoChain { .. }
+            | Echo { .. }
+            | EchoLong { .. } => None,
         }
     }
 
@@ -276,6 +314,10 @@ impl MInst {
         use MInst::*;
         match self {
             Args { args } => join("Args", args.iter().map(|p| wreg_name(p.vreg))),
+            Discard { rss } => join(
+                "Discard",
+                once("rss:".into()).chain(rss.iter().map(|r| reg_name(*r))),
+            ),
             Nop => "Nop".into(),
             Ret { trig } => join("Ret", once(format!("trig: {}", trig))),
             Rets { rets } => join("Rets", rets.iter().map(|p| reg_name(p.vreg))),
@@ -313,13 +355,72 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
-            Echo { rds, rss, outs } => join(
+            Echo { rds, rss } => join(
                 "Echo",
                 once("rds:".into())
                     .chain(rds.iter().map(|r| wreg_name(*r)))
                     .chain(once("rss:".into()))
+                    .chain(rss.iter().map(|r| reg_name(*r))),
+            ),
+            EchoChain {
+                rd1,
+                rd2,
+                rs1,
+                rs2,
+                out1,
+                out2,
+                rd_chain,
+                rs_chain,
+            } => join(
+                "EchoChain",
+                [
+                    "rd1:".into(),
+                    wreg_name(*rd1),
+                    "rd2:".into(),
+                    wreg_name(*rd2),
+                    "rs1:".into(),
+                    reg_name(*rs1),
+                    "rs2:".into(),
+                    reg_name(*rs2),
+                    format!("out1: {}", out1),
+                    format!("out2: {}", out2),
+                ]
+                .into_iter()
+                .chain(once("rd_chain:".into()))
+                .chain(rd_chain.iter().map(|r| wreg_name(*r)))
+                .chain(once("rs_chain:".into()))
+                .chain(rs_chain.iter().map(|r| reg_name(*r))),
+            ),
+            EchoSplit {
+                rd1,
+                rd2,
+                rs1,
+                rs2,
+                out1,
+                out2,
+            } => join(
+                "EchoSplit",
+                [
+                    "rd1:".into(),
+                    wreg_name(*rd1),
+                    "rd2:".into(),
+                    wreg_name(*rd2),
+                    "rs1:".into(),
+                    reg_name(*rs1),
+                    "rs2:".into(),
+                    reg_name(*rs2),
+                    format!("out1: {}", out1),
+                    format!("out2: {}", out2),
+                ]
+                .into_iter(),
+            ),
+            EchoLong { rds, rss, out } => join(
+                "EchoLong",
+                once("rds:".into())
+                    .chain(rds.iter().map(|r| wreg_name(*r)))
+                    .chain(once("rss:".into()))
                     .chain(rss.iter().map(|r| reg_name(*r)))
-                    .chain(once(format!("outs: {:?}", outs))),
+                    .chain(once(format!("out: {}", out))),
             ),
             Duplicate {
                 rd1,
@@ -364,7 +465,7 @@ impl MInst {
             ),
             Store { rd, rs } => join(
                 "Store",
-                ["rd:".into(), reg_name(*rd), "rs:".into(), reg_name(*rs)].into_iter(),
+                ["rs:".into(), reg_name(*rs), "rd:".into(), reg_name(*rd)].into_iter(),
             ),
             Load { ty, rd, rs, out } => join(
                 "Load",
@@ -401,15 +502,27 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
-            IntAddWrap { rd, rs1, rs2 } => join(
-                "IntAddWrap",
+            BinaryAlu { op, rd, rs1, rs2 } => join(
+                "BinaryAlu",
                 [
+                    format!("op: {:?}", op),
                     "rd:".into(),
                     wreg_name(*rd),
                     "rs1:".into(),
                     reg_name(*rs1),
                     "rs2:".into(),
                     reg_name(*rs2),
+                ]
+                .into_iter(),
+            ),
+            UnaryAlu { op, rd, rs } => join(
+                "UnaryAlu",
+                [
+                    format!("op: {:?}", op).into(),
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    "rs:".into(),
+                    reg_name(*rs),
                 ]
                 .into_iter(),
             ),
@@ -453,23 +566,21 @@ impl MInst {
             ),
             JumpIssue { link, dst } => join(
                 "JumpIssue",
-                [
-                    "link:".into(),
-                    wreg_name(*link),
-                    "dst:".into(),
-                    dst.to_string(),
-                ]
-                .into_iter(),
+                ["link:".into(), wreg_name(*link), format!("dst: {:?}", dst)].into_iter(),
             ),
-            BranchIssue { link, cond, dst } => join(
+            BranchIssue {
+                link,
+                cond,
+                dir,
+                dst,
+            } => join(
                 "BranchIssue",
                 [
                     "link:".into(),
                     wreg_name(*link),
                     "cond:".into(),
                     reg_name(*cond),
-                    "dst:".into(),
-                    dst.to_string(),
+                    format!("dir: {:?}, dst: {:?}", dir, dst),
                 ]
                 .into_iter(),
             ),
@@ -480,7 +591,7 @@ impl MInst {
                     .chain(once("args:".into()))
                     .chain(args.iter().map(|r| reg_name(*r))),
             ),
-            ImmJump { dst } => join("ImmJump", ["dst:".into(), dst.to_string()].into_iter()),
+            ImmJump { dst } => join("ImmJump", [format!("dst: {:?}", dst)].into_iter()),
         }
     }
 
@@ -503,24 +614,48 @@ impl MInst {
                 .iterate()
                 .map(|p| reference([(p.vreg)]))
                 .collect::<Vec<_>>(),
-            Echo { rss, .. } | Alu1 { rss, .. } | Alu2 { rss, .. } => {
-                rss.iterate().collect::<Vec<_>>()
+            Echo { rss, .. }
+            | EchoLong { rss, .. }
+            | Alu1 { rss, .. }
+            | Alu2 { rss, .. }
+            | Discard { rss } => rss.iterate().collect::<Vec<_>>(),
+            EchoChain {
+                rs1, rs2, rs_chain, ..
+            } => {
+                let mut uses = vec![rs1, rs2];
+                uses.extend(rs_chain.iterate());
+                uses
             }
-            IntAddWrap { rs1, rs2, .. } | IntCmp { rs1, rs2, .. } => vec![rs1, rs2],
-            Duplicate { rs, .. } | Load { rs, .. } | Resize { rs, .. } | Cast { rs, .. } => {
+            EchoSplit { rs1, rs2, .. } => vec![rs1, rs2],
+            BinaryAlu { rs1, rs2, .. } | IntCmp { rs1, rs2, .. } => vec![rs1, rs2],
+
+            UnaryAlu { rs, .. }
+            | Duplicate { rs, .. }
+            | Load { rs, .. }
+            | Resize { rs, .. }
+            | Cast { rs, .. } => {
                 vec![rs]
             }
-            Store { rd, rs } => vec![rd, rs],
+            Store { rd, rs } => vec![rs, rd],
             Call { fun, .. } => vec![fun],
-            CallArgs { link, args, .. } => {
-                let mut uses = vec![link];
+            CallArgs { args, .. } => {
+                let mut uses = Vec::new();
                 uses.extend(args.iterate().map(|p| reference([(p.vreg)])));
                 uses
             }
             BranchIssue { cond, .. } => vec![cond],
-            JumpTrigger { link, args, .. } => args.iterate().chain(once(link)).collect(),
+            JumpTrigger { args, .. } => args.iterate().collect(),
         }
         .into_iter()
+    }
+
+    pub(crate) fn use_order_meaningful(&self) -> bool {
+        use MInst::*;
+        match self {
+            BinaryAlu { op, .. } if *op == BinaryAluOp::IntAddWrap => false,
+            Alu2 { var, .. } if *var == Alu2Variant::Add => false,
+            _ => true,
+        }
     }
 
     /// Returns the registers defined by this instruction
@@ -528,33 +663,156 @@ impl MInst {
         use MInst::*;
         match self {
             Nop
-            | Args { .. }
             | Rets { .. }
             | Ret { .. }
-            | Const { .. }
             | Store { .. }
             | JumpTrigger { .. }
-            | ImmJump { .. } => vec![],
-            Echo { rds, .. } | Alu2 { rds, .. } => {
+            | ImmJump { .. }
+            | Call { .. }
+            | JumpIssue { .. }
+            | BranchIssue { .. }
+            | Discard { .. } => vec![],
+            Echo { rds, .. } | EchoLong { rds, .. } | Alu2 { rds, .. } => {
                 rds.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>()
             }
-            Duplicate { rd1, rd2, .. } | Reorder { rd1, rd2, .. } => {
+            Duplicate { rd1, rd2, .. } | EchoSplit { rd1, rd2, .. } | Reorder { rd1, rd2, .. } => {
                 vec![rd1.to_reg(), rd2.to_reg()]
             }
+            EchoChain {
+                rd1, rd2, rd_chain, ..
+            } => {
+                let mut uses = vec![rd2.to_reg(), rd1.to_reg()];
+                uses.extend(rd_chain.iter().map(|r| r.to_reg()));
+                uses
+            }
+            Args { args } => args.iter().map(|a| a.vreg.to_reg()).collect(),
             Alu1 { rd, .. }
+            | UnaryAlu { rd, .. }
             | Load { rd, .. }
-            | IntAddWrap { rd, .. }
+            | BinaryAlu { rd, .. }
             | IntCmp { rd, .. }
             | Resize { rd, .. }
-            | Cast { rd, .. } => {
+            | Cast { rd, .. }
+            | Const { rd, .. } => {
                 vec![rd.to_reg()]
-            }
-            Call { link, .. } | JumpIssue { link, .. } | BranchIssue { link, .. } => {
-                vec![link.to_reg()]
             }
             CallArgs { rets, .. } => rets.iter().map(|p| p.vreg.to_reg()).collect(),
         }
         .into_iter()
+    }
+
+    /// Returns how much reference distances increase for in-flight operands crossing this instruction.
+    pub(crate) fn reference_length(&self) -> usize {
+        use MInst::*;
+        match self {
+            Args { .. } => 0,
+            Nop
+            | Rets { .. }
+            | JumpTrigger { .. }
+            | UnaryAlu { .. }
+            | BinaryAlu { .. }
+            | IntCmp { .. }
+            | Resize { .. }
+            | Ret { .. }
+            | Call { .. }
+            | CallArgs { .. }
+            | Const { .. }
+            | Reorder { .. }
+            | Duplicate { .. }
+            | Store { .. }
+            | Load { .. }
+            | Cast { .. }
+            | JumpIssue { .. }
+            | BranchIssue { .. }
+            | Alu1 { .. }
+            | Alu2 { .. }
+            | Discard { .. }
+            | EchoLong { .. }
+            | EchoSplit { .. }
+            | EchoChain { .. } => 1,
+            Echo { rds, rss } => Self::echo_chain(
+                rds.iter()
+                    .cloned()
+                    .zip(rss.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                || Reg::from_virtual_reg(VReg::new(0, RegClass::Int)),
+            )
+            .len(),
+            ImmJump { .. } => unreachable!(),
+        }
+    }
+
+    /// Constructs an echo chain that splits all input/output/ref triplets into a most 3 per
+    pub(crate) fn echo_chain(
+        ops: &[(WritableReg, Reg)],
+        new_vreg: impl FnMut() -> Reg,
+    ) -> Vec<Self> {
+        Self::echo_chain_impl(ops, new_vreg, Vec::new())
+    }
+
+    /// Constructs an echo chain that splits all input/output/ref triplets into a most 3 per
+    pub fn echo_chain_impl(
+        ops: &[(WritableReg, Reg)],
+        mut new_vreg: impl FnMut() -> Reg,
+        mut result: Vec<Self>,
+    ) -> Vec<Self> {
+        if ops.len() == 0 {
+            return result;
+        }
+
+        let mut rds = vec![];
+        let mut rss = vec![];
+
+        // The first 2 are kept as is
+        let mut insert = |op: &(WritableReg, Reg)| {
+            rds.push(op.0);
+            rss.push(op.1);
+        };
+        let ops_taken = min(2, ops.len());
+        ops.iter().take(ops_taken).for_each(&mut insert);
+
+        // The rest are rerouted to a following echo
+        let map_to_next = |op: (WritableReg, Reg)| {
+            let new_rd = new_vreg();
+
+            rds.push(WritableReg::from_reg(new_rd));
+            rss.push(op.1);
+
+            (op.0, new_rd)
+        };
+
+        let next_ops = ops[(ops_taken)..]
+            .iter()
+            .cloned()
+            .map(map_to_next)
+            .collect::<Vec<_>>();
+
+        result.push(if rds.len() == 1 {
+            MInst::EchoLong { rds, rss, out: 0 }
+        } else if rds.len() == 2 {
+            MInst::EchoSplit {
+                rd1: rds[0],
+                rd2: rds[1],
+                rs1: rss[0],
+                rs2: rss[1],
+                out1: 0,
+                out2: 0,
+            }
+        } else {
+            MInst::EchoChain {
+                rd1: rds[0],
+                rd2: rds[1],
+                rs1: rss[0],
+                rs2: rss[1],
+                out1: 0,
+                out2: 0,
+                rd_chain: rds[2..].iter().cloned().collect(),
+                rs_chain: rss[2..].iter().cloned().collect(),
+            }
+        });
+
+        Self::echo_chain_impl(&next_ops, new_vreg, result)
     }
 }
 
@@ -627,17 +885,24 @@ impl MachInstLabelUse for LabelUse {
                 if trig.value >= 0 {
                     // Trigger after instruction
                     let trig_offset = use_offset + trig.value as u32 * 2;
-                    assert!(label_offset >= trig_offset);
 
-                    let diff = label_offset - trig_offset;
-                    assert!(diff.is_multiple_of(2));
-                    let diff = diff / 2;
+                    if label_offset >= trig_offset {
+                        let diff = label_offset - trig_offset;
+                        assert!(diff.is_multiple_of(2));
+                        let diff = diff / 2;
 
-                    if diff == 1 {
-                        // The jmp instruction cannot be used for fallthrough
-                        Instruction::NoOp
+                        if diff == 1 {
+                            // The jmp instruction cannot be used for fallthrough
+                            Instruction::NoOp
+                        } else {
+                            Instruction::Jump((diff as i32 - 1).try_into().unwrap(), trig)
+                        }
                     } else {
-                        Instruction::Jump((diff as i32 - 1).try_into().unwrap(), trig)
+                        let diff = trig_offset - label_offset;
+                        assert!(diff.is_multiple_of(2));
+                        let diff = diff / 2;
+
+                        Instruction::Jump((-(diff as i32)).try_into().unwrap(), trig)
                     }
                 } else {
                     unimplemented!()

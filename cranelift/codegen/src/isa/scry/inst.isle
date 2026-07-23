@@ -19,11 +19,29 @@
   )
 )
 
+(type UnaryAluOp
+  (enum
+    (LogNeg)    ;; Logical negation
+  )
+)
+
+(type BinaryAluOp
+  (enum
+    (IntAddWrap)    ;; Integer wrapping addition
+    (IntSubWrap)    ;; Integer wrapping subtraction
+  )
+)
+
 ;; Instruction formats.
 (type MInst
   (enum
     ;; A no-op.
     (Nop)
+
+    ;; Discards any incoming operands
+    (Discard
+      (rss RegVec)
+    )
 
     ;; A pseudo-instruction that captures register arguments in vregs.
     (Args
@@ -35,7 +53,14 @@
       (rets VecRetPair)
     )
 
-    (IntAddWrap
+    (UnaryAlu           ; 1 input, 1 output ALU instruction
+      (op UnaryAluOp)
+      (rd WritableReg)
+      (rs Reg)
+    )
+
+    (BinaryAlu          ; 2 input, 1 output ALU instruction using effective input types
+      (op BinaryAluOp)
       (rd WritableReg)
       (rs1 Reg)
       (rs2 Reg)
@@ -83,10 +108,47 @@
     (Echo
       (rds WritableRegVec)
       (rss RegVec)
-      (outs U16Vec) ;; Output references for each rd
+    )
+
+    ;; An echo that output the first two operands and send the rest to the next instruction
+    ;; This maps to the splitting echo in Scry. Remember that it flips the order of the first two operands
+    ;; if they have the same reference
+    (EchoChain
+      (rd1 WritableReg)
+      (rd2 WritableReg)
+      (rs1 Reg)
+      (rs2 Reg)
+      (out1 u16)
+      (out2 u16)
+      (rd_chain WritableRegVec)
+      (rs_chain RegVec)
+    )
+
+    ;; An echo takes two operands and outputs them to each their target
+    ;;
+    ;; Maps to the scry splitting echo. However, if the references are equal, maps to the long echo to ensure
+    ;; their order is not flipped (as the splitting echo does).
+    (EchoSplit
+      (rd1 WritableReg)
+      (rd2 WritableReg)
+      (rs1 Reg)
+      (rs2 Reg)
+      (out1 u16)
+      (out2 u16)
+    )
+
+    ;; An echo takes any number of operands and outputs them to the same target
+    (EchoLong
+      (rds WritableRegVec)
+      (rss RegVec)
+      (out u16)
     )
 
     ;; Reorder the two inputs to the same output
+    ;;
+    ;; In the input, rs1 is first and rs2 is second.
+    ;; In the output rd1 is first and rd2 is second.
+    ;; The of rs1 goes to rd2 and rs2 -> rd1.
     (Reorder
       (rd1 WritableReg)
       (rd2 WritableReg)
@@ -104,8 +166,8 @@
     )
 
     (Store
-      (rd Reg) ;; Address to store to
       (rs Reg) ;; value to store
+      (rd Reg) ;; Address to store to
     )
 
     (Load
@@ -135,7 +197,8 @@
     ;; Issues a conditional branch
     (BranchIssue
       (link WritableReg) ;; Links to the trigger instruction, not actually used
-      (dst MachLabel)  ;; Where to jump to
+      (dst MachLabel)    ;; Where to jump to
+      (dir bool)         ;; Whether jumping forwards or backwards
       (cond Reg)         ;; Condition
     )
 
@@ -186,7 +249,18 @@
   (add_trrr ty src1 src2)
   (let
     ( (dst WritableReg (temp_writable_reg ty))
-      (_ Unit (emit (MInst.IntAddWrap  dst src1 src2)))
+      (_ Unit (emit (MInst.BinaryAlu (BinaryAluOp.IntAddWrap)  dst src1 src2)))
+    )
+    dst
+  )
+)
+
+(decl isub_wrap_trrr (Type Reg Reg) Reg)
+(rule
+  (isub_wrap_trrr ty lhs rhs)
+  (let
+    ( (dst WritableReg (temp_writable_reg ty))
+      (_ Unit (emit (MInst.BinaryAlu (BinaryAluOp.IntSubWrap)  dst lhs rhs)))
     )
     dst
   )
@@ -217,7 +291,7 @@
 (decl st_rrfo (Reg Reg MemFlags Offset32) InstOutput)
 (rule
   (st_rrfo val dst flags off)
-  (side_effect (SideEffectNoResult.Inst (MInst.Store dst val)))
+  (side_effect (SideEffectNoResult.Inst (MInst.Store val dst)))
 )
 
 ; Gets the full signature of the given sigref

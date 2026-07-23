@@ -1,0 +1,15 @@
+test interpret
+test run
+target scry32
+
+; Tests can maintain the correct input order for subtraction
+function %sub_added_one(i32 sext, i32 sext) -> i32 sext{
+block1(v0: i32, v1: i32):
+	v2 = iadd_imm v1, 1
+    v3 = isub v2, v0 	; v2 is produced later but needed as the first operand
+    return v3
+}
+; run: %sub_added_one(0,0) == 1
+; run: %sub_added_one(1,0) == 0
+; run: %sub_added_one(0,1) == 2
+; run: %sub_added_one(4,15) == 12

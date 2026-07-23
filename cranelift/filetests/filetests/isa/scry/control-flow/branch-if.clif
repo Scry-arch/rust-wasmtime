@@ -2,18 +2,23 @@ test interpret
 test run
 target scry32
 
+; Tests a conditional branch to blocks with equivalent parameters
 function %maybe_add_one(i32 uext) -> i32 uext {
 block0(v0: i32):
     brif v0, block2(v0), block3(v0)
 
 block2(v1: i32):
     v2 = iadd_imm v1, 1
-    jump block3(v2)
+    jump block4(v2)
 
 block3(v3: i32):
-    return v3
+    v4 = iadd_imm v3, 10
+    jump block4(v4)
+
+block4(v5: i32):
+    return v5
 }
 
-; run: %maybe_add_one(0) == 0
+; run: %maybe_add_one(0) == 10
 ; run: %maybe_add_one(16) == 17
 ; run: %maybe_add_one(-100) == -99

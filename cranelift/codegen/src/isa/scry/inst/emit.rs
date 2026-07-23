@@ -4,7 +4,7 @@ use crate::ir::{self};
 use crate::isa::scry::inst::*;
 use crate::isa::scry::lower::isle::generated_code::MInst;
 use cranelift_control::ControlPlane;
-use scry_isa::{Bits, CallVariant, Instruction};
+use scry_isa::{AluVariant, Bits, CallVariant, Instruction};
 
 pub struct EmitInfo {
     #[expect(dead_code, reason = "may want to be used in the future")]
@@ -73,87 +73,116 @@ impl MachInstEmit for MInst {
 
     fn emit(&self, sink: &mut MachBuffer<MInst>, _emit_info: &Self::Info, _state: &mut EmitState) {
         use MInst::*;
-        let instr = match self {
-            Rets { .. } | ImmJump { .. } | IntCmp { .. } | IntAddWrap { .. } | Resize { .. } => {
+        let insts = match self {
+            Rets { .. }
+            | ImmJump { .. }
+            | IntCmp { .. }
+            | BinaryAlu { .. }
+            | Resize { .. }
+            | Echo { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
-            Args { .. } | CallArgs { .. } | JumpTrigger { .. } => return,
-            Nop => Instruction::NoOp,
+            Args { .. } | CallArgs { .. } | JumpTrigger { .. } => vec![],
+            Nop | Discard { .. } => vec![Instruction::NoOp],
             Ret { trig } => {
-                Instruction::Call(CallVariant::Ret, Bits::try_from(*trig as i32).unwrap())
+                vec![Instruction::Call(
+                    CallVariant::Ret,
+                    Bits::try_from(*trig as i32).unwrap(),
+                )]
             }
-            Alu1 { var, out, .. } => Instruction::Alu(*var, Bits::try_from(*out as i32).unwrap()),
+            Alu1 { var, out, .. } => {
+                vec![Instruction::Alu(*var, Bits::try_from(*out as i32).unwrap())]
+            }
             Alu2 {
                 var, out_var, outs, ..
             } => {
                 assert_eq!(outs.len(), 1);
-                Instruction::Alu2(*var, *out_var, Bits::try_from(outs[0] as i32).unwrap())
+                vec![Instruction::Alu2(
+                    *var,
+                    *out_var,
+                    Bits::try_from(outs[0] as i32).unwrap(),
+                )]
             }
-            Const { ty, imm, .. } => Instruction::Constant(
-                ty.get_known()
-                    .expect("Missing a well-defined type for constant")
-                    .try_into()
-                    .unwrap(),
-                Bits::try_from(imm.bits() as i32).unwrap(),
-            ),
-            Echo { rds, outs, .. } => {
-                assert_eq!(
-                    rds.len(),
-                    outs.len(),
-                    "Registers do not have correct number of outputs: {:?} != {:?}",
-                    rds,
-                    outs
-                );
-
-                if outs.iter().all(|o| *o == outs[0]) {
-                    // All outputs go to the same destination, use long echo
-                    Instruction::EchoLong(Bits::try_from(outs[0] as i32).unwrap())
-                } else if outs.len() == 2 {
-                    // Two outputs going different destinations, use splitting echo
-                    Instruction::Echo(
-                        false,
-                        Bits::try_from(outs[0] as i32).unwrap(),
-                        Bits::try_from(outs[1] as i32).unwrap(),
-                    )
-                } else {
-                    unimplemented!()
-                }
+            UnaryAlu { .. } => {
+                vec![Instruction::Alu(
+                    AluVariant::Equal,
+                    Bits::try_from(0i32).unwrap(),
+                )] // Logical negation just uses "x == 0", where 0 is implicit
+            }
+            Const { ty, imm, .. } => {
+                let bits = (imm.bits() & 0b1111_1111) as u8; // Extract only relevant bits, we do not support value > 8 bits yet.
+                vec![Instruction::Constant(
+                    ty.get_known()
+                        .expect("Missing a well-defined type for constant")
+                        .try_into()
+                        .unwrap(),
+                    Bits::try_from(bits as i32).unwrap(),
+                )]
+            }
+            EchoLong { out, .. } => {
+                vec![Instruction::EchoLong(Bits::try_from(*out as i32).unwrap())]
+            }
+            EchoSplit { out1, out2, .. } => vec![if out1 == out2 {
+                // Using a long echo ensures operand order is not changed when targetting the same instruction
+                // unlike Instruction::Echo
+                Instruction::EchoLong(Bits::try_from(*out1 as i32).unwrap())
+            } else {
+                Instruction::Echo(
+                    false,
+                    Bits::try_from(*out1 as i32).unwrap(),
+                    Bits::try_from(*out2 as i32).unwrap(),
+                )
+            }],
+            EchoChain { out1, out2, .. } => {
+                vec![Instruction::Echo(
+                    true,
+                    Bits::try_from(*out1 as i32).unwrap(),
+                    Bits::try_from(*out2 as i32).unwrap(),
+                )]
             }
             Reorder { out, .. } => {
                 // Can use splitting echo with the same target to reorder
-                Instruction::Echo(
+                vec![Instruction::Echo(
                     false,
                     Bits::try_from(*out as i32).unwrap(),
                     Bits::try_from(*out as i32).unwrap(),
-                )
+                )]
             }
-            Duplicate { out1, out2, .. } => Instruction::Duplicate(
+            Duplicate { out1, out2, .. } => vec![Instruction::Duplicate(
                 false,
                 Bits::try_from(*out1 as i32).unwrap(),
                 Bits::try_from(*out2 as i32).unwrap(),
-            ),
-            Store { .. } => Instruction::Store,
-            Load { ty, out, .. } => Instruction::Load(
+            )],
+            Store { .. } => vec![Instruction::Store],
+            Load { ty, out, .. } => vec![Instruction::Load(
                 ty.get_known().unwrap().try_into().unwrap(),
                 Bits::try_from(*out as i32).unwrap(),
-            ),
-            Cast { out, ty, .. } => Instruction::Cast(
+            )],
+            Cast { out, ty, .. } => vec![Instruction::Cast(
                 ty.get_known()
                     .unwrap_or(scry_isa::Type::Uint(ty.size_pow2()))
                     .try_into()
                     .unwrap(),
                 Bits::try_from(*out as i32).unwrap(),
-            ),
+            )],
             Call { trig, .. } => {
-                Instruction::Call(CallVariant::Call, Bits::try_from(*trig as i32).unwrap())
+                vec![Instruction::Call(
+                    CallVariant::Call,
+                    Bits::try_from(*trig as i32).unwrap(),
+                )]
             }
             JumpIssue { dst, .. } | BranchIssue { dst, .. } => {
                 // sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpTrig6);
                 sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpLoc7);
-                Instruction::Jump(0.try_into().unwrap(), 0.try_into().unwrap())
+                vec![Instruction::Jump(
+                    0.try_into().unwrap(),
+                    0.try_into().unwrap(),
+                )]
             }
         };
-        sink.put2(instr.encode());
+        for inst in insts {
+            sink.put2(inst.encode());
+        }
     }
 
     fn pretty_print_inst(&self, state: &mut Self::State) -> String {

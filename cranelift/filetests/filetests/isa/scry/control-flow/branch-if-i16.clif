@@ -1,0 +1,24 @@
+test interpret
+test run
+target scry32
+
+; Tests a conditional branch to blocks with equivalent parameters of i16
+function %maybe_add_one_i16(i16 uext) -> i16 uext {
+block0(v0: i16):
+    brif v0, block2(v0), block3(v0)
+
+block2(v1: i16):
+    v2 = iadd_imm v1, 1
+    jump block4(v2)
+
+block3(v3: i16):
+    v4 = iadd_imm v3, 10
+    jump block4(v4)
+
+block4(v5: i16):
+    return v5
+}
+
+; run: %maybe_add_one_i16(0) == 10
+; run: %maybe_add_one_i16(16) == 17
+; run: %maybe_add_one_i16(65535) == 0

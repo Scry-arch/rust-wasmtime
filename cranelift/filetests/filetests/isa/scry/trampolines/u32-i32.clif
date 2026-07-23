@@ -13,13 +13,13 @@ block0(v0: i32, v1: i32):
 
 ; VCode:
 ; block0:
-;   Echo(rds:, v(192), v(193), rss:, outs: [2, 0], )
-;   Duplicate(rd1:, v(199), rd2:, v(200), rs:, v(193), out1: 0, out2: 3, )
-;   Load(ty: Known(Uint(2)), rd:, v(198), rs:, v(199), out: 1, )
-;   Call(link:, v(196), fn_ptr:, v(192), trig: 0, )
+;   EchoSplit(rd1:, v(199), rd2:, v(200), rs1:, v(192), rs2:, v(193), out1: 2, out2: 0, )
+;   Duplicate(rd1:, v(201), rd2:, v(202), rs:, v(200), out1: 0, out2: 3, )
+;   Load(ty: Known(Uint(2)), rd:, v(198), rs:, v(201), out: 1, )
+;   Call(link:, v(196), fn_ptr:, v(199), trig: 0, )
 ;   CallArgs(link:, v(196), rets:, v(197), args:, v(198), sig: Signature { params: [AbiParam { value_type: types::I32, purpose: Normal, extension: Uext }], returns: [AbiParam { value_type: types::I32, purpose: Normal, extension: Sext }], call_conv: WindowsFastcall }, )
-;   Reorder(rd1:, v(201), rd2:, v(202), rs1:, v(200), rs2:, v(197), out: 0, )
-;   Store(rd:, v(201), rs:, v(202), )
+;   Reorder(rd1:, v(203), rd2:, v(204), rs1:, v(202), rs2:, v(197), out: 0, )
+;   Store(rs:, v(204), rd:, v(203), )
 ;   Ret(trig: 0, )
 
 ;
