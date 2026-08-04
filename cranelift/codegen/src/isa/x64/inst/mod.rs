@@ -1344,6 +1344,10 @@ impl MachInst for Inst {
         }
     }
 
+    fn is_jmp(&self) -> bool {
+        unimplemented!()
+    }
+
     fn is_low_level_branch(&self) -> bool {
         match self {
             &Self::WinchJmpIf { .. } => true,

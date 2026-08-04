@@ -741,6 +741,10 @@ impl MachInst for Inst {
         }
     }
 
+    fn is_jmp(&self) -> bool {
+        unimplemented!()
+    }
+
     fn is_included_in_clobbers(&self) -> bool {
         match self {
             &Inst::Args { .. } => false,

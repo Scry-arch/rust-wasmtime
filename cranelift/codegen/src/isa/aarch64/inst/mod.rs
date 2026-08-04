@@ -957,6 +957,10 @@ impl MachInst for Inst {
         }
     }
 
+    fn is_jmp(&self) -> bool {
+        unimplemented!()
+    }
+
     fn is_included_in_clobbers(&self) -> bool {
         let (caller, callee, is_exception) = match self {
             Inst::Args { .. } => return false,
