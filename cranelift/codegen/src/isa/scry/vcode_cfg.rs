@@ -1,7 +1,8 @@
 use crate::ir::RelSourceLoc;
 use crate::machinst::{BlockIndex, VCode, VCodeBuilder};
-use crate::{Reg, VCodeInst};
+use crate::{MachLabel, Reg, VCodeInst};
 use core::fmt::Debug;
+use cranelift_entity::EntityRef;
 use graphene::algo::Retainable;
 use graphene::algo::search::Topo;
 use graphene::common::{AdjListGraph, VertexMapGraph};
@@ -120,7 +121,25 @@ pub struct VCodeCFG<I: VCodeInst> {
 }
 
 impl<I: VCodeInst> VCodeCFG<I> {
-    pub fn from_vcode(vcode: &VCode<I>) -> Self {
+    pub fn find_unnecessary_block(
+        cfg: &impl Graph<Vertex = usize, VertexWeight = VCodeBB<I>>,
+    ) -> Option<usize> {
+        for (bb_v, bb) in cfg.all_vertices_weighted() {
+            if bb.inst.len() == 1
+                && bb.inst[0].is_jmp()
+                && cfg.edges_sinked_in(bb_v).count() == 1
+                && cfg.edges_sourced_in(bb_v).count() == 1
+            {
+                return Some(bb_v);
+            }
+        }
+        None
+    }
+
+    pub fn from_vcode(
+        vcode: &VCode<I>,
+        update_branch_target: impl Fn(&mut VCodeBB<I>, MachLabel),
+    ) -> Self {
         let mut graph = AdjListGraph::<VCodeBB<I>, ()>::new();
 
         let mut bb_map = HashMap::new();
@@ -208,6 +227,39 @@ impl<I: VCodeInst> VCodeCFG<I> {
             donelist.insert(bb);
         }
 
+        // Eliminate blocks consisting of just a jump.
+        // These are inserted before instruction selection to be the "not taken" target of conditional branches
+        // They don't adhere to the parameter rules of the "real" blocks and have no purpose.
+        // Find them and move all control flow back to the original target
+        while let Some(bb_v) = VCodeCFG::find_unnecessary_block(&graph) {
+            let bb = graph.vertex_weight(bb_v).unwrap();
+
+            log::trace!("Unnecessary block {}: {:?}", bb_v, bb);
+
+            let bb_block = bb.vcode_bb;
+            let pred_v = graph.edges_sinked_in(bb_v).next().unwrap().0;
+            let succ_v = graph.edges_sourced_in(bb_v).next().unwrap().0;
+            let succ_bb_block = graph.vertex_weight(succ_v).unwrap().vcode_bb;
+            let branch_params_to_succ = bb.branch_params.get(&succ_bb_block).unwrap().clone();
+            let pred_bb = graph.vertex_weight_mut(pred_v).unwrap();
+
+            // Retarget any predecessors to the successor
+            assert!(pred_bb.branch_params.get(&succ_bb_block).is_none());
+            let pred_branch_params = pred_bb.branch_params.remove(&bb_block).unwrap();
+            assert!(pred_branch_params.is_empty()); // The correct branch parameters are in the unnecessary block, ignore those in the predecessor
+            pred_bb
+                .branch_params
+                .insert(succ_bb_block, branch_params_to_succ);
+
+            update_branch_target(pred_bb, MachLabel::new(succ_bb_block.index()));
+
+            assert_eq!(graph.edges_between(pred_v, succ_v).count(), 0);
+            graph.add_edge(pred_v, succ_v).unwrap();
+
+            // Remove block and its edges
+            graph.remove_vertex(bb_v).unwrap();
+        }
+
         let entry_v = bb_map.get(&entry_bb).unwrap();
 
         // Initial block order just requires the entry block to be before all others
@@ -267,6 +319,10 @@ impl<I: VCodeInst> VCodeCFG<I> {
                     .unwrap();
             }
         }
+        // dbg!(&self.graph);
+        // dbg!(&self
+        //     .block_order);
+        // dbg!(&merged);
 
         // add edges between groups
         for (so, si, _) in self

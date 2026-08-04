@@ -1133,6 +1133,10 @@ impl MachInst for Inst {
         }
     }
 
+    fn is_jmp(&self) -> bool {
+        unimplemented!()
+    }
+
     fn is_included_in_clobbers(&self) -> bool {
         // We exclude call instructions from the clobber-set when they are calls
         // from caller to callee with the same ABI. Such calls cannot possibly

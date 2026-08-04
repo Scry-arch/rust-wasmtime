@@ -1,6 +1,5 @@
 test interpret
-;test run
-test compile precise-output
+test run
 target scry32
 
 function %add_sum(i32 sext, i32 uext) -> i32 uext {
@@ -21,14 +20,3 @@ block2(v7: i32):
 ; run: %add_sum(0,0) == 3
 ; run: %add_sum(1,1) == 7
 ; run: %add_sum(10,2) == 35
-
-;
-; Disassembled:
-; block0: ; offset 0x0
-; echo =>2, =>0
-; dup =>0, =>3
-; ld i8, =>1
-; call 0
-; echo =>0, =>0
-; st 
-; ret 0

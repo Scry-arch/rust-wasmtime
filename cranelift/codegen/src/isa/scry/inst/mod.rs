@@ -204,6 +204,13 @@ impl MachInst for MInst {
         }
     }
 
+    fn is_jmp(&self) -> bool {
+        match self {
+            MInst::ImmJump { .. } => true,
+            _ => false,
+        }
+    }
+
     fn is_included_in_clobbers(&self) -> bool {
         // Scry does not have to worry about clobbers (no registers)
         false

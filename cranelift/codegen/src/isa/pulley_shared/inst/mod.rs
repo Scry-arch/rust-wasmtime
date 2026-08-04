@@ -444,6 +444,10 @@ where
         }
     }
 
+    fn is_jmp(&self) -> bool {
+        unimplemented!()
+    }
+
     fn get_operands(&mut self, collector: &mut impl OperandVisitor) {
         pulley_get_operands(self, collector);
     }

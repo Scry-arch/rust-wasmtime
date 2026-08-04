@@ -29,7 +29,7 @@ use core::fmt::{Debug, Formatter};
 use cranelift_control::ControlPlane;
 use cranelift_entity::EntityRef;
 use graphene::core::GraphMut;
-use graphene::core::property::{AddEdge, RemoveVertex, Rooted};
+use graphene::core::property::{AddEdge, Rooted};
 use graphene::core::{Graph, MaybeOwned};
 use regalloc2::{Block, Function as RegFunc};
 use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
@@ -296,61 +296,7 @@ impl ScryBackend {
     }
 }
 
-fn find_unnecessary_block(cfg: &mut VCodeCFG<MInst>) -> Option<usize> {
-    for (bb_v, bb) in cfg.graph.all_vertices_weighted() {
-        if bb.inst.len() == 1
-            && let MInst::ImmJump { .. } = bb.inst[0]
-            && cfg.graph.edges_sinked_in(bb_v).count() == 1
-            && cfg.graph.edges_sourced_in(bb_v).count() == 1
-        {
-            return Some(bb_v);
-        }
-    }
-    None
-}
-
 fn prepare_block_params(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
-    // First, eliminate blocks consisting of just a ImmJump.
-    // These are inserted before instruction selection to be the "not taken" target of conditional branches
-    // They don't adhere to the parameter rules of the "real" blocks and have no purpose in this backend.
-    // Find them and move all control flow back to the original target
-
-    while let Some(bb_v) = find_unnecessary_block(cfg) {
-        let bb = cfg.graph.vertex_weight(bb_v).unwrap();
-
-        log::trace!("Unnecessary block {}: {:?}", bb_v, bb);
-
-        let bb_block = bb.vcode_bb;
-        let pred_v = cfg.graph.edges_sinked_in(bb_v).next().unwrap().0;
-        let succ_v = cfg.graph.edges_sourced_in(bb_v).next().unwrap().0;
-        let succ_bb_block = cfg.graph.vertex_weight(succ_v).unwrap().vcode_bb;
-        let branch_params_to_succ = bb.branch_params.get(&succ_bb_block).unwrap().clone();
-        let pred_bb = cfg.graph.vertex_weight_mut(pred_v).unwrap();
-
-        // Retarget any predecessors to the successor
-        assert!(pred_bb.branch_params.get(&succ_bb_block).is_none());
-        let pred_branch_params = pred_bb.branch_params.remove(&bb_block).unwrap();
-        assert!(pred_branch_params.is_empty()); // The correct branch parameters are in the unnecessary block, ignore those in the predecessor
-        pred_bb
-            .branch_params
-            .insert(succ_bb_block, branch_params_to_succ);
-
-        let (issue_idx, _) = get_jmp_issue_trigger(pred_bb).unwrap();
-        let issue_inst = pred_bb.inst.get_mut(issue_idx).unwrap();
-        match issue_inst {
-            MInst::BranchIssue { dst, .. } => {
-                *dst = MachLabel::new(succ_bb_block.index());
-            }
-            _ => unimplemented!(),
-        }
-
-        assert_eq!(cfg.graph.edges_between(pred_v, succ_v).count(), 0);
-        cfg.graph.add_edge(pred_v, succ_v).unwrap();
-
-        // Remove block and its edges
-        cfg.graph.remove_vertex(bb_v).unwrap();
-    }
-
     // Handle entry block first, moving MInst:Args to the params
     let entry_bb = cfg.graph.root_weight_mut();
     match &entry_bb.inst[0] {
@@ -699,7 +645,7 @@ fn replace_first_use(bb: &mut VCodeBB<MInst>, find: Reg, replace: Reg) -> bool {
     while let Some(Some(r)) = bb.branch_param_order.iter_mut().find(|r| **r == Some(find)) {
         *r = replace;
         // If we managed to find it in the order, we should also look for it in the regular params
-        bb.branch_params.iter_mut().for_each(|(b, params)| {
+        bb.branch_params.iter_mut().for_each(|(_, params)| {
             if let Some(p) = params.iter_mut().find(|r| **r == find) {
                 *p = replace;
             }
@@ -1338,7 +1284,7 @@ fn block_ordering(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) 
         // Add order dependencies based on branches
         if let Some((issue, _)) = get_jmp_issue_trigger(cfg.graph.vertex_weight(bb_v).unwrap()) {
             // Add dependencies of branch targets
-            let branch_target_v = match cfg.graph.vertex_weight(bb_v).unwrap().inst[issue] {
+            match cfg.graph.vertex_weight(bb_v).unwrap().inst[issue] {
                 MInst::BranchIssue {
                     dir,
                     dst,
@@ -1417,45 +1363,44 @@ fn block_ordering(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) 
                             // Existing code assumes correct backwards jump, do nothing.
                         }
                     }
-                    Some(target_bb_v)
-                }
-                _ => None,
-            };
 
-            // Add dependency of successor without branch
-            if let Some(branch_target_v) = branch_target_v {
-                let mut non_branch_target_iter = cfg
-                    .graph
-                    .edges_sourced_in(bb_v)
-                    .filter(|(succ_v, _)| *succ_v != branch_target_v);
+                    // Add dependency of successor without branch
+                    let mut non_branch_target_iter = cfg
+                        .graph
+                        .edges_sourced_in(bb_v)
+                        .filter(|(succ_v, _)| *succ_v != target_bb_v);
 
-                if let Some((succ_v, _)) = non_branch_target_iter.next()
-                    && cfg
+                    let (succ_v, _) = non_branch_target_iter
+                        .next()
+                        .expect("No other conditional branch target");
+
+                    if cfg
                         .block_order
-                        .edges_sinked_in(bb_v)
-                        .filter(|(_, o)| **o != Ordering::Precede)
+                        .edges_sourced_in(bb_v)
+                        .filter(|(_, o)| **o == Ordering::Precede)
                         .count()
                         == 0
-                {
-                    if let Some(o) = cfg
-                        .block_order
-                        .edges_between_mut(bb_v, succ_v)
-                        .find(|o| **o == Ordering::Before)
                     {
-                        *o = Ordering::Precede;
+                        if let Some(o) = cfg
+                            .block_order
+                            .edges_between_mut(bb_v, succ_v)
+                            .find(|o| **o == Ordering::Before)
+                        {
+                            *o = Ordering::Precede;
+                        } else {
+                            cfg.block_order
+                                .add_edge_weighted(bb_v, succ_v, Ordering::Precede)
+                                .unwrap()
+                        }
                     } else {
-                        cfg.block_order
-                            .add_edge_weighted(bb_v, succ_v, Ordering::Precede)
-                            .unwrap()
+                        unimplemented!("Branch already has a Ordering::Precede dependending on it")
                     }
-                } else {
-                    // Block already has an Ordering::Previous dependency
-                    unimplemented!()
+                    assert!(
+                        non_branch_target_iter.next().is_none(),
+                        "Block has more than 2 successors"
+                    );
                 }
-                assert!(
-                    non_branch_target_iter.next().is_none(),
-                    "Block has more than 2 successors"
-                );
+                _ => (),
             }
         }
     }
@@ -1483,7 +1428,18 @@ impl TargetIsa for ScryBackend {
         };
         let reg_type = |r: Reg| vcode.vreg_type_maybe(r.to_virtual_reg().unwrap().into());
 
-        let mut cfg = VCodeCFG::from_vcode(&vcode);
+        let update_branch_target = |bb: &mut VCodeBB<_>, new_target: MachLabel| {
+            let (issue_idx, _) = get_jmp_issue_trigger(bb).unwrap();
+            let issue_inst = bb.inst.get_mut(issue_idx).unwrap();
+            match issue_inst {
+                MInst::BranchIssue { dst, .. } => {
+                    *dst = new_target;
+                }
+                _ => unimplemented!(),
+            }
+        };
+
+        let mut cfg = VCodeCFG::from_vcode(&vcode, update_branch_target);
 
         log::trace!("VCodeCFG: {:?}", cfg);
 

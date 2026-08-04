@@ -290,6 +290,9 @@ pub trait MachInst: Clone + Debug {
     /// Is this an "args" pseudoinst?
     fn is_args(&self) -> bool;
 
+    /// Is this an unconditional jump
+    fn is_jmp(&self) -> bool;
+
     /// Classify the type of call instruction this is.
     ///
     /// This enables more granular function type analysis and optimization.
