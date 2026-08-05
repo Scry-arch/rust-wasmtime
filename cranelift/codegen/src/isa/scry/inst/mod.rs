@@ -205,10 +205,7 @@ impl MachInst for MInst {
     }
 
     fn is_jmp(&self) -> bool {
-        match self {
-            MInst::ImmJump { .. } => true,
-            _ => false,
-        }
+        matches!(self, MInst::ImmJump { .. })
     }
 
     fn is_included_in_clobbers(&self) -> bool {
@@ -222,16 +219,11 @@ impl MachInst for MInst {
     }
 
     fn is_args(&self) -> bool {
-        match self {
-            MInst::Args { .. } => true,
-            _ => false,
-        }
+        matches!(self, MInst::Args { .. })
     }
 
     fn call_type(&self) -> CallType {
-        match self {
-            _ => CallType::None,
-        }
+        CallType::None
     }
 
     fn is_term(&self) -> MachTerminator {
@@ -297,11 +289,6 @@ impl MachInst for MInst {
 pub fn reg_name(reg: Reg) -> String {
     format!("v({})", reg.to_virtual_reg().unwrap().index())
 }
-#[allow(unused)]
-pub fn vreg_name(reg: VReg) -> String {
-    format!("v({})", reg.vreg())
-}
-
 pub fn wreg_name(reg: Writable<Reg>) -> String {
     format!("v({})", reg.to_reg().to_virtual_reg().unwrap().index())
 }
@@ -326,15 +313,15 @@ impl MInst {
                 once("rss:".into()).chain(rss.iter().map(|r| reg_name(*r))),
             ),
             Nop => "Nop".into(),
-            Ret { trig } => join("Ret", once(format!("trig: {}", trig))),
+            Ret { trig } => join("Ret", once(format!("trig: {trig}"))),
             Rets { rets } => join("Rets", rets.iter().map(|p| reg_name(p.vreg))),
             Alu1 { var, rd, rss, out } => join(
                 "Alu1",
-                [format!("var: {:?}", var), "rd: ".into(), wreg_name(*rd)]
+                [format!("var: {var:?}"), "rd: ".into(), wreg_name(*rd)]
                     .into_iter()
                     .chain(once("rss:".into()))
                     .chain(rss.iter().map(|r| reg_name(*r)))
-                    .chain(once(format!("out: {:?}", out))),
+                    .chain(once(format!("out: {out:?}"))),
             ),
             Alu2 {
                 var,
@@ -344,18 +331,18 @@ impl MInst {
                 outs,
             } => join(
                 "Alu2",
-                [format!("var: {:?}, var_out {:?}", var, out_var)]
+                [format!("var: {var:?}, var_out {out_var:?}")]
                     .into_iter()
                     .chain(once("rds:".into()))
                     .chain(rds.iter().map(|r| wreg_name(*r)))
                     .chain(once("rss:".into()))
                     .chain(rss.iter().map(|r| reg_name(*r)))
-                    .chain(once(format!("outs: {:?}", outs))),
+                    .chain(once(format!("outs: {outs:?}"))),
             ),
             Const { ty, rd, imm } => join(
                 "Const",
                 [
-                    format!("ty: {:?}", ty),
+                    format!("ty: {ty:?}"),
                     "rd:".into(),
                     wreg_name(*rd),
                     format!("imm: {}", imm.bits()),
@@ -389,8 +376,8 @@ impl MInst {
                     reg_name(*rs1),
                     "rs2:".into(),
                     reg_name(*rs2),
-                    format!("out1: {}", out1),
-                    format!("out2: {}", out2),
+                    format!("out1: {out1}"),
+                    format!("out2: {out2}"),
                 ]
                 .into_iter()
                 .chain(once("rd_chain:".into()))
@@ -416,8 +403,8 @@ impl MInst {
                     reg_name(*rs1),
                     "rs2:".into(),
                     reg_name(*rs2),
-                    format!("out1: {}", out1),
-                    format!("out2: {}", out2),
+                    format!("out1: {out1}"),
+                    format!("out2: {out2}"),
                 ]
                 .into_iter(),
             ),
@@ -427,7 +414,7 @@ impl MInst {
                     .chain(rds.iter().map(|r| wreg_name(*r)))
                     .chain(once("rss:".into()))
                     .chain(rss.iter().map(|r| reg_name(*r)))
-                    .chain(once(format!("out: {}", out))),
+                    .chain(once(format!("out: {out}"))),
             ),
             Duplicate {
                 rd1,
@@ -444,8 +431,8 @@ impl MInst {
                     wreg_name(*rd2),
                     "rs:".into(),
                     reg_name(*rs),
-                    format!("out1: {}", out1),
-                    format!("out2: {}", out2),
+                    format!("out1: {out1}"),
+                    format!("out2: {out2}"),
                 ]
                 .into_iter(),
             ),
@@ -466,7 +453,7 @@ impl MInst {
                     reg_name(*rs1),
                     "rs2:".into(),
                     reg_name(*rs2),
-                    format!("out: {}", out),
+                    format!("out: {out}"),
                 ]
                 .into_iter(),
             ),
@@ -477,12 +464,12 @@ impl MInst {
             Load { ty, rd, rs, out } => join(
                 "Load",
                 [
-                    format!("ty: {:?}", ty).into(),
+                    format!("ty: {ty:?}"),
                     "rd:".into(),
                     wreg_name(*rd),
                     "rs:".into(),
                     reg_name(*rs),
-                    format!("out: {}", out),
+                    format!("out: {out}"),
                 ]
                 .into_iter(),
             ),
@@ -491,17 +478,17 @@ impl MInst {
                 [
                     "rd:".into(),
                     wreg_name(*rd),
-                    format!("ty: {:?}", ty),
+                    format!("ty: {ty:?}"),
                     "rs:".into(),
                     reg_name(*rs),
-                    format!("out: {}", out),
+                    format!("out: {out}"),
                 ]
                 .into_iter(),
             ),
             Resize { var, rd, rs } => join(
                 "Resize",
                 [
-                    format!("var: {:?}", var),
+                    format!("var: {var:?}"),
                     "rd:".into(),
                     wreg_name(*rd),
                     "rs:".into(),
@@ -512,7 +499,7 @@ impl MInst {
             BinaryAlu { op, rd, rs1, rs2 } => join(
                 "BinaryAlu",
                 [
-                    format!("op: {:?}", op),
+                    format!("op: {op:?}"),
                     "rd:".into(),
                     wreg_name(*rd),
                     "rs1:".into(),
@@ -525,7 +512,7 @@ impl MInst {
             UnaryAlu { op, rd, rs } => join(
                 "UnaryAlu",
                 [
-                    format!("op: {:?}", op).into(),
+                    format!("op: {op:?}"),
                     "rd:".into(),
                     wreg_name(*rd),
                     "rs:".into(),
@@ -536,7 +523,7 @@ impl MInst {
             IntCmp { cc, rd, rs1, rs2 } => join(
                 "IntCmp",
                 [
-                    format!("cc: {}", cc),
+                    format!("cc: {cc}"),
                     "rd:".into(),
                     wreg_name(*rd),
                     "rs1:".into(),
@@ -553,7 +540,7 @@ impl MInst {
                     wreg_name(*link),
                     "fn_ptr:".into(),
                     reg_name(*fun),
-                    format!("trig: {}", trig),
+                    format!("trig: {trig}"),
                 ]
                 .into_iter(),
             ),
@@ -569,11 +556,11 @@ impl MInst {
                     .chain(rets.iter().map(|p| wreg_name(p.vreg)))
                     .chain(once("args:".into()))
                     .chain(args.iter().map(|p| reg_name(p.vreg)))
-                    .chain(once(format!("sig: {:?}", sig))),
+                    .chain(once(format!("sig: {sig:?}"))),
             ),
             JumpIssue { link, dst } => join(
                 "JumpIssue",
-                ["link:".into(), wreg_name(*link), format!("dst: {:?}", dst)].into_iter(),
+                ["link:".into(), wreg_name(*link), format!("dst: {dst:?}")].into_iter(),
             ),
             BranchIssue {
                 link,
@@ -587,7 +574,7 @@ impl MInst {
                     wreg_name(*link),
                     "cond:".into(),
                     reg_name(*cond),
-                    format!("dir: {:?}, dst: {:?}", dir, dst),
+                    format!("dir: {dir:?}, dst: {dst:?}"),
                 ]
                 .into_iter(),
             ),
@@ -598,7 +585,7 @@ impl MInst {
                     .chain(once("args:".into()))
                     .chain(args.iter().map(|r| reg_name(*r))),
             ),
-            ImmJump { dst } => join("ImmJump", [format!("dst: {:?}", dst)].into_iter()),
+            ImmJump { dst } => join("ImmJump", [format!("dst: {dst:?}")].into_iter()),
         }
     }
 
@@ -861,7 +848,7 @@ impl MachInstLabelUse for LabelUse {
     fn max_neg_range(self) -> CodeOffset {
         use LabelUse::*;
         match self {
-            JmpLoc7 => ((1 << 7 - 1) - 1) * 2,
+            JmpLoc7 => ((1 << (7 - 1)) - 1) * 2,
             JmpTrig6 => ((1 << (6 - 1)) - 1) * 2,
         }
     }
@@ -879,13 +866,7 @@ impl MachInstLabelUse for LabelUse {
 
         let inst = Instruction::decode(LittleEndian::read_u16(buffer));
 
-        log::debug!(
-            "Patching {:?}: use({:?}) label({:?}), {:?}",
-            self,
-            use_offset,
-            label_offset,
-            inst
-        );
+        log::debug!("Patching {self:?}: use({use_offset:?}) label({label_offset:?}), {inst:?}");
 
         let patched = match (self, inst) {
             (JmpTrig6, Instruction::Jump(imm, _)) => {
@@ -928,7 +909,7 @@ impl MachInstLabelUse for LabelUse {
             }
             (_, i) => unreachable!("Invalid LabelUse for instruction: {:?}, {:?}", self, i),
         };
-        log::debug!("Patched: {:?}", patched);
+        log::debug!("Patched: {patched:?}");
         LittleEndian::write_u16(buffer, patched.encode());
     }
 

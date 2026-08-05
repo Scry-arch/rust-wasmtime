@@ -172,7 +172,6 @@ impl MachInstEmit for MInst {
                 )]
             }
             JumpIssue { dst, .. } | BranchIssue { dst, .. } => {
-                // sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpTrig6);
                 sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpLoc7);
                 vec![Instruction::Jump(
                     0.try_into().unwrap(),

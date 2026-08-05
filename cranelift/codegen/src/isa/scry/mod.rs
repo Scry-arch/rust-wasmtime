@@ -67,7 +67,7 @@ impl IsaType {
         }
     }
 
-    /// Power of 2 size of the type in bytes
+    /// Whether the type is an integer (signed, unsigned, or undetermined)
     fn is_int(&self) -> bool {
         match self {
             IsaType::Integer(_) => true,
@@ -77,17 +77,11 @@ impl IsaType {
     }
 
     fn is_known(&self) -> bool {
-        match self {
-            IsaType::Known(_) => true,
-            _ => false,
-        }
+        matches!(self, IsaType::Known(_))
     }
 
     fn is_signed_int(&self) -> bool {
-        match self {
-            IsaType::Known(t) => t.is_signed_int(),
-            _ => false,
-        }
+        matches!(self, IsaType::Known(t) if t.is_signed_int())
     }
 
     fn is_same_signedness(&self, other: &IsaType) -> bool {
@@ -157,8 +151,8 @@ impl<F: Fn(Reg) -> Option<Type>> TypeMap<F> {
     fn get(&self, reg: Reg) -> IsaType {
         self.map
             .get(&reg)
-            .cloned()
-            .unwrap_or((self.vreg_type)(reg).map_or(IsaType::Invalid, type_to_isatype))
+            .copied()
+            .unwrap_or_else(|| (self.vreg_type)(reg).map_or(IsaType::Invalid, type_to_isatype))
     }
 
     /// Updates the type assigned to the register.
@@ -167,7 +161,7 @@ impl<F: Fn(Reg) -> Option<Type>> TypeMap<F> {
     fn update(&mut self, reg: Reg, ty: IsaType) -> bool {
         let ty_old = self.get(reg);
         if ty != ty_old {
-            log::trace!("New type assignment: {:?}({:?}) <- {:?}", reg, ty_old, ty);
+            log::trace!("New type assignment: {reg:?}({ty_old:?}) <- {ty:?}");
             self.map.insert(reg, ty);
             return true;
         }
@@ -352,11 +346,11 @@ fn prepare_block_params(
     cfg.graph.root_weight_mut().param_order = entry_param_order;
 
     log::trace!("Resolving parameter ordering");
-    log::trace!("CFG: {:?}", cfg);
-    while let Some(bb_v) = worklist.iter().cloned().next() {
+    log::trace!("CFG: {cfg:?}");
+    while let Some(bb_v) = worklist.iter().next().copied() {
         worklist.remove(&bb_v);
 
-        log::trace!("Resolving block: {}", bb_v);
+        log::trace!("Resolving block: {bb_v}");
         for succ_v in cfg
             .graph
             .edges_sourced_in(bb_v)
@@ -371,7 +365,7 @@ fn prepare_block_params(
             let br_params = &bb.branch_params[&succ_bb.vcode_bb];
             assert_eq!(br_params.len(), succ_bb.params.len());
 
-            log::trace!("Block {bb_v} branch params: {:?}", br_params);
+            log::trace!("Block {bb_v} branch params: {br_params:?}");
             log::trace!(
                 "Block {bb_v} branch param order: {:?}",
                 bb.branch_param_order
@@ -396,7 +390,7 @@ fn prepare_block_params(
                 reg_map.insert((out_idx, *out_r), others[0]);
             }
 
-            log::trace!("Parameter register mapping: {:?}", reg_map);
+            log::trace!("Parameter register mapping: {reg_map:?}");
 
             // Unify existing param order
             let mut bb_branch_param_order = bb.branch_param_order.clone();
@@ -415,7 +409,7 @@ fn prepare_block_params(
                     assert!(succ_param_order.len() > idx);
 
                     if let Some(((_, succ_p), _)) = succ_param_order[idx]
-                        .map_or(None, |succ_p| reg_map.iter().find(|(_, r)| **r == succ_p))
+                        .and_then(|succ_p| reg_map.iter().find(|(_, r)| **r == succ_p))
                     {
                         // Successor already has a parameter in the mapping, assign the corresponding one from this block
                         bb_branch_param_order.push(Some(*succ_p))
@@ -429,8 +423,7 @@ fn prepare_block_params(
                             assert!(
                                 reg_map
                                     .iter()
-                                    .find(|((_, p1), p2)| bb_p == *p1 && **p2 == succ_p)
-                                    .is_some()
+                                    .any(|((_, p1), p2)| bb_p == *p1 && *p2 == succ_p)
                             );
                         } else {
                             // Succ has nothing assigned
@@ -449,11 +442,7 @@ fn prepare_block_params(
 
             // Check/add any params not in order
             for (param_idx, param) in br_params.iter().enumerate() {
-                if bb_branch_param_order
-                    .iter()
-                    .find(|p| p.map_or(false, |p| p == *param))
-                    .is_none()
-                {
+                if !bb_branch_param_order.contains(&Some(*param)) {
                     // This block has a missing parameter in the order
 
                     // Check if succ has its param
@@ -461,10 +450,8 @@ fn prepare_block_params(
                     let succ_param = succ_param_order
                         .iter()
                         .enumerate()
-                        .find(|(_, p)| p.map_or(false, |r| r == *param));
-                    assert!(
-                        succ_param.map_or(true, |(_, p)| p.map_or(true, |r| r == succ_param_reg))
-                    );
+                        .find(|(_, p)| **p == Some(*param));
+                    assert!(succ_param.is_none_or(|(_, p)| p.is_none_or(|r| r == succ_param_reg)));
 
                     if let Some((order_idx, Some(succ_r))) = succ_param {
                         // Successor already has a position for this parameter.
@@ -483,11 +470,7 @@ fn prepare_block_params(
             }
 
             for (param_idx, param_reg) in succ_bb.params.iter().enumerate() {
-                if succ_param_order
-                    .iter()
-                    .find(|p| p.map_or(false, |r| r == *param_reg))
-                    .is_none()
-                {
+                if !succ_param_order.contains(&Some(*param_reg)) {
                     // The successor is missing a parameter in the order
 
                     // Check if this block has its param
@@ -495,12 +478,11 @@ fn prepare_block_params(
                     let bb_param_order = bb_branch_param_order
                         .iter()
                         .enumerate()
-                        .find(|(_, p)| p.map_or(false, |p2| p2 == bb_param.1));
-                    assert!(bb_param_order.map_or(true, |(_, p)| p.map_or(true, |p| {
+                        .find(|(_, p)| **p == Some(bb_param.1));
+                    assert!(bb_param_order.is_none_or(|(_, p)| p.is_none_or(|p| {
                         reg_map
                             .iter()
-                            .find(|((_, p2), p3)| *p2 == p && *p3 == param_reg)
-                            .is_some()
+                            .any(|((_, p2), p3)| *p2 == p && p3 == param_reg)
                     })));
 
                     if let Some((order_idx, _)) = bb_param_order {
@@ -563,21 +545,19 @@ fn prepare_block_params(
             bb.branch_param_order
         );
 
-        // Assert all parameters are present in the order
-        assert!(bb.params.iter().all(|p| {
-            bb.param_order
+        // Assert all parameters are present in the order exactly once
+        assert!(
+            bb.params
                 .iter()
-                .filter(|po| po.map_or(false, |po| po == *p))
-                .count()
-                == 1
-        }));
+                .all(|p| { bb.param_order.iter().filter(|po| **po == Some(*p)).count() == 1 })
+        );
 
-        // Assert all branch parameters are present in the order
-        assert!(bb.branch_params.iter().all(|(_, params)| {
+        // Assert all branch parameters are present in the order exactly once
+        assert!(bb.branch_params.values().all(|params| {
             params.iter().all(|p| {
                 bb.branch_param_order
                     .iter()
-                    .filter(|po| po.map_or(false, |po| po == *p))
+                    .filter(|po| **po == Some(*p))
                     .count()
                     == 1
             })
@@ -613,7 +593,7 @@ fn prepare_block_params(
         }
 
         // Insert echos for handling params
-        let echo_regs = if bb.param_order.len() >= 1 {
+        let echo_regs = if !bb.param_order.is_empty() {
             let echo_regs = params
                 .iter()
                 .map(|p| {
@@ -661,7 +641,7 @@ fn prepare_block_params(
         }
     }
 
-    log::trace!("VCodeCFG: {:?}", cfg);
+    log::trace!("VCodeCFG: {cfg:?}");
 }
 
 /// Replaces the all uses of the `find` register with the `replace` register
@@ -719,7 +699,7 @@ fn insert_duplicates(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Re
 
     'a: loop {
         for (bb_v, bb) in cfg.graph.all_vertices_weighted_mut() {
-            log::trace!("bb {bb_v}: {:?}", bb);
+            log::trace!("bb {bb_v}: {bb:?}");
             // Check each def for multiple uses
             for (inst_idx, reg_def) in bb.inst_defs().collect::<Vec<_>>() {
                 if bb.reg_uses(reg_def).count() > 1 {
@@ -731,19 +711,19 @@ fn insert_duplicates(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Re
         // No changes were made, finish
         break;
     }
-    log::trace!("VCodeCFG: {:?}", cfg);
+    log::trace!("VCodeCFG: {cfg:?}");
 }
 
 fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
     log::debug!("insert_ref_distances");
     for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
         'a: loop {
-            log::trace!("BB: {:?}", bb);
+            log::trace!("BB: {bb:?}");
 
             let mut use_pos = HashMap::<Reg, (usize, u16)>::new(); // reg -> (instruction index, reference distance)
             let mut ref_dist = 0;
             for (inst_idx, inst) in bb.inst.iter_mut().rev().enumerate() {
-                log::trace!("inst: {:?}", inst);
+                log::trace!("inst: {inst:?}");
 
                 // Expand any echo into echo chains and start over. Pre-existing echoes
                 // were already expanded by expand_echoes; this only handles the echoes
@@ -859,9 +839,9 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
             }
             break;
         }
-        log::trace!("BB: {:?}", bb);
+        log::trace!("BB: {bb:?}");
     }
-    log::trace!("VCodeCFG: {:?}", cfg);
+    log::trace!("VCodeCFG: {cfg:?}");
 }
 
 /// Expands all Echo pseudo-instructions into EchoChain/EchoSplit/EchoLong sequences.
@@ -890,13 +870,13 @@ fn expand_echoes(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
             }
         }
     }
-    log::trace!("VCodeCFG: {:?}", cfg);
+    log::trace!("VCodeCFG: {cfg:?}");
 }
 
 fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
     log::debug!("fix_orderings");
     for (bb_v, bb) in cfg.graph.all_vertices_weighted_mut() {
-        log::trace!("bb {bb_v}: {:?}", bb);
+        log::trace!("bb {bb_v}: {bb:?}");
         'a: loop {
             // Def positions at (instruction index, production slot) granularity.
             let mut def_pos = HashMap::<Reg, (usize, usize)>::new();
@@ -907,7 +887,7 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
             }
 
             for (inst_idx, inst) in bb.inst.iter().enumerate() {
-                log::trace!("Inst {inst_idx}: {:?}", inst);
+                log::trace!("Inst {inst_idx}: {inst:?}");
 
                 if inst.use_order_meaningful() && inst.get_uses().count() > 1 {
                     // Find the first adjacent pair of uses that will arrive in the wrong
@@ -965,7 +945,7 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
             break;
         }
     }
-    log::trace!("VCodeCFG: {:?}", cfg);
+    log::trace!("VCodeCFG: {cfg:?}");
 }
 
 fn type_to_isatype(t: Type) -> IsaType {
@@ -1022,7 +1002,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
         .pop_front()
         .map(|bb_v| (bb_v, cfg.graph.vertex_weight(bb_v).unwrap()))
     {
-        log::trace!("BB idx: {}", bb_v);
+        log::trace!("BB idx: {bb_v}");
         let mut changed_regs = HashSet::<Reg>::new();
 
         let mut inst_worklist = HashSet::new();
@@ -1030,10 +1010,10 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
         // All instructions are analyzed at least once
         inst_worklist.extend(0..bb.inst.len());
 
-        while let Some(inst_idx) = inst_worklist.iter().cloned().next() {
+        while let Some(inst_idx) = inst_worklist.iter().next().copied() {
             inst_worklist.remove(&inst_idx);
             let inst = &bb.inst[inst_idx];
-            log::trace!("Inst {}: {:?}", inst_idx, inst);
+            log::trace!("Inst {inst_idx}: {inst:?}");
 
             // Checks if the given type is different from the given registers existing type.
             // If so, assigns it and updates worklists for instructions and BBs
@@ -1141,10 +1121,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                         // They are the same, just assign rd
                         update_changed(&rd.to_reg(), rd_t, &mut type_map);
                     } else if rs_t.is_known() && rd_t.is_known() {
-                        panic!(
-                            "Incompatible type requirements: rs_t {:?}, rd_t {:?}",
-                            rs_t, rd_t
-                        );
+                        panic!("Incompatible type requirements: rs_t {rs_t:?}, rd_t {rd_t:?}");
                     } else if rs_t.is_known() || rd_t.is_known() {
                         // One is known, so use its signedness
                         let sign = rs_t.is_signed_int() || rd_t.is_signed_int();
@@ -1286,7 +1263,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
             }
         }
     }
-    log::trace!("Resolved types: {:?}", type_map);
+    log::trace!("Resolved types: {type_map:?}");
 
     type_map
 }
@@ -1302,7 +1279,7 @@ fn resolve_instruction_types(
 
     // Resolve type specific instructions into Scry instructions
     for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
-        for (_, inst) in bb.inst.iter_mut().enumerate() {
+        for inst in bb.inst.iter_mut() {
             match inst {
                 MInst::BinaryAlu { op, rd, rs1, rs2 } => {
                     let binary_alu_to_alu2 = |b| match b {
@@ -1350,19 +1327,19 @@ fn resolve_instruction_types(
                     };
                 }
                 MInst::Const { ty, rd, .. } => {
-                    let rd_t = type_map.get(*&rd.to_reg());
+                    let rd_t = type_map.get(rd.to_reg());
 
                     assert!(rd_t.is_int());
 
                     *ty = rd_t;
                 }
                 MInst::Load { ty, rd, .. } => {
-                    let rd_t = type_map.get(*&rd.to_reg());
+                    let rd_t = type_map.get(rd.to_reg());
 
                     if rd_t.is_known() {
                         *ty = rd_t;
                     } else {
-                        panic!("Invalid load type: {:?}", rd_t);
+                        panic!("Invalid load type: {rd_t:?}");
                     }
                 }
                 _ => (),
@@ -1538,7 +1515,7 @@ impl TargetIsa for ScryBackend {
         ctrl_plane: &mut ControlPlane,
     ) -> CodegenResult<CompiledCodeStencil> {
         log::debug!("Beginning Scry compile");
-        log::trace!("func: {:?}", func);
+        log::trace!("func: {func:?}");
         let (vcode, mut new_vregs) = self.compile_vcode(func, domtree, ctrl_plane)?;
 
         log::trace!("func signature: {:?}", vcode.abi.signature());
@@ -1564,7 +1541,7 @@ impl TargetIsa for ScryBackend {
 
         let mut cfg = VCodeCFG::from_vcode(&vcode, update_branch_target);
 
-        log::trace!("VCodeCFG: {:?}", cfg);
+        log::trace!("VCodeCFG: {cfg:?}");
 
         prepare_block_params(&mut cfg, vcode.abi.signature(), &mut new_vreg);
 
@@ -1588,7 +1565,7 @@ impl TargetIsa for ScryBackend {
                 bb.inst.insert(inst_count - 1, MInst::Ret { trig: 0 })
             });
 
-        log::trace!("VCodeCFG: {:?}", cfg);
+        log::trace!("VCodeCFG: {cfg:?}");
 
         resolve_instruction_types(&mut cfg, reg_type, vcode.abi.signature());
         insert_duplicates(&mut cfg, &mut new_vreg);
@@ -1631,7 +1608,7 @@ impl TargetIsa for ScryBackend {
         let vreg_alloc = VRegAllocator::with_capacity(vcode.num_vregs());
         let vcode2 = builder.build(vreg_alloc);
 
-        log::trace!("VCode2: {:?}", vcode2);
+        log::trace!("VCode2: {vcode2:?}");
 
         let want_disasm = want_disasm || log::log_enabled!(log::Level::Debug);
         let emit_result = vcode2.emit(

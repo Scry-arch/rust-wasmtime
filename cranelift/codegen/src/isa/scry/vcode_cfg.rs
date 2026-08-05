@@ -214,7 +214,7 @@ impl<I: VCodeInst> VCodeCFG<I> {
         while let Some(bb_v) = VCodeCFG::find_unnecessary_block(&graph) {
             let bb = graph.vertex_weight(bb_v).unwrap();
 
-            log::trace!("Unnecessary block {}: {:?}", bb_v, bb);
+            log::trace!("Unnecessary block {bb_v}: {bb:?}");
 
             let bb_block = bb.vcode_bb;
             let pred_v = graph.edges_sinked_in(bb_v).next().unwrap().0;
@@ -265,7 +265,7 @@ impl<I: VCodeInst> VCodeCFG<I> {
         builder: &mut VCodeBuilder<I>,
         correct_machlabel: impl Fn(I, &HashMap<usize, usize>) -> I,
     ) {
-        log::trace!("building vcode2: {:?}", self);
+        log::trace!("building vcode2: {self:?}");
 
         let blocks = self.graph.all_vertices_weighted().collect::<Vec<_>>();
 
@@ -342,7 +342,7 @@ impl<I: VCodeInst> VCodeCFG<I> {
                 let merge_group = merged.vertex_weight(mv).unwrap();
 
                 let mut sorted_group = VecDeque::with_capacity(merge_group.len());
-                sorted_group.push_front(merge_group.iter().cloned().next().unwrap());
+                sorted_group.push_front(*merge_group.iter().next().unwrap());
 
                 // Continuously add the previous and the next in the group
                 let mut found_more = true;
