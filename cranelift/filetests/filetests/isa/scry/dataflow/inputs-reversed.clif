@@ -1,0 +1,20 @@
+test interpret
+test run
+target scry32
+
+; Three function inputs consumed in reverse order of arrival, exercising
+; operand reordering across more than two values. isub is not commutative so a
+; wrong order changes the result.
+
+function %rev_sub(i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = isub v2, v1
+    v4 = isub v3, v0
+    return v4
+}
+
+; run: %rev_sub(0, 0, 0) == 0
+; run: %rev_sub(1, 0, 0) == -1
+; run: %rev_sub(0, 1, 0) == -1
+; run: %rev_sub(0, 0, 1) == 1
+; run: %rev_sub(1, 2, 40) == 37

@@ -1,4 +1,4 @@
-//! Implementation of a standard Riscv64 ABI.
+//! Implementation of the Scry ABI.
 
 use crate::ir;
 use crate::ir::types::*;
@@ -48,12 +48,16 @@ impl ABIMachineSpec for ScryMachineDeps {
         _add_ret_area_ptr: bool,
         mut args: ArgsAccumulator,
     ) -> CodegenResult<(u32, Option<usize>)> {
-        for p in params {
+        
+        // The we use the pregs to encode the parameter's position in the parameter list.
+        // This is needed after instruction selection, where MInst::Args only gets the parameters that are actually used.
+        // The pregs and their positions are therefore used to get the unused parameters to,e.g., discard them correctly.
+        for (i, p) in params.iter().enumerate() {
             assert_eq!(p.purpose, ArgumentPurpose::Normal);
-
+            
             args.push(ABIArg::Slots {
                 slots: SmallVec::<[ABIArgSlot; 1]>::from_vec(vec![ABIArgSlot::Reg {
-                    reg: Reg::from_real_reg(PReg::new(0, RegClass::Int))
+                    reg: Reg::from_real_reg(PReg::new(i, RegClass::Int))
                         .to_real_reg()
                         .unwrap(),
                     ty: p.value_type,

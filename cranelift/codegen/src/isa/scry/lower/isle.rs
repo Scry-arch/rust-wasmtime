@@ -1,4 +1,4 @@
-//! ISLE integration glue code for riscv64 lowering.
+//! ISLE integration glue code for scry lowering.
 
 // Pull in the ISLE generated code.
 pub mod generated_code;
@@ -115,17 +115,6 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
         args.into_iter()
             .map(|arg| self.lower_ctx.put_value_in_regs(arg).only_reg().unwrap())
             .collect()
-    }
-
-    fn assert_same_block_call_regs(
-        &mut self,
-        block_call_1: BlockCall,
-        block_call_2: BlockCall,
-    ) -> Unit {
-        assert_eq!(
-            self.block_call_regs(block_call_1),
-            self.block_call_regs(block_call_2)
-        )
     }
 }
 

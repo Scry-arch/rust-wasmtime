@@ -296,12 +296,40 @@ impl ScryBackend {
     }
 }
 
-fn prepare_block_params(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
+fn prepare_block_params(
+    cfg: &mut VCodeCFG<MInst>,
+    func_sig: &Signature,
+    mut new_vreg: impl FnMut() -> Reg,
+) {
     // Handle entry block first, moving MInst:Args to the params
     let entry_bb = cfg.graph.root_weight_mut();
     match &entry_bb.inst[0] {
         MInst::Args { args } => {
-            entry_bb.params = args.into_iter().map(|r| r.vreg.to_reg()).collect();
+            // Unused parameters are not lowered into Args, so reconstruct the full
+            // positional list from the signature, using each ArgPair's preg (which
+            // encodes the parameter index) and filling gaps with fresh, unused vregs
+            // that will be discarded below.
+            let mut params: Vec<Option<Reg>> = vec![None; func_sig.params.len()];
+            for p in args {
+                params[p.preg.to_real_reg().unwrap().hw_enc() as usize] = Some(p.vreg.to_reg());
+            }
+            entry_bb.params = params
+                .into_iter()
+                .map(|p| p.unwrap_or_else(&mut new_vreg))
+                .collect();
+
+            // Rewrite Args to define all parameters in positional order, so gap vregs
+            // have a definition and def order matches the physical arrival order.
+            entry_bb.inst[0] = MInst::Args {
+                args: entry_bb
+                    .params
+                    .iter()
+                    .map(|p| ArgPair {
+                        vreg: WritableReg::from_reg(*p),
+                        preg: *p,
+                    })
+                    .collect(),
+            };
         }
         inst => unreachable!("Entry did not include MInst::Args at the start: {:?}", inst),
     }
@@ -558,18 +586,13 @@ fn prepare_block_params(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
 
     let entry_v = cfg.graph.root();
     for (bb_v, bb) in cfg.graph.all_vertices_weighted_mut() {
-        let mut to_drop = Vec::new();
-
         let params = bb
             .param_order
             .iter()
             .map(|r| {
-                r.unwrap_or_else(|| {
-                    // This parameter order position is not used by this block, drop the value
-                    let v = new_vreg();
-                    to_drop.push(v);
-                    v
-                })
+                // A None position is not used by this block; a fresh vreg is created for
+                // it and later discarded (it will have no uses).
+                r.unwrap_or_else(|| new_vreg())
             })
             .collect::<Vec<_>>();
 
@@ -589,29 +612,31 @@ fn prepare_block_params(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
             )
         }
 
-        if !to_drop.is_empty() {
-            // Insert discard instruction after args
-            bb.inst.insert(1, MInst::Discard { rss: to_drop });
-        }
-
         // Insert echos for handling params
-        if bb.param_order.len() >= 1 {
-            let echo_regs = params.iter().map(|p| {
-                let new_vr = new_vreg();
-                replace_all_uses(bb, *p, new_vr);
-                new_vr
-            });
+        let echo_regs = if bb.param_order.len() >= 1 {
+            let echo_regs = params
+                .iter()
+                .map(|p| {
+                    let new_vr = new_vreg();
+                    replace_all_uses(bb, *p, new_vr);
+                    new_vr
+                })
+                .collect::<Vec<_>>();
 
             let rds = echo_regs
-                .into_iter()
-                .map(|r| WritableReg::from_reg(r))
+                .iter()
+                .map(|r| WritableReg::from_reg(*r))
                 .collect();
 
             bb.inst.insert(
                 1, // Insert after Args
                 MInst::Echo { rss: params, rds },
             );
-        }
+
+            echo_regs
+        } else {
+            vec![]
+        };
 
         // Update jump trigger inputs
         if let Some((_, trigger)) = get_jmp_issue_trigger(bb) {
@@ -621,6 +646,18 @@ fn prepare_block_params(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                 }
                 _ => unreachable!(),
             }
+        }
+
+        // Any echoed parameter without a use left in the block (an unused parameter or
+        // an unused parameter order position) must be explicitly discarded so its value
+        // does not linger in the operand queue.
+        let unused = echo_regs
+            .into_iter()
+            .filter(|r| bb.reg_uses(*r).next().is_none())
+            .collect::<Vec<_>>();
+        if !unused.is_empty() {
+            // Insert discard directly after the echo, which routes the values to it
+            bb.inst.insert(2, MInst::Discard { rss: unused });
         }
     }
 
@@ -708,7 +745,9 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
             for (inst_idx, inst) in bb.inst.iter_mut().rev().enumerate() {
                 log::trace!("inst: {:?}", inst);
 
-                // Expand any echo into echo chains and start over
+                // Expand any echo into echo chains and start over. Pre-existing echoes
+                // were already expanded by expand_echoes; this only handles the echoes
+                // this pass inserts itself (see the CallArgs arm below).
                 match &inst {
                     MInst::Echo { rds, rss } => {
                         for i in MInst::echo_chain(
@@ -757,11 +796,43 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                             .iter_mut()
                             .enumerate()
                             .for_each(|(i, out)| *out = ref_dists[&i]),
-                        MInst::EchoChain { out1, out2, .. }
-                        | MInst::EchoSplit { out1, out2, .. }
+                        MInst::EchoChain { out1, out2, .. } => {
+                            // EchoChain's get_defs order is [rd2, rd1, chain..] (physical
+                            // production order), so out1 (routing rs1->rd1) takes the
+                            // distance of def index 1 and out2 that of def index 0.
+                            *out1 = ref_dists[&1];
+                            *out2 = ref_dists[&0];
+                        }
+                        MInst::EchoSplit { out1, out2, .. }
                         | MInst::Duplicate { out1, out2, .. } => {
                             *out1 = ref_dists[&0];
                             *out2 = ref_dists[&1];
+                        }
+                        MInst::Reorder {
+                            rd1,
+                            rd2,
+                            rs1,
+                            rs2,
+                            out,
+                        } => {
+                            if ref_dists[&0] == ref_dists[&1] {
+                                *out = ref_dists[&0];
+                            } else {
+                                // The two outputs go to different targets (e.g. a chain of
+                                // reorders), so this is a split rather than a same-target
+                                // swap; arrival order between different targets does not
+                                // matter, so an EchoSplit expresses it. Reorder's get_defs
+                                // order is [rd2, rd1] (physical production order), so out1
+                                // (routing rs1->rd1) takes the distance of def index 1.
+                                *inst = MInst::EchoSplit {
+                                    rd1: *rd1,
+                                    rd2: *rd2,
+                                    rs1: *rs1,
+                                    rs2: *rs2,
+                                    out1: ref_dists[&1],
+                                    out2: ref_dists[&0],
+                                };
+                            }
                         }
                         MInst::CallArgs { rets, .. } if ref_dists.iter().any(|(_, d)| *d > 0) => {
                             // Some call arguments aren't going to the following instruction
@@ -793,36 +864,90 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
     log::trace!("VCodeCFG: {:?}", cfg);
 }
 
+/// Expands all Echo pseudo-instructions into EchoChain/EchoSplit/EchoLong sequences.
+///
+/// This must run before [`fix_orderings`] so that ordering decisions can see the
+/// physical production order of the concrete echo instructions.
+fn expand_echoes(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
+    log::debug!("expand_echoes");
+    for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
+        let mut idx = 0;
+        while idx < bb.inst.len() {
+            if let MInst::Echo { rds, rss } = &bb.inst[idx] {
+                let expansion = MInst::echo_chain(
+                    rds.iter()
+                        .cloned()
+                        .zip(rss.iter().cloned())
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                    &mut new_vreg,
+                );
+                let expansion_len = expansion.len();
+                bb.inst.splice(idx..idx + 1, expansion);
+                idx += expansion_len;
+            } else {
+                idx += 1;
+            }
+        }
+    }
+    log::trace!("VCodeCFG: {:?}", cfg);
+}
+
 fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
     log::debug!("fix_orderings");
     for (bb_v, bb) in cfg.graph.all_vertices_weighted_mut() {
         log::trace!("bb {bb_v}: {:?}", bb);
         'a: loop {
-            let mut def_pos = HashMap::<Reg, usize>::new();
-            for (inst_idx, inst) in bb.inst.iter_mut().enumerate() {
-                log::trace!("Inst {inst_idx}: {:?}", inst);
-                // Record def positions
-                for def in inst.get_defs() {
-                    def_pos.insert(def, inst_idx);
+            // Def positions at (instruction index, production slot) granularity.
+            let mut def_pos = HashMap::<Reg, (usize, usize)>::new();
+            for (inst_idx, inst) in bb.inst.iter().enumerate() {
+                for (slot, def) in inst.get_defs().enumerate() {
+                    def_pos.insert(def, (inst_idx, slot));
                 }
+            }
+
+            for (inst_idx, inst) in bb.inst.iter().enumerate() {
+                log::trace!("Inst {inst_idx}: {:?}", inst);
 
                 if inst.use_order_meaningful() && inst.get_uses().count() > 1 {
-                    let mut uses = inst.get_uses_mut().collect::<Vec<_>>();
-                    if def_pos[uses[1]] < def_pos[uses[0]] {
+                    // Find the first adjacent pair of uses that will arrive in the wrong
+                    // order. Repeated passes sort any permutation pairwise.
+                    let uses = inst.get_uses().cloned().collect::<Vec<_>>();
+                    let wrong_order_pair =
+                        (0..uses.len() - 1).find(|i| def_pos[&uses[i + 1]] < def_pos[&uses[*i]]);
+
+                    if let Some(pair_idx) = wrong_order_pair {
+                        // If the reorder is needed for branch or call arguments, the reorder
+                        // instruction must come before the branch or call issue (because we don't yet support the issue and trigger having instructions between them).
+                        let insert_idx = match inst {
+                            MInst::JumpTrigger { .. } => {
+                                get_jmp_issue_trigger(bb)
+                                    .expect("JumpTrigger without issue")
+                                    .0
+                            }
+                            MInst::CallArgs { .. } => bb.inst[..inst_idx]
+                                .iter()
+                                .rposition(|i| matches!(i, MInst::Call { .. }))
+                                .expect("CallArgs without preceding Call"),
+                            _ => inst_idx,
+                        };
+
                         // Create new vregs for the reorder
                         let first_new = new_vreg();
                         let second_new = new_vreg();
 
-                        let first_old = *uses[1];
-                        let second_old = *uses[0];
+                        let first_old = uses[pair_idx + 1];
+                        let second_old = uses[pair_idx];
 
-                        // assign reordered vregs to store
-                        *uses[0] = second_new;
-                        *uses[1] = first_new;
+                        // Assign reordered vregs to the consumer
+                        let inst = &mut bb.inst[inst_idx];
+                        let mut uses_mut = inst.get_uses_mut().collect::<Vec<_>>();
+                        *uses_mut[pair_idx] = second_new;
+                        *uses_mut[pair_idx + 1] = first_new;
 
-                        // Insert reorder instruction before store
+                        // Insert reorder instruction before the consumer (or its issue)
                         bb.inst.insert(
-                            inst_idx,
+                            insert_idx,
                             MInst::Reorder {
                                 rd1: Writable::from_reg(first_new),
                                 rd2: Writable::from_reg(second_new),
@@ -900,9 +1025,6 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
         log::trace!("BB idx: {}", bb_v);
         let mut changed_regs = HashSet::<Reg>::new();
 
-        let inst_dfg = bb.dataflow_graph();
-        log::trace!("Inst DFG: {:?}", inst_dfg);
-
         let mut inst_worklist = HashSet::new();
 
         // All instructions are analyzed at least once
@@ -919,13 +1041,14 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                 let refined = map.get(*r).refine(new_type).unwrap();
                 if map.update(*r, refined) {
                     changed_regs.insert(*r);
-                    inst_dfg
-                        .edges_incident_on(inst_idx)
-                        .filter(|(_, dep_r)| **dep_r == *r)
-                        .for_each(|(dep_i, _)| {
-                            log::trace!("To worklist: {}({:?})", dep_i, bb.inst[dep_i]);
-                            inst_worklist.insert(dep_i);
-                        })
+                    // Re-analyze every instruction touching the register, not just the
+                    // dfg neighbors of the current instruction: sibling consumers (e.g.
+                    // a JumpTrigger sharing an operand with the current instruction)
+                    // must also observe the new type.
+                    bb.reg_uses(*r).chain(bb.reg_defs(*r)).for_each(|dep_i| {
+                        log::trace!("To worklist: {}({:?})", dep_i, bb.inst[dep_i]);
+                        inst_worklist.insert(dep_i);
+                    })
                 }
             };
 
@@ -1443,7 +1566,7 @@ impl TargetIsa for ScryBackend {
 
         log::trace!("VCodeCFG: {:?}", cfg);
 
-        prepare_block_params(&mut cfg, &mut new_vreg);
+        prepare_block_params(&mut cfg, vcode.abi.signature(), &mut new_vreg);
 
         // Insert `ret` instruction as movable trigger
         cfg.graph
@@ -1469,6 +1592,7 @@ impl TargetIsa for ScryBackend {
 
         resolve_instruction_types(&mut cfg, reg_type, vcode.abi.signature());
         insert_duplicates(&mut cfg, &mut new_vreg);
+        expand_echoes(&mut cfg, &mut new_vreg);
         fix_orderings(&mut cfg, &mut new_vreg);
         block_ordering(&mut cfg, &mut new_vreg);
         insert_ref_distances(&mut cfg, &mut new_vreg);

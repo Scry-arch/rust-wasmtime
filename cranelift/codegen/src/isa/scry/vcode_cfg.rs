@@ -79,26 +79,6 @@ impl<I: VCodeInst> VCodeBB<I> {
             defs.into_iter().map(move |inst| (idx, inst))
         })
     }
-
-    pub fn dataflow_graph(
-        &self,
-    ) -> impl Graph<Vertex = usize, VertexWeight = (), EdgeWeight = Reg, Directedness = Directed> + Debug
-    {
-        let mut dfg = VertexMapGraph::<usize, AdjListGraph<_, _, _>>::new();
-        for (inst_idx, inst) in self.inst.iter().enumerate() {
-            dfg.add_vertex(inst_idx).unwrap();
-
-            inst.clone().get_operands(&mut |r: &mut Reg, _, k, _| {
-                if k == OperandKind::Use {
-                    if let Some(def_inst_idx) = self.reg_defs(*r).next() {
-                        dfg.add_edge_weighted(def_inst_idx, inst_idx, *r).unwrap();
-                    }
-                }
-            })
-        }
-
-        dfg
-    }
 }
 
 /// Specifies ordering dependency requirements between blocks

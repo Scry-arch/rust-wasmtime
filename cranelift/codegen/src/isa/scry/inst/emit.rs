@@ -1,4 +1,4 @@
-//! Riscv64 ISA: binary code emission.
+//! Scry ISA: binary code emission.
 
 use crate::ir::{self};
 use crate::isa::scry::inst::*;

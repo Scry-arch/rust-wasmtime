@@ -44,3 +44,24 @@ block3(v3: i32):
 ; run: %empty_diamond(0) == 1
 ; run: %empty_diamond(5) == 6
 ; run: %empty_diamond(-2) == -1
+
+; A diamond whose empty arms forward different values to the join block, so
+; each successor receives a different branch argument.
+function %select_arg(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    brif v0, block1(v0), block2(v1)
+
+block1(v2: i32):
+    jump block3(v2)
+
+block2(v3: i32):
+    jump block3(v3)
+
+block3(v4: i32):
+    return v4
+}
+
+; run: %select_arg(0, 7) == 7
+; run: %select_arg(3, 7) == 3
+; run: %select_arg(0, 0) == 0
+; run: %select_arg(-1, 5) == -1
