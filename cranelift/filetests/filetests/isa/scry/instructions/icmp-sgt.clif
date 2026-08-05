@@ -1,0 +1,19 @@
+test interpret
+test run
+target scry32
+
+; Signed greater-than comparison. The asymmetric cases pin down operand order;
+; negative operands pin down signedness.
+
+function %sgt(i32 sext, i32 sext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp sgt v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %sgt(2, 1) == 1
+; run: %sgt(1, 2) == 0
+; run: %sgt(2, 2) == 0
+; run: %sgt(0, -1) == 1
+; run: %sgt(-1, 0) == 0
+; run: %sgt(-1, -2) == 1

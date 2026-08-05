@@ -1,0 +1,17 @@
+test interpret
+test run
+target scry32
+
+; Reduction from i16 to i8.
+
+function %reduce_i16_i8(i16 sext) -> i8 sext {
+block0(v0: i16):
+    v1 = ireduce.i8 v0
+    return v1
+}
+
+; run: %reduce_i16_i8(0) == 0
+; run: %reduce_i16_i8(-1) == -1
+; run: %reduce_i16_i8(256) == 0
+; run: %reduce_i16_i8(257) == 1
+; run: %reduce_i16_i8(127) == 127

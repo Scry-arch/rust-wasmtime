@@ -1,0 +1,27 @@
+test interpret
+test run
+target scry32
+
+; isub on i16, including wrap-around at the i16 boundaries.
+
+function %sub_i16(i16 uext, i16 uext) -> i16 uext {
+block0(v0: i16, v1: i16):
+    v2 = isub v0, v1
+    return v2
+}
+
+; run: %sub_i16(0, 0) == 0
+; run: %sub_i16(100, 1) == 99
+; run: %sub_i16(0, 1) == 65535
+; run: %sub_i16(65535, 65535) == 0
+
+function %sub_one_i16(i16 sext) -> i16 sext {
+block0(v0: i16):
+    v1 = iconst.i16 1
+    v2 = isub v0, v1
+    return v2
+}
+
+; run: %sub_one_i16(0) == -1
+; run: %sub_one_i16(100) == 99
+; run: %sub_one_i16(-32768) == 32767

@@ -1,0 +1,41 @@
+test interpret
+test run
+target scry32
+
+; Two diamonds in sequence: the join block of the first diamond immediately
+; branches again.
+
+function %classify(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    brif v0, block1(v1), block2(v1)
+
+block1(v2: i32):
+    v3 = iadd_imm v2, 1
+    jump block3(v3)
+
+block2(v4: i32):
+    v5 = iadd_imm v4, 2
+    jump block3(v5)
+
+block3(v6: i32):
+    v7 = icmp_imm sgt v6, 10
+    brif v7, block4(v6), block5(v6)
+
+block4(v8: i32):
+    v9 = iadd_imm v8, 100
+    jump block6(v9)
+
+block5(v10: i32):
+    v11 = iadd_imm v10, 50
+    jump block6(v11)
+
+block6(v12: i32):
+    return v12
+}
+
+; run: %classify(0, 0) == 52
+; run: %classify(1, 0) == 51
+; run: %classify(0, 9) == 111
+; run: %classify(1, 10) == 111
+; run: %classify(1, 9) == 60
+; run: %classify(0, -20) == 32
