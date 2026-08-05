@@ -1,0 +1,31 @@
+test interpret
+test run
+target scry32
+
+; Unsigned ordered comparisons. The negative run cases exercise values whose
+; signed and unsigned interpretations differ (-1 is the maximum unsigned value),
+; pinning down that the comparison is really unsigned.
+
+function %ult(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp ult v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %ult(1, 2) == 1
+; run: %ult(2, 1) == 0
+; run: %ult(2, 2) == 0
+; run: %ult(0, -1) == 1
+; run: %ult(-1, 0) == 0
+
+function %ugt(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp ugt v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %ugt(2, 1) == 1
+; run: %ugt(1, 2) == 0
+; run: %ugt(2, 2) == 0
+; run: %ugt(-1, 0) == 1
+; run: %ugt(0, -1) == 0

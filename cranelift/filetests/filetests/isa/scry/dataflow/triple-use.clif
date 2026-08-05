@@ -1,0 +1,17 @@
+test interpret
+test run
+target scry32
+
+; A single value used three times, requiring a chain of two duplications.
+
+function %triple(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = iadd v0, v0
+    v2 = iadd v1, v0
+    return v2
+}
+
+; run: %triple(0) == 0
+; run: %triple(1) == 3
+; run: %triple(7) == 21
+; run: %triple(-1) == -3

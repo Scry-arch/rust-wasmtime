@@ -1,0 +1,28 @@
+test interpret
+test run
+target scry32
+
+; Branch on an ordered comparison result.
+
+function %select_gt(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = icmp slt v0, v1
+    brif v2, block2(v1), block3(v0)
+
+block2(v3: i32):
+    v4 = iadd_imm v3, 100
+    jump block4(v4)
+
+block3(v5: i32):
+    v6 = iadd_imm v5, -100
+    jump block4(v6)
+
+block4(v7: i32):
+    return v7
+}
+
+; run: %select_gt(1, 2) == 102
+; run: %select_gt(2, 1) == -98
+; run: %select_gt(5, 5) == -95
+; run: %select_gt(-1, 0) == 100
+; run: %select_gt(-9, -5) == 95

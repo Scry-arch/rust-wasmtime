@@ -1,0 +1,24 @@
+test interpret
+test run
+target scry32
+
+; A single-block loop over i16 values, combining loop control flow with the
+; narrow-type paths.
+
+function %add_sum_i16(i16 sext, i16 uext) -> i16 uext {
+block0(v0: i16, v1: i16):
+    jump block1(v0, v1)
+
+block1(v2: i16, v3: i16):
+    v4 = icmp_imm sgt v2, 0
+    v5 = iadd_imm v2, -1
+    v6 = iadd_imm v3, 3
+    brif v4, block1(v5, v6), block2(v6)
+
+block2(v7: i16):
+    return v7
+}
+
+; run: %add_sum_i16(0, 0) == 3
+; run: %add_sum_i16(1, 1) == 7
+; run: %add_sum_i16(10, 2) == 35

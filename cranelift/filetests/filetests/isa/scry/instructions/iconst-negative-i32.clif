@@ -1,0 +1,18 @@
+test interpret
+test run
+target scry32
+
+; A negative i32 constant. Constants are emitted as 8-bit immediates, so this
+; checks the immediate is sign-extended to the full i32 width.
+
+function %sub_via_neg_const(i32 sext) -> i32 sext {
+block0(v0: i32):
+    v1 = iconst.i32 -5
+    v2 = iadd v0, v1
+    return v2
+}
+
+; run: %sub_via_neg_const(0) == -5
+; run: %sub_via_neg_const(5) == 0
+; run: %sub_via_neg_const(1000) == 995
+; run: %sub_via_neg_const(-2147483644) == 2147483647
