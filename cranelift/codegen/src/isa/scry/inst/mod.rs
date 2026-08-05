@@ -665,7 +665,11 @@ impl MInst {
         }
     }
 
-    /// Returns the registers defined by this instruction
+    /// Returns the registers defined by this instruction.
+    ///
+    /// The defs are returned in physical production order, i.e. the order in which the
+    /// values are emitted by the machine and therefore arrive at a shared consumer.
+    /// Ordering passes rely on this.
     pub(crate) fn get_defs(&self) -> impl Iterator<Item = Reg> + use<> {
         use MInst::*;
         match self {
@@ -682,15 +686,22 @@ impl MInst {
             Echo { rds, .. } | EchoLong { rds, .. } | Alu2 { rds, .. } => {
                 rds.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>()
             }
-            Duplicate { rd1, rd2, .. } | EchoSplit { rd1, rd2, .. } | Reorder { rd1, rd2, .. } => {
+            Duplicate { rd1, rd2, .. } | EchoSplit { rd1, rd2, .. } => {
                 vec![rd1.to_reg(), rd2.to_reg()]
+            }
+            Reorder { rd1, rd2, .. } => {
+                // Physical production order: a reorder is an echo with both outputs on
+                // the same target, which emits its second input before its first.
+                vec![rd2.to_reg(), rd1.to_reg()]
             }
             EchoChain {
                 rd1, rd2, rd_chain, ..
             } => {
-                let mut uses = vec![rd2.to_reg(), rd1.to_reg()];
-                uses.extend(rd_chain.iter().map(|r| r.to_reg()));
-                uses
+                // Physical production order: the echo emits its second input before its
+                // first, and the chained values are produced by the following echo.
+                let mut defs = vec![rd2.to_reg(), rd1.to_reg()];
+                defs.extend(rd_chain.iter().map(|r| r.to_reg()));
+                defs
             }
             Args { args } => args.iter().map(|a| a.vreg.to_reg()).collect(),
             Alu1 { rd, .. }

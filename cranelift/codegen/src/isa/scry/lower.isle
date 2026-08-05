@@ -65,10 +65,10 @@
 (decl block_call_regs (BlockCall) RegVec)
 (extern constructor block_call_regs block_call_regs)
 
-;; Helper to check that two BlockCalls use the same registers
-(decl assert_same_block_call_regs (BlockCall BlockCall) Unit)
-(extern constructor assert_same_block_call_regs assert_same_block_call_regs)
-
+;; Note on JumpTrigger args in the rules below: they are provisional. The final
+;; args (the unified wire order covering all successors, possibly differing per
+;; target) are recomputed from the blocks' branch parameter order in
+;; `prepare_block_params`, which overwrites the args of every JumpTrigger.
 
 ;; Lower unconditional jump
 (rule
@@ -92,8 +92,7 @@
 (rule
     (lower_branch (brif cond block_call_1 block_call_2) targets)
     (let
-      ( ;(_ Unit (assert_same_block_call_regs block_call_1 block_call_2))
-        (jmp_trig_link WritableReg (temp_writable_reg $I64))
+      ( (jmp_trig_link WritableReg (temp_writable_reg $I64))
         ; "block_call_1" is taken if "cond" is true (non-zero). Scry branch is taken on non-zero only for backward branches
         (_ Unit (emit (MInst.BranchIssue jmp_trig_link (gen_machlabel targets) false cond)))
       )

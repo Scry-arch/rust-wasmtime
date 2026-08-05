@@ -1,0 +1,22 @@
+test interpret
+test run
+target scry32
+
+; Jump passing block arguments in the opposite order of their availability: the
+; last-produced value is passed first, exercising branch parameter reordering.
+; isub is not commutative so a wrong order changes the result.
+
+function %swapped_sub(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = iadd_imm v1, 1
+    jump block1(v2, v0)
+
+block1(v3: i32, v4: i32):
+    v5 = isub v3, v4
+    return v5
+}
+
+; run: %swapped_sub(0, 0) == 1
+; run: %swapped_sub(1, 0) == 0
+; run: %swapped_sub(0, 1) == 2
+; run: %swapped_sub(10, 25) == 16

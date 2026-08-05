@@ -1,0 +1,24 @@
+test interpret
+test run
+target scry32
+
+; A function parameter that is never used, exercising discarding of dead
+; inputs.
+
+function %first_only(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = iadd_imm v0, 1
+    return v2
+}
+
+; run: %first_only(0, 99) == 1
+; run: %first_only(41, 7) == 42
+
+function %second_only(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = iadd_imm v1, 1
+    return v2
+}
+
+; run: %second_only(99, 0) == 1
+; run: %second_only(7, 41) == 42
