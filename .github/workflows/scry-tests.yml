@@ -1,0 +1,23 @@
+# Standalone workflow that runs only the Scry filetests. It is intentionally
+# independent of the other wasmtime/cranelift CI workflows.
+name: Scry tests
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded in-progress runs for the same branch/PR
+concurrency:
+  group: scry-tests-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scry-filetests:
+    name: Run Scry filetests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Scry filetests
+        working-directory: cranelift
+        run: cargo run -- test filetests/filetests/isa/scry
