@@ -36,7 +36,6 @@ where
     B: LowerBackend,
 {
     pub lower_ctx: &'a mut Lower<'b, I>,
-    #[allow(unused)]
     pub backend: &'a B,
 }
 
@@ -45,7 +44,6 @@ impl<'a, 'b> ScryIsleContext<'a, 'b, MInst, ScryBackend> {
         Self { lower_ctx, backend }
     }
 
-    #[allow(unused)]
     pub(crate) fn dfg(&self) -> &crate::ir::DataFlowGraph {
         &self.lower_ctx.f.dfg
     }
@@ -85,8 +83,8 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     }
 
     fn gen_machlabel(&mut self, labels: &MachLabelSlice) -> MachLabel {
-        assert!(labels.len() >= 1);
-        labels[0].clone()
+        assert!(!labels.is_empty());
+        labels[0]
     }
 
     fn isatype_invalid(&mut self) -> IsaType {
@@ -107,7 +105,7 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     }
 
     fn block_call_regs(&mut self, block_call: BlockCall) -> RegVec {
-        log::trace!("block_call_regs: {:?}", block_call);
+        log::trace!("block_call_regs: {block_call:?}");
         let args: Vec<_> = block_call
             .args(&self.lower_ctx.dfg().value_lists)
             .map(|arg| arg.as_value().unwrap())

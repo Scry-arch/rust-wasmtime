@@ -48,13 +48,12 @@ impl ABIMachineSpec for ScryMachineDeps {
         _add_ret_area_ptr: bool,
         mut args: ArgsAccumulator,
     ) -> CodegenResult<(u32, Option<usize>)> {
-        
         // The we use the pregs to encode the parameter's position in the parameter list.
         // This is needed after instruction selection, where MInst::Args only gets the parameters that are actually used.
         // The pregs and their positions are therefore used to get the unused parameters to,e.g., discard them correctly.
         for (i, p) in params.iter().enumerate() {
             assert_eq!(p.purpose, ArgumentPurpose::Normal);
-            
+
             args.push(ABIArg::Slots {
                 slots: SmallVec::<[ABIArgSlot; 1]>::from_vec(vec![ABIArgSlot::Reg {
                     reg: Reg::from_real_reg(PReg::new(i, RegClass::Int))
@@ -152,8 +151,7 @@ impl ABIMachineSpec for ScryMachineDeps {
         _isa_flags: &ScryFlags,
         _frame_layout: &FrameLayout,
     ) -> SmallInstVec<MInst> {
-        let insts = SmallVec::new();
-        insts
+        smallvec![]
     }
 
     fn gen_epilogue_frame_restore(
@@ -162,8 +160,7 @@ impl ABIMachineSpec for ScryMachineDeps {
         _isa_flags: &ScryFlags,
         _frame_layout: &FrameLayout,
     ) -> SmallInstVec<MInst> {
-        let insts = SmallVec::new();
-        insts
+        smallvec![]
     }
 
     fn gen_return(
