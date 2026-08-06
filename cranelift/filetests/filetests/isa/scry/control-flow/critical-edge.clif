@@ -1,0 +1,88 @@
+test interpret
+test run
+target scry32
+
+; Critical edges: an edge from a block with several successors to a block with
+; several predecessors. 
+; This uniquely challenging for branch arguments, as their order is contrained by
+; other successors/predecessors on both ends, making defining an order a cyclical
+; problem.
+
+; ---------------------------------------------------------------------------
+; block1 -> block2 is critical: block1 has two successors and block2 has two
+; predecessors (block0 and block1).
+; ---------------------------------------------------------------------------
+function %crit(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    brif v0, block1(v1), block2(v1)
+
+block1(v2: i32):
+    v3 = iadd_imm v2, 1
+    brif v3, block2(v3), block3(v3)
+
+block2(v4: i32):
+    v5 = iadd_imm v4, 10
+    return v5
+
+block3(v6: i32):
+    v7 = iadd_imm v6, 20
+    return v7
+}
+
+; run: %crit(0, 5) == 15
+; run: %crit(1, 5) == 16
+; run: %crit(1, -1) == 20
+; run: %crit(0, -1) == 9
+
+; ---------------------------------------------------------------------------
+; Both of block1's outgoing edges are critical: block2 and block3 each have two
+; predecessors.
+; ---------------------------------------------------------------------------
+function %crit_both(i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):
+    brif v0, block1(v1, v2), block3(v2)
+
+block1(v3: i32, v4: i32):
+    brif v3, block2(v4), block3(v4)
+
+block2(v5: i32):
+    v6 = iadd_imm v5, 1
+    jump block4(v6)
+
+block3(v7: i32):
+    v8 = iadd_imm v7, 2
+    jump block2(v8)
+
+block4(v9: i32):
+    return v9
+}
+
+; run: %crit_both(0, 0, 7) == 10
+; run: %crit_both(1, 1, 7) == 8
+; run: %crit_both(1, 0, 7) == 10
+
+; ---------------------------------------------------------------------------
+; A critical edge on a loop back-edge: block2 has two successors and the loop
+; header block1 has two predecessors.
+; ---------------------------------------------------------------------------
+function %crit_backedge(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    jump block1(v0, v1)
+
+block1(v2: i32, v3: i32):
+    v4 = icmp_imm sgt v2, 0
+    brif v4, block2(v2, v3), block3(v3)
+
+block2(v5: i32, v6: i32):
+    v7 = iadd_imm v5, -1
+    v8 = iadd_imm v6, 2
+    brif v7, block1(v7, v8), block3(v8)   ; critical: back-edge and exit
+
+block3(v9: i32):
+    return v9
+}
+
+; run: %crit_backedge(0, 0) == 0
+; run: %crit_backedge(1, 0) == 2
+; run: %crit_backedge(3, 0) == 6
+; run: %crit_backedge(-1, 5) == 5

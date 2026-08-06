@@ -110,14 +110,26 @@ impl MachInstEmit for MInst {
                 )] // Logical negation just uses "x == 0", where 0 is implicit
             }
             Const { ty, imm, .. } => {
-                let bits = (imm.bits() & 0b1111_1111) as u8; // Extract only relevant bits, we do not support value > 8 bits yet.
-                vec![Instruction::Constant(
-                    ty.get_known()
-                        .expect("Missing a well-defined type for constant")
-                        .try_into()
-                        .unwrap(),
-                    Bits::try_from(bits as i32).unwrap(),
-                )]
+                let t = ty
+                    .get_known()
+                    .expect("Missing a well-defined type for constant");
+
+                // The `const` instruction provides the most significant explicit
+                // byte (sign/zero extension fills everything above it); each
+                // subsequent `grow` shifts the value left by a byte and inserts the
+                // next one.
+                let bytes = MInst::const_emit_bytes(t, imm.bits());
+                let (last, rest) = bytes.split_last().unwrap();
+                let mut insts = vec![Instruction::Constant(
+                    t.try_into().unwrap(),
+                    Bits::try_from(*last as i32).unwrap(),
+                )];
+                insts.extend(
+                    rest.iter()
+                        .rev()
+                        .map(|b| Instruction::Grow(Bits::try_from(*b as i32).unwrap())),
+                );
+                insts
             }
             EchoLong { out, .. } => {
                 vec![Instruction::EchoLong(Bits::try_from(*out as i32).unwrap())]
