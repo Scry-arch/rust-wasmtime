@@ -1,0 +1,67 @@
+test interpret
+test run
+target scry32
+
+; A conditional branch whose two arms name the same successor block. This is
+; legal CLIF and is what an optimizer leaves behind when both arms of an
+; if-else turn out to be identical.
+;
+
+; ---------------------------------------------------------------------------
+; Both arms target the same block with the same arguments, so the CFG edge
+; block0->block1 exists twice.
+; ---------------------------------------------------------------------------
+function %same_target(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    brif v0, block1(v1), block1(v1)
+
+block1(v2: i32):
+    v3 = iadd_imm v2, 1
+    return v3
+}
+
+; run: %same_target(1, 5) == 6
+; run: %same_target(0, 5) == 6
+; run: %same_target(0, -1) == 0
+
+; ---------------------------------------------------------------------------
+; Both arms target the same block but pass different arguments, so the branch
+; still selects a value even though it does not select a block.
+; ---------------------------------------------------------------------------
+function %same_target_diff_args(i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):
+    brif v0, block1(v1), block1(v2)
+
+block1(v3: i32):
+    v4 = iadd_imm v3, 1
+    return v4
+}
+
+; run: %same_target_diff_args(1, 5, 9) == 6
+; run: %same_target_diff_args(0, 5, 9) == 10
+; run: %same_target_diff_args(0, 0, 0) == 1
+
+; ---------------------------------------------------------------------------
+; A loop where the exit is in a separate block (block3) but
+; the loop-back edge (block2 -> block1) appears as both arms of a nested branch
+; (first branch in block1, nested branch in block2).
+; ---------------------------------------------------------------------------
+function %same_target_in_loop(i32 sext) -> i32 sext {
+block0(v0: i32):
+    jump block1(v0)
+
+block1(v1: i32):
+    v2 = icmp_imm sgt v1, 0
+    brif v2, block2(v1), block3(v1)
+
+block2(v3: i32):
+    v4 = iadd_imm v3, -1
+    brif v4, block1(v4), block1(v4)   ; both arms loop back
+
+block3(v5: i32):
+    return v5
+}
+
+; run: %same_target_in_loop(0) == 0
+; run: %same_target_in_loop(3) == 0
+; run: %same_target_in_loop(-2) == -2

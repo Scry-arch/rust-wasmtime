@@ -706,11 +706,37 @@ impl MInst {
         .into_iter()
     }
 
+    /// The bytes of a constant that must be explicitly emitted, in little-endian
+    /// order: the last one is the `const` instruction's immediate, the ones before
+    /// it are the immediates of successive `grow` instructions (most significant
+    /// first). The bytes not returned are produced by the `const` instruction's
+    /// sign/zero extension of its immediate.
+    pub(crate) fn const_emit_bytes(ty: scry_isa::Type, imm: i64) -> Vec<u8> {
+        let size = 1usize << ty.size_pow2();
+        let bytes: Vec<u8> = imm.to_le_bytes()[..size].to_vec();
+        let signed = ty.is_signed_int();
+        let ext_of = |b: u8| if signed && b >= 0x80 { 0xFF } else { 0x00 };
+        for m in 1..=size {
+            if bytes[m..].iter().all(|b| *b == ext_of(bytes[m - 1])) {
+                return bytes[..m].to_vec();
+            }
+        }
+        bytes
+    }
+
     /// Returns how much reference distances increase for in-flight operands crossing this instruction.
     pub(crate) fn reference_length(&self) -> usize {
         use MInst::*;
         match self {
             Args { .. } => 0,
+            // A constant wider than the 8-bit immediate is emitted as a
+            // `const`+`grow` chain (see `const_emit_bytes`).
+            Const { ty, imm, .. } => match ty.get_known() {
+                Some(t) => Self::const_emit_bytes(t, imm.bits()).len(),
+                // Not yet resolved (only happens before type resolution, whose
+                // callers do not depend on the exact length).
+                None => 1,
+            },
             Nop
             | Rets { .. }
             | JumpTrigger { .. }
@@ -721,7 +747,6 @@ impl MInst {
             | Ret { .. }
             | Call { .. }
             | CallArgs { .. }
-            | Const { .. }
             | Reorder { .. }
             | Duplicate { .. }
             | Store { .. }

@@ -1,0 +1,131 @@
+test interpret
+test run
+target scry32
+
+; Functions with more than one return block.
+
+; ---------------------------------------------------------------------------
+; Both arms of an if-else return directly.
+; ---------------------------------------------------------------------------
+function %both_arms(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    brif v0, block1(v1), block2(v1)
+
+block1(v2: i32):
+    v3 = iadd_imm v2, 10
+    return v3
+
+block2(v4: i32):
+    v5 = iadd_imm v4, 20
+    return v5
+}
+
+; run: %both_arms(1, 5) == 15
+; run: %both_arms(0, 5) == 25
+; run: %both_arms(1, -10) == 0
+; run: %both_arms(0, -20) == 0
+
+; ---------------------------------------------------------------------------
+; An early return: one arm returns its input unchanged, the other continues
+; computing before returning. The two return blocks have different shapes (one
+; is empty except for the return).
+; ---------------------------------------------------------------------------
+function %early(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = icmp_imm eq v0, 0
+    brif v2, block1(v1), block2(v1)
+
+block1(v3: i32):
+    return v3
+
+block2(v4: i32):
+    v5 = iadd_imm v4, 1
+    v6 = iadd_imm v5, 100
+    return v6
+}
+
+; run: %early(0, 7) == 7
+; run: %early(1, 7) == 108
+; run: %early(-1, 0) == 101
+
+; ---------------------------------------------------------------------------
+; Three return blocks from a chain of tests (switch-like shape), at different
+; branch depths.
+; ---------------------------------------------------------------------------
+function %three_way(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = icmp_imm eq v0, 1
+    brif v2, block1(v1), block2(v0, v1)
+
+block1(v3: i32):
+    v4 = iadd_imm v3, 100
+    return v4
+
+block2(v5: i32, v6: i32):
+    v7 = icmp_imm eq v5, 2
+    brif v7, block3(v6), block4(v6)
+
+block3(v8: i32):
+    v9 = iadd_imm v8, 200
+    return v9
+
+block4(v10: i32):
+    v11 = iadd_imm v10, 300
+    return v11
+}
+
+; run: %three_way(1, 5) == 105
+; run: %three_way(2, 5) == 205
+; run: %three_way(3, 5) == 305
+; run: %three_way(0, 0) == 300
+
+; ---------------------------------------------------------------------------
+; A bail-out return next to a loop with its own exit return, so one return is
+; reached without ever entering the loop and the other terminates it.
+; ---------------------------------------------------------------------------
+function %loop_or_bail(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = icmp_imm slt v0, 0
+    brif v2, block1(v1), block2(v0, v1)
+
+block1(v3: i32):
+    v4 = iadd_imm v3, -1000
+    return v4
+
+block2(v5: i32, v6: i32):
+    v7 = icmp_imm sgt v5, 0
+    brif v7, block3(v5, v6), block4(v6)
+
+block3(v8: i32, v9: i32):
+    v10 = iadd_imm v8, -1
+    v11 = iadd_imm v9, 2
+    jump block2(v10, v11)
+
+block4(v12: i32):
+    return v12
+}
+
+; run: %loop_or_bail(-1, 5) == -995
+; run: %loop_or_bail(0, 5) == 5
+; run: %loop_or_bail(3, 0) == 6
+; run: %loop_or_bail(-5, 1000) == 0
+
+; ---------------------------------------------------------------------------
+; Mixed return-block shapes: one returns a block parameter with no computation
+; at all, the other is parameterless and returns a wide constant.
+; ---------------------------------------------------------------------------
+function %mixed_shapes(i32 sext) -> i32 sext {
+block0(v0: i32):
+    brif v0, block1(v0), block2
+
+block1(v1: i32):
+    return v1
+
+block2:
+    v2 = iconst.i32 1000
+    return v2
+}
+
+; run: %mixed_shapes(5) == 5
+; run: %mixed_shapes(0) == 1000
+; run: %mixed_shapes(-3) == -3

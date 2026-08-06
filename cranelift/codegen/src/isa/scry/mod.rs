@@ -29,7 +29,7 @@ use core::fmt::{Debug, Formatter};
 use cranelift_control::ControlPlane;
 use cranelift_entity::EntityRef;
 use graphene::core::GraphMut;
-use graphene::core::property::{AddEdge, Rooted};
+use graphene::core::property::Rooted;
 use graphene::core::{Graph, MaybeOwned};
 use regalloc2::{Block, Function as RegFunc};
 use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
@@ -297,6 +297,14 @@ fn prepare_block_params(
 ) {
     // Handle entry block first, moving MInst:Args to the params
     let entry_bb = cfg.graph.root_weight_mut();
+
+    // Lowering emits no Args at all when none of the function's parameters are
+    // used. Insert an empty one; the gap-filling below reconstructs the full
+    // positional list from the signature either way.
+    if !matches!(entry_bb.inst.first(), Some(MInst::Args { .. })) {
+        entry_bb.inst.insert(0, MInst::Args { args: vec![] });
+    }
+
     match &entry_bb.inst[0] {
         MInst::Args { args } => {
             // Unused parameters are not lowered into Args, so reconstruct the full
@@ -330,9 +338,10 @@ fn prepare_block_params(
 
     let dfg = cfg.dataflow_graph();
 
-    // Resolve parameter orders
-    let mut worklist = HashSet::new();
-    worklist.insert(cfg.graph.root());
+    // Resolve parameter orders. Every block's outgoing edges are processed at
+    // least once; blocks are re-added whenever an order they participate in
+    // changes.
+    let mut worklist: HashSet<usize> = cfg.graph.all_vertices().collect();
 
     // Entry block has identical param order to its actual params
     let entry_param_order = cfg
@@ -392,124 +401,100 @@ fn prepare_block_params(
 
             log::trace!("Parameter register mapping: {reg_map:?}");
 
-            // Unify existing param order
+            // Unify existing param order.
             let mut bb_branch_param_order = bb.branch_param_order.clone();
             let mut succ_param_order = succ_bb.param_order.clone();
-            for idx in 0..max(succ_param_order.len(), bb_branch_param_order.len()) {
-                if succ_param_order.len() <= idx {
-                    assert!(bb_branch_param_order.len() > idx);
-                    // This block has more parameters than the successor.
-                    // Add the parameter to the sucessor
 
-                    // succ_param_order.push(bb_branch_param_order[idx].clone().map(|(param_idx, in_reg)| (param_idx, reg_map[&(param_idx, in_reg)])))
-                    succ_param_order.push(None)
-                } else if bb_branch_param_order.len() <= idx {
-                    // Successor block has more parameters than this.
-                    // Add the parameter to this
-                    assert!(succ_param_order.len() > idx);
+            // Equalize lengths, then propagate known positions across the edge.
+            let len = max(succ_param_order.len(), bb_branch_param_order.len());
+            bb_branch_param_order.resize(len, None);
+            succ_param_order.resize(len, None);
 
-                    if let Some(((_, succ_p), _)) = succ_param_order[idx]
-                        .and_then(|succ_p| reg_map.iter().find(|(_, r)| **r == succ_p))
-                    {
-                        // Successor already has a parameter in the mapping, assign the corresponding one from this block
-                        bb_branch_param_order.push(Some(*succ_p))
-                    } else {
-                        bb_branch_param_order.push(None)
+            for idx in 0..len {
+                match (bb_branch_param_order[idx], succ_param_order[idx]) {
+                    (Some(bb_p), Some(succ_p)) => {
+                        // Both sides positioned: they must be each other's
+                        // counterpart on this edge.
+                        assert!(
+                            reg_map
+                                .iter()
+                                .any(|((_, p1), p2)| *p1 == bb_p && *p2 == succ_p),
+                            "Incongruence in this block and succ"
+                        );
+                    }
+                    (Some(bb_p), None) => {
+                        // If this edge passes bb_p (unambiguously), the successor's
+                        // corresponding register takes the same position.
+                        let mut targets = reg_map
+                            .iter()
+                            .filter(|((_, p1), _)| *p1 == bb_p)
+                            .map(|(_, r)| *r);
+                        match (targets.next(), targets.next()) {
+                            (Some(succ_r), None) if !succ_param_order.contains(&Some(succ_r)) => {
+                                succ_param_order[idx] = Some(succ_r);
+                            }
+                            // Not passed on this edge, ambiguous (duplicate
+                            // arguments), or already positioned: leave it to the
+                            // parameter loop below.
+                            _ => (),
+                        }
+                    }
+                    (None, Some(succ_p)) => {
+                        // The successor's register is one of this edge's parameters;
+                        // the corresponding passed register takes the position.
+                        if let Some(((_, bb_r), _)) = reg_map.iter().find(|(_, r)| **r == succ_p) {
+                            bb_branch_param_order[idx] = Some(*bb_r);
+                        }
+                    }
+                    (None, None) => (),
+                }
+            }
+
+            // Ensure every parameter passed on this edge has a position. Keyed on
+            // the successor's parameter registers, which are unique, so that
+            // duplicate arguments (the same register passed at several positions)
+            // are supported.
+            for (param_idx, param) in br_params.iter().enumerate() {
+                let succ_param_reg = reg_map[&(param_idx, *param)];
+                if let Some(order_idx) = succ_param_order
+                    .iter()
+                    .position(|p| *p == Some(succ_param_reg))
+                {
+                    // The successor has a position for this parameter.
+                    match bb_branch_param_order[order_idx] {
+                        None => bb_branch_param_order[order_idx] = Some(*param),
+                        Some(p) => {
+                            assert_eq!(p, *param, "Incongruence in this block and succ")
+                        }
                     }
                 } else {
-                    // They both have something in this position, check correct mapping
-                    if let Some(bb_p) = bb_branch_param_order[idx] {
-                        if let Some(succ_p) = succ_param_order[idx] {
-                            assert!(
-                                reg_map
-                                    .iter()
-                                    .any(|((_, p1), p2)| bb_p == *p1 && *p2 == succ_p)
-                            );
-                        } else {
-                            // Succ has nothing assigned
-                            // succ_param_order[idx] = Some((p.0, succ_r));
-                        }
-                    } else if let Some(p) = succ_param_order[idx] {
-                        // Succ has an assignment but this block doesn't, assign one if necessary
-                        if let Some(p2) = reg_map.iter().find(|((_, _), r)| **r == p) {
-                            bb_branch_param_order[idx] = Some(p2.0.1);
-                        }
-                    }
+                    // Neither side has a position for this parameter yet. Add to both.
+                    bb_branch_param_order.push(Some(*param));
+                    succ_param_order.push(Some(succ_param_reg));
                 }
             }
 
             assert_eq!(bb_branch_param_order.len(), succ_param_order.len());
 
-            // Check/add any params not in order
-            for (param_idx, param) in br_params.iter().enumerate() {
-                if !bb_branch_param_order.contains(&Some(*param)) {
-                    // This block has a missing parameter in the order
+            // Every parameter of the successor now has a position: its parameters
+            // and this edge's passed registers map one-to-one.
+            debug_assert!(
+                succ_bb
+                    .params
+                    .iter()
+                    .all(|p| succ_param_order.contains(&Some(*p)))
+            );
 
-                    // Check if succ has its param
-                    let succ_param_reg = reg_map[&(param_idx, *param)];
-                    let succ_param = succ_param_order
-                        .iter()
-                        .enumerate()
-                        .find(|(_, p)| **p == Some(*param));
-                    assert!(succ_param.is_none_or(|(_, p)| p.is_none_or(|r| r == succ_param_reg)));
-
-                    if let Some((order_idx, Some(succ_r))) = succ_param {
-                        // Successor already has a position for this parameter.
-                        assert!(
-                            bb_branch_param_order[order_idx].is_none(),
-                            "Incongruence in this block and succ"
-                        );
-                        assert_eq!(*succ_r, succ_param_reg);
-                        bb_branch_param_order[order_idx] = Some(*param);
-                    } else {
-                        // Successor also does not have a position for this parameter. Add to both
-                        bb_branch_param_order.push(Some(*param));
-                        succ_param_order.push(Some(succ_param_reg));
-                    }
-                }
+            if bb.branch_param_order != bb_branch_param_order {
+                // This block's output order changed: re-evaluate its edges to all
+                // successors (which share the order).
+                worklist.insert(bb_v);
             }
 
-            for (param_idx, param_reg) in succ_bb.params.iter().enumerate() {
-                if !succ_param_order.contains(&Some(*param_reg)) {
-                    // The successor is missing a parameter in the order
-
-                    // Check if this block has its param
-                    let bb_param = reg_map.keys().find(|(i, _)| *i == param_idx).unwrap();
-                    let bb_param_order = bb_branch_param_order
-                        .iter()
-                        .enumerate()
-                        .find(|(_, p)| **p == Some(bb_param.1));
-                    assert!(bb_param_order.is_none_or(|(_, p)| p.is_none_or(|p| {
-                        reg_map
-                            .iter()
-                            .any(|((_, p2), p3)| *p2 == p && p3 == param_reg)
-                    })));
-
-                    if let Some((order_idx, _)) = bb_param_order {
-                        // this block already has a position for this parameter.
-                        assert!(
-                            succ_param_order[order_idx].is_none(),
-                            "Incongruence in this block and succ"
-                        );
-                        succ_param_order[order_idx] = Some(*param_reg);
-                    } else {
-                        unreachable!(
-                            "Both blocks cannot have nothing in this parameter order position."
-                        )
-                    }
-                }
-            }
-
-            if bb.branch_param_order.len() < bb_branch_param_order.len() {
-                //Parameters were added to this block's order. Reevaluate all successors
-                for (succ_v, _) in cfg.graph.edges_sourced_in(bb_v) {
-                    worklist.insert(succ_v);
-                }
-            }
-
-            if succ_bb.param_order.len() < succ_param_order.len() {
-                //Parameters were added to the successor order. Reevaluate all its predecessors
-                for (pred_v, _) in cfg.graph.edges_sinked_in(bb_v) {
+            if succ_bb.param_order != succ_param_order {
+                // The successor's input order changed: re-evaluate the edges from
+                // all its predecessors.
+                for (pred_v, _) in cfg.graph.edges_sinked_in(succ_v) {
                     worklist.insert(pred_v);
                 }
             }
@@ -552,14 +537,16 @@ fn prepare_block_params(
                 .all(|p| { bb.param_order.iter().filter(|po| **po == Some(*p)).count() == 1 })
         );
 
-        // Assert all branch parameters are present in the order exactly once
+        // Assert every branch parameter has at least as many positions in the order
+        // as the number of times it is passed on any single edge (a register may be
+        // passed at several positions of the same branch)
         assert!(bb.branch_params.values().all(|params| {
             params.iter().all(|p| {
                 bb.branch_param_order
                     .iter()
                     .filter(|po| **po == Some(*p))
                     .count()
-                    == 1
+                    >= params.iter().filter(|p2| *p2 == p).count()
             })
         }));
     }
@@ -620,6 +607,22 @@ fn prepare_block_params(
 
         // Update jump trigger inputs
         if let Some((_, trigger)) = get_jmp_issue_trigger(bb) {
+            // Every position of the output order must carry a value of this block's
+            // own. A None position would mean a successor's input order reserves a
+            // position for another predecessor's value, which cannot happen as long
+            // as all critical edges are split (see `from_vcode`): every successor
+            // then either has this block as its only predecessor, or is a dedicated
+            // jump block. Should a future pass reintroduce unsplit critical edges,
+            // this block would have to send a padding value (e.g. a duplicate of a
+            // real argument) at each None position to keep the wire positions of
+            // its tuple aligned with the successor's input order.
+            assert!(
+                bb.branch_param_order.iter().all(|r| r.is_some()),
+                "Output order contains positions carrying no value of this block's \
+                 (would require padding): {:?}",
+                bb.branch_param_order
+            );
+
             match &mut bb.inst[trigger] {
                 MInst::JumpTrigger { args, .. } => {
                     *args = bb.branch_param_order.iter().map(|r| r.unwrap()).collect();
@@ -830,7 +833,23 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                                 })
                                 .collect();
 
-                            bb.inst.insert(inst_idx, MInst::Echo { rds, rss });
+                            bb.inst
+                                .insert(bb.inst.len() - inst_idx, MInst::Echo { rds, rss });
+                            continue 'a;
+                        }
+                        MInst::Const { rd, .. } if ref_dists[&0] > 0 => {
+                            // Consumer is not directly after the const, use echo to bridge the gap
+                            let rd = rd.to_reg();
+                            let fresh = new_vreg();
+                            replace_all_uses(bb, rd, fresh);
+                            bb.inst.insert(
+                                bb.inst.len() - inst_idx,
+                                MInst::EchoLong {
+                                    rds: vec![Writable::from_reg(fresh)],
+                                    rss: vec![rd],
+                                    out: 0,
+                                },
+                            );
                             continue 'a;
                         }
                         _ => (),
@@ -1152,7 +1171,13 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                     if rss.len() != 0 {
                         assert_eq!(rds.len(), rss.len());
                         rss.iter().zip(rds.iter()).for_each(|(rs, rd)| {
-                            update_changed(&rd.to_reg(), type_map.get(*rs), &mut type_map);
+                            // Unify in both directions: a type may become known on
+                            // the output side first (e.g. a block parameter whose
+                            // echoed copy is refined by a later consumer).
+                            let merged =
+                                type_map.get(*rs).refine(type_map.get(rd.to_reg())).unwrap();
+                            update_changed(rs, merged, &mut type_map);
+                            update_changed(&rd.to_reg(), merged, &mut type_map);
                         });
                     } else {
                         assert!(!rds.is_empty());
@@ -1162,8 +1187,18 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                 Reorder {
                     rd1, rd2, rs1, rs2, ..
                 } => {
-                    update_changed(&rd1.to_reg(), type_map.get(*rs1), &mut type_map);
-                    update_changed(&rd2.to_reg(), type_map.get(*rs2), &mut type_map);
+                    let merged1 = type_map
+                        .get(*rs1)
+                        .refine(type_map.get(rd1.to_reg()))
+                        .unwrap();
+                    update_changed(rs1, merged1, &mut type_map);
+                    update_changed(&rd1.to_reg(), merged1, &mut type_map);
+                    let merged2 = type_map
+                        .get(*rs2)
+                        .refine(type_map.get(rd2.to_reg()))
+                        .unwrap();
+                    update_changed(rs2, merged2, &mut type_map);
+                    update_changed(&rd2.to_reg(), merged2, &mut type_map);
                 }
                 Duplicate { rd1, rd2, rs, .. } => {
                     let rs_t = type_map.get(*rs);
@@ -1379,130 +1414,74 @@ pub fn get_jmp_issue_trigger(block: &VCodeBB<MInst>) -> Option<(usize, usize)> {
     }
 }
 
-fn block_ordering(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
-    for bb_v in cfg.graph.all_vertices().collect::<Vec<_>>().into_iter() {
-        // Add order dependencies based on branches
-        if let Some((issue, _)) = get_jmp_issue_trigger(cfg.graph.vertex_weight(bb_v).unwrap()) {
-            // Add dependencies of branch targets
-            match cfg.graph.vertex_weight(bb_v).unwrap().inst[issue] {
+/// The machine-dependent block-exit query for [`VCodeCFG::compute_layout`].
+fn block_exit(bb: &VCodeBB<MInst>) -> Option<BlockExit> {
+    get_jmp_issue_trigger(bb).and_then(|(issue, _)| match bb.inst[issue] {
+        MInst::BranchIssue { dst, .. } => Some(BlockExit::Branch(Block::new(dst.index()))),
+        MInst::JumpIssue { dst, .. } => Some(BlockExit::Jump(Block::new(dst.index()))),
+        _ => None,
+    })
+}
+
+/// Fixes the branch conditions to match the final block layout.
+///
+/// The layout is not stored anywhere: [`VCodeCFG::build_vcode`] deterministically
+/// recomputes it (see [`VCodeCFG::compute_layout`]) when the blocks are emitted.
+/// This pass computes the same layout to learn each branch's direction: lowering
+/// emits every `BranchIssue` with backward-jump semantics (taken if the condition
+/// is non-zero, see the ISA spec on `jmp`); if the branch target ends up *after*
+/// the block, the emitted jump offset is positive and the ISA gives it
+/// forward-jump semantics (taken if the condition is zero), so the condition must
+/// be negated. Only conditions are rewritten — branch targets and block structure
+/// are untouched — so the layout recomputed at emission is identical.
+fn fix_branch_conditions(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
+    let layout = cfg.compute_layout(block_exit);
+    let position: HashMap<usize, usize> = layout.iter().enumerate().map(|(i, v)| (*v, i)).collect();
+
+    // Find each conditional block's branch target.
+    let mut branch_target_of = HashMap::new(); // conditional bb -> branch target vertex
+    for (bb_v, bb) in cfg.graph.all_vertices_weighted() {
+        if let Some(BlockExit::Branch(target)) = block_exit(bb) {
+            let target_bb_v = cfg
+                .vertex_of_block(target)
+                .expect("Branch target is not a block");
+            branch_target_of.insert(bb_v, target_bb_v);
+        }
+    }
+
+    // Fix branch conditions to match the layout direction.
+    for (bb_v, target_bb_v) in branch_target_of {
+        if position[&target_bb_v] > position[&bb_v] {
+            // Forward jump: taken if the condition is zero, so negate it.
+            let bb_mut = cfg.graph.vertex_weight_mut(bb_v).unwrap();
+            let (issue, _) = get_jmp_issue_trigger(bb_mut).unwrap();
+            match bb_mut.inst[issue] {
                 MInst::BranchIssue {
                     dir,
                     dst,
                     cond,
                     link,
                 } => {
-                    let target_bb_v = cfg
-                        .graph
-                        .all_vertices_weighted()
-                        .find(|(_, b)| b.vcode_bb == Block::new(dst.index()))
-                        .map(|(v, _)| v)
-                        .unwrap();
-
-                    if target_bb_v != bb_v {
-                        if dir {
-                            // Forward jump
-                            if cfg.block_order.edges_between(bb_v, target_bb_v).count() == 0 {
-                                // Not assigned in the order, assign it
-                                cfg.block_order
-                                    .add_edge_weighted(bb_v, target_bb_v, Ordering::Before)
-                                    .expect("Found conflicting block order requirement");
-                            }
-                        } else {
-                            // Assumes jump backwards
-                            if cfg.block_order.edges_between(target_bb_v, bb_v).count() == 0 {
-                                if cfg.block_order.edges_between(bb_v, target_bb_v).count() > 0 {
-                                    // Ordering requires a forward jump, flip the branch direction
-                                    let neg_cond_r = new_vreg();
-                                    let pos_cond_r = cond;
-
-                                    let negation = MInst::UnaryAlu {
-                                        op: UnaryAluOp::LogNeg,
-                                        rd: WritableReg::from_reg(neg_cond_r),
-                                        rs: pos_cond_r,
-                                    };
-
-                                    let bb_mut = cfg.graph.vertex_weight_mut(bb_v).unwrap();
-                                    bb_mut.inst[issue] = MInst::BranchIssue {
-                                        dir: true,
-                                        dst,
-                                        cond: neg_cond_r,
-                                        link,
-                                    };
-                                    bb_mut.inst.insert(issue, negation);
-                                } else {
-                                    // Not assigned in the order, assign it
-                                    cfg.block_order
-                                        .add_edge_weighted(target_bb_v, bb_v, Ordering::Before)
-                                        .expect("Found conflicting block order requirement");
-                                }
-                            }
-                        }
-                    } else {
-                        // The branch loops back to the same block
-                        // Must use backwards jump
-                        if dir {
-                            // Existing code assumes forward jump, negate incoming condition
-                            let neg_cond_r = new_vreg();
-                            let pos_cond_r = cond;
-
-                            let negation = MInst::UnaryAlu {
-                                op: UnaryAluOp::LogNeg,
-                                rd: WritableReg::from_reg(neg_cond_r),
-                                rs: pos_cond_r,
-                            };
-
-                            let bb_mut = cfg.graph.vertex_weight_mut(bb_v).unwrap();
-                            bb_mut.inst[issue] = MInst::BranchIssue {
-                                dir: false,
-                                dst,
-                                cond: neg_cond_r,
-                                link,
-                            };
-                            bb_mut.inst.insert(issue, negation);
-                        } else {
-                            // Existing code assumes correct backwards jump, do nothing.
-                        }
-                    }
-
-                    // Add dependency of successor without branch
-                    let mut non_branch_target_iter = cfg
-                        .graph
-                        .edges_sourced_in(bb_v)
-                        .filter(|(succ_v, _)| *succ_v != target_bb_v);
-
-                    let (succ_v, _) = non_branch_target_iter
-                        .next()
-                        .expect("No other conditional branch target");
-
-                    if cfg
-                        .block_order
-                        .edges_sourced_in(bb_v)
-                        .filter(|(_, o)| **o == Ordering::Precede)
-                        .count()
-                        == 0
-                    {
-                        if let Some(o) = cfg
-                            .block_order
-                            .edges_between_mut(bb_v, succ_v)
-                            .find(|o| **o == Ordering::Before)
-                        {
-                            *o = Ordering::Precede;
-                        } else {
-                            cfg.block_order
-                                .add_edge_weighted(bb_v, succ_v, Ordering::Precede)
-                                .unwrap()
-                        }
-                    } else {
-                        unimplemented!("Branch already has a Ordering::Precede dependending on it")
-                    }
-                    assert!(
-                        non_branch_target_iter.next().is_none(),
-                        "Block has more than 2 successors"
-                    );
+                    assert!(!dir, "Lowering must emit backward-jump conditions");
+                    let neg_cond_r = new_vreg();
+                    let negation = MInst::UnaryAlu {
+                        op: UnaryAluOp::LogNeg,
+                        rd: WritableReg::from_reg(neg_cond_r),
+                        rs: cond,
+                    };
+                    bb_mut.inst[issue] = MInst::BranchIssue {
+                        dir: true,
+                        dst,
+                        cond: neg_cond_r,
+                        link,
+                    };
+                    bb_mut.inst.insert(issue, negation);
                 }
-                _ => (),
+                _ => unreachable!(),
             }
         }
+        // Backward (or self-loop) jump: taken if the condition is non-zero, which
+        // is what lowering emitted.
     }
 }
 
@@ -1520,50 +1499,50 @@ impl TargetIsa for ScryBackend {
 
         log::trace!("func signature: {:?}", vcode.abi.signature());
 
+        let reg_type = |r: Reg| vcode.vreg_type_maybe(r.to_virtual_reg().unwrap().into());
+
+        // Creates a new unique vreg
         let mut new_vreg = || {
             new_vregs
                 .alloc_with_deferred_error(Type::int(32).unwrap())
                 .only_reg()
                 .unwrap()
         };
-        let reg_type = |r: Reg| vcode.vreg_type_maybe(r.to_virtual_reg().unwrap().into());
 
-        let update_branch_target = |bb: &mut VCodeBB<_>, new_target: MachLabel| {
-            let (issue_idx, _) = get_jmp_issue_trigger(bb).unwrap();
-            let issue_inst = bb.inst.get_mut(issue_idx).unwrap();
-            match issue_inst {
-                MInst::BranchIssue { dst, .. } => {
-                    *dst = new_target;
-                }
-                _ => unimplemented!(),
-            }
+        // Machine-dependent part of edge-block promotion (see `from_vcode`):
+        // replace a promoted block's single ImmJump with an explicit
+        // JumpIssue/JumpTrigger pair passing the block's fresh parameter registers.
+        let replace_jump = |inst: &MInst, args: Vec<Reg>, new_vreg: &mut dyn FnMut() -> Reg| {
+            let dst = match inst {
+                MInst::ImmJump { dst } => *dst,
+                inst => unreachable!("Not a promotable jump block: {:?}", inst),
+            };
+            let link = new_vreg();
+            vec![
+                MInst::JumpIssue {
+                    link: WritableReg::from_reg(link),
+                    dst,
+                },
+                MInst::JumpTrigger { link, args },
+            ]
         };
 
-        let mut cfg = VCodeCFG::from_vcode(&vcode, update_branch_target);
+        let mut cfg = VCodeCFG::from_vcode(&vcode, &mut new_vreg, replace_jump);
 
         log::trace!("VCodeCFG: {cfg:?}");
 
         prepare_block_params(&mut cfg, vcode.abi.signature(), &mut new_vreg);
 
-        // Insert `ret` instruction as movable trigger
-        cfg.graph
-            .all_vertices_weighted_mut()
-            .find(|(_, bb)| {
-                bb.inst
-                    .iter()
-                    .find(|i| {
-                        if let MInst::Rets { .. } = i {
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .is_some()
-            })
-            .map(|(_, bb)| {
-                let inst_count = bb.inst.len();
-                bb.inst.insert(inst_count - 1, MInst::Ret { trig: 0 })
-            });
+        // Insert `ret` instruction as movable trigger, in every returning block
+        cfg.graph.all_vertices_weighted_mut().for_each(|(_, bb)| {
+            if let Some(rets_idx) = bb
+                .inst
+                .iter()
+                .rposition(|i| matches!(i, MInst::Rets { .. }))
+            {
+                bb.inst.insert(rets_idx, MInst::Ret { trig: 0 });
+            }
+        });
 
         log::trace!("VCodeCFG: {cfg:?}");
 
@@ -1571,7 +1550,7 @@ impl TargetIsa for ScryBackend {
         insert_duplicates(&mut cfg, &mut new_vreg);
         expand_echoes(&mut cfg, &mut new_vreg);
         fix_orderings(&mut cfg, &mut new_vreg);
-        block_ordering(&mut cfg, &mut new_vreg);
+        fix_branch_conditions(&mut cfg, &mut new_vreg);
         insert_ref_distances(&mut cfg, &mut new_vreg);
 
         let sigs = SigSet::new::<abi::ScryMachineDeps>(func, &self.flags)?;
@@ -1586,7 +1565,7 @@ impl TargetIsa for ScryBackend {
             2,
         );
 
-        cfg.build_vcode(&mut builder, |inst, label_idx_map| match inst {
+        cfg.build_vcode(&mut builder, block_exit, |inst, label_idx_map| match inst {
             MInst::BranchIssue {
                 link,
                 dst,

@@ -1,0 +1,70 @@
+test interpret
+test run
+target scry32
+
+; Control flow between blocks that take no parameters at all.
+
+; ---------------------------------------------------------------------------
+; A jump chain with no parameters anywhere. The entry block's own parameter is
+; unused, which also means no value crosses any edge.
+; ---------------------------------------------------------------------------
+function %chain_noparams(i32 sext) -> i32 sext {
+block0(v0: i32):
+    jump block1
+
+block1:
+    jump block2
+
+block2:
+    v1 = iconst.i32 7
+    return v1
+}
+
+; run: %chain_noparams(0) == 7
+; run: %chain_noparams(3) == 7
+
+; ---------------------------------------------------------------------------
+; A diamond with no parameters on any edge: the condition is consumed by the
+; branch and nothing else crosses an edge.
+; ---------------------------------------------------------------------------
+function %diamond_noparams(i32 sext) -> i32 sext {
+block0(v0: i32):
+    brif v0, block1, block2
+
+block1:
+    jump block3
+
+block2:
+    jump block3
+
+block3:
+    v1 = iconst.i32 7
+    return v1
+}
+
+; run: %diamond_noparams(0) == 7
+; run: %diamond_noparams(1) == 7
+
+; ---------------------------------------------------------------------------
+; A diamond where the arms take no parameters but the join does, so a value
+; must survive across parameterless blocks by being rematerialized in each arm.
+; ---------------------------------------------------------------------------
+function %mixed_params(i32 sext) -> i32 sext {
+block0(v0: i32):
+    brif v0, block1, block2
+
+block1:
+    v1 = iconst.i32 10
+    jump block3(v1)
+
+block2:
+    v2 = iconst.i32 20
+    jump block3(v2)
+
+block3(v3: i32):
+    v4 = iadd_imm v3, 1
+    return v4
+}
+
+; run: %mixed_params(1) == 11
+; run: %mixed_params(0) == 21

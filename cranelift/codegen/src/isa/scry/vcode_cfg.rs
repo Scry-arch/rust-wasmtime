@@ -1,17 +1,13 @@
 use crate::ir::RelSourceLoc;
 use crate::machinst::{BlockIndex, VCode, VCodeBuilder};
-use crate::{MachLabel, Reg, VCodeInst};
+use crate::{Reg, VCodeInst};
 use core::fmt::Debug;
-use cranelift_entity::EntityRef;
-use graphene::algo::Retainable;
-use graphene::algo::search::Topo;
 use graphene::common::{AdjListGraph, VertexMapGraph};
 use graphene::core::property::*;
-use graphene::core::{BaseGraphGuard, Directed, Ensure, Graph, GraphMut};
+use graphene::core::{Directed, Ensure, Graph, GraphMut};
 use hashbrown::HashMap;
 use regalloc2::{Block, Function, OperandKind};
 use std::collections::{HashSet, VecDeque};
-use std::iter::once;
 use std::ops::Index;
 use std::vec::Vec;
 
@@ -81,23 +77,20 @@ impl<I: VCodeInst> VCodeBB<I> {
     }
 }
 
-/// Specifies ordering dependency requirements between blocks
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ordering {
-    /// Source block must come before the sink block in the binary
-    Before,
-
-    /// The source block must come immediately before the sink block in the binary, with no other blocks between.
-    Precede,
+/// How a block transfers control to a successor, as far as block layout is
+/// concerned. Returned by the machine-dependent `block_exit` callback of
+/// [`VCodeCFG::compute_layout`] and [`VCodeCFG::build_vcode`].
+pub enum BlockExit {
+    /// The block ends in a conditional branch to the given vcode block; the
+    /// block's other successor is its fall-through.
+    Branch(Block),
+    /// The block ends in an unconditional jump to the given vcode block.
+    Jump(Block),
 }
 
 #[derive(Debug)]
 pub struct VCodeCFG<I: VCodeInst> {
     pub graph: UniqueGraph<WeakGraph<RootedGraph<AdjListGraph<VCodeBB<I>, ()>>>>,
-
-    // A DAG of which blocks must come before other blocks in the function (i.e. at earlier addresses)
-    // An edge from v1 to v2 means v1 must come before v2.
-    pub block_order: AcyclicGraph<UniqueGraph<VertexMapGraph<usize, AdjListGraph<(), Ordering>>>>,
 }
 
 impl<I: VCodeInst> VCodeCFG<I> {
@@ -116,9 +109,17 @@ impl<I: VCodeInst> VCodeCFG<I> {
         None
     }
 
+    /// `new_vreg`: allocates a fresh virtual register.
+    ///
+    /// `replace_jump`: the machine-dependent part of edge-block promotion — given a
+    /// promoted block's single jump instruction and the block's fresh parameter
+    /// registers, returns the instruction sequence that jumps to the same target
+    /// while passing those registers on (allocating any scratch registers it needs
+    /// from the given allocator).
     pub fn from_vcode(
         vcode: &VCode<I>,
-        update_branch_target: impl Fn(&mut VCodeBB<I>, MachLabel),
+        mut new_vreg: impl FnMut() -> Reg,
+        mut replace_jump: impl FnMut(&I, Vec<Reg>, &mut dyn FnMut() -> Reg) -> Vec<I>,
     ) -> Self {
         let mut graph = AdjListGraph::<VCodeBB<I>, ()>::new();
 
@@ -207,187 +208,190 @@ impl<I: VCodeInst> VCodeCFG<I> {
             donelist.insert(bb);
         }
 
-        // Eliminate blocks consisting of just a jump.
-        // These are inserted before instruction selection to be the "not taken" target of conditional branches
-        // They don't adhere to the parameter rules of the "real" blocks and have no purpose.
-        // Find them and move all control flow back to the original target
+        // Promote blocks consisting of just a jump into well-formed blocks.
+        //
+        // These are the edge blocks inserted before instruction selection to split
+        // critical edges. They don't adhere to the parameter rules of the "real"
+        // blocks: their single jump passes registers owned by the predecessor.
+        //
+        // They must be *kept* (not folded back into their edge): with every
+        // critical edge split, every block with multiple predecessors only has
+        // single-successor predecessors and every block with multiple successors
+        // only has single-predecessor successors. This guarantees the parameter
+        // order unification below always succeeds, that no two conditional blocks
+        // ever share a fall-through successor, and that a conditional branch whose
+        // arms name the same block keeps two distinguishable edges.
         while let Some(bb_v) = VCodeCFG::find_unnecessary_block(&graph) {
-            let bb = graph.vertex_weight(bb_v).unwrap();
+            let bb = graph.vertex_weight_mut(bb_v).unwrap();
 
-            log::trace!("Unnecessary block {bb_v}: {bb:?}");
+            log::trace!("Promoting edge block {bb_v}: {bb:?}");
 
             let bb_block = bb.vcode_bb;
+            assert!(bb.params.is_empty());
+
+            // The single successor, and the registers the block's jump passes to
+            // it (owned by the predecessor).
+            let (succ, old_args) = {
+                let mut iter = bb.branch_params.iter();
+                let (succ, args) = iter.next().expect("Jump block without successor params");
+                assert!(iter.next().is_none());
+                (*succ, args.clone())
+            };
+
+            // Fresh registers become the block's parameters and are passed onward
+            // in place of the predecessor-owned ones.
+            let fresh: Vec<Reg> = old_args.iter().map(|_| new_vreg()).collect();
+            bb.params = fresh.clone();
+            bb.branch_params.insert(succ, fresh.clone());
+            let new_inst = replace_jump(&bb.inst[0], fresh, &mut new_vreg);
+            bb.inst = new_inst;
+
+            // The predecessor's branch parameters for this edge were recorded on
+            // the edge block itself; the predecessor now passes the registers the
+            // edge block's jump used to pass.
             let pred_v = graph.edges_sinked_in(bb_v).next().unwrap().0;
-            let succ_v = graph.edges_sourced_in(bb_v).next().unwrap().0;
-            let succ_bb_block = graph.vertex_weight(succ_v).unwrap().vcode_bb;
-            let branch_params_to_succ = bb.branch_params.get(&succ_bb_block).unwrap().clone();
             let pred_bb = graph.vertex_weight_mut(pred_v).unwrap();
-
-            // Retarget any predecessors to the successor
-            assert!(pred_bb.branch_params.get(&succ_bb_block).is_none());
-            let pred_branch_params = pred_bb.branch_params.remove(&bb_block).unwrap();
-            assert!(pred_branch_params.is_empty()); // The correct branch parameters are in the unnecessary block, ignore those in the predecessor
-            pred_bb
-                .branch_params
-                .insert(succ_bb_block, branch_params_to_succ);
-
-            update_branch_target(pred_bb, MachLabel::new(succ_bb_block.index()));
-
-            assert_eq!(graph.edges_between(pred_v, succ_v).count(), 0);
-            graph.add_edge(pred_v, succ_v).unwrap();
-
-            // Remove block and its edges
-            graph.remove_vertex(bb_v).unwrap();
+            let old = pred_bb.branch_params.insert(bb_block, old_args);
+            assert!(old.is_some_and(|p| p.is_empty()));
         }
 
         let entry_v = bb_map.get(&entry_bb).unwrap();
 
-        // Initial block order just requires the entry block to be before all others
-        let mut block_order = VertexMapGraph::new();
-        graph.all_vertices().for_each(|v| {
-            block_order.add_vertex(v).unwrap();
-            if v != *entry_v {
-                block_order
-                    .add_edge_weighted(entry_v, v, Ordering::Before)
-                    .unwrap()
-            }
-        });
-
         Self {
             graph: Ensure::ensure_all(graph, (*(entry_v), ())).unwrap(),
-            block_order: block_order.guard_all().unwrap(),
         }
     }
 
+    /// Returns the vertex of the block with the given vcode block, if any.
+    pub fn vertex_of_block(&self, block: Block) -> Option<usize> {
+        self.graph
+            .all_vertices_weighted()
+            .find(|(_, bb)| bb.vcode_bb == block)
+            .map(|(v, _)| v)
+    }
+
+    /// Computes the final linear order of the blocks in the binary, as vertices of
+    /// [`Self::graph`]. The entry block is always first. Every conditional block is
+    /// directly followed by its fall-through successor.
+    ///
+    /// The only hard layout constraint is that a conditional block's fall-through
+    /// successor (the successor its branch does *not* name, see [`BlockExit`]) must
+    /// be placed immediately after it. The layout is built as a greedy trace from
+    /// the entry block that always satisfies this. A block reserved as some
+    /// conditional's fall-through is never placed by any other means, so it is
+    /// guaranteed to be free when its conditional is placed.
+    ///
+    /// `block_exit` is the machine-dependent query for how a block ends. The result
+    /// is deterministic given the graph and the exits, so the layout is not stored
+    /// anywhere: callers needing it at different stages (fixing branch conditions,
+    /// then emitting in [`Self::build_vcode`]) simply recompute it, which stays
+    /// consistent as long as the block structure and exits do not change in
+    /// between.
+    pub fn compute_layout(
+        &self,
+        block_exit: impl Fn(&VCodeBB<I>) -> Option<BlockExit>,
+    ) -> Vec<usize> {
+        // Find each conditional block's fall-through successor.
+        let mut fall_through_of = HashMap::new(); // conditional bb -> fall-through vertex
+        for (bb_v, bb) in self.graph.all_vertices_weighted() {
+            if let Some(BlockExit::Branch(target)) = block_exit(bb) {
+                let target_bb_v = self
+                    .vertex_of_block(target)
+                    .expect("Branch target is not a block");
+
+                let mut non_target_iter = self
+                    .graph
+                    .edges_sourced_in(bb_v)
+                    .map(|(succ_v, _)| succ_v)
+                    .filter(|succ_v| *succ_v != target_bb_v);
+                let fall_through_v = non_target_iter
+                    .next()
+                    .expect("No other conditional branch target");
+                assert!(
+                    non_target_iter.next().is_none(),
+                    "Block has more than 2 successors"
+                );
+
+                fall_through_of.insert(bb_v, fall_through_v);
+            }
+        }
+
+        let reserved: HashSet<usize> = fall_through_of.values().copied().collect();
+        assert_eq!(
+            reserved.len(),
+            fall_through_of.len(),
+            "Two conditional blocks share a fall-through successor; an intermediate jump block would be needed"
+        );
+        assert!(
+            !reserved.contains(&self.graph.root()),
+            "The entry block cannot be a fall-through successor"
+        );
+
+        // Greedy trace construction.
+        let num_blocks = self.graph.all_vertices().count();
+        let mut layout = Vec::with_capacity(num_blocks);
+        let mut placed = HashSet::new();
+        let mut cursor = Some(self.graph.root());
+        while layout.len() < num_blocks {
+            let bb_v = cursor.unwrap_or_else(|| {
+                // No forced or preferred continuation: pick the smallest unplaced,
+                // unreserved vertex (reserved blocks are placed when their conditional
+                // is). Deterministic.
+                self.graph
+                    .all_vertices()
+                    .filter(|v| !placed.contains(v) && !reserved.contains(v))
+                    .min()
+                    .expect("Only reserved blocks left to place")
+            });
+            layout.push(bb_v);
+            placed.insert(bb_v);
+
+            cursor = if let Some(&ft_v) = fall_through_of.get(&bb_v) {
+                // Hard constraint: the fall-through successor comes next.
+                assert!(!placed.contains(&ft_v));
+                Some(ft_v)
+            } else {
+                // Soft preference: continue with an unconditional jump's target so it
+                // becomes a fall-through (the emitter turns a jump-to-next into a NoOp).
+                let bb = self.graph.vertex_weight(bb_v).unwrap();
+                match block_exit(bb) {
+                    Some(BlockExit::Jump(dst)) => self.vertex_of_block(dst),
+                    _ => None,
+                }
+                .filter(|v| !placed.contains(v) && !reserved.contains(v))
+            };
+        }
+
+        layout
+    }
+
     /// correct_machlabel: correct any machlabel by looking up the old index in the map (old->new)
+    ///
+    /// Emits the blocks in [`Self::compute_layout`] order (computed here with the
+    /// given `block_exit`). Branch conditions must already have been fixed to match
+    /// that layout.
     pub fn build_vcode(
         &self,
         builder: &mut VCodeBuilder<I>,
+        block_exit: impl Fn(&VCodeBB<I>) -> Option<BlockExit>,
         correct_machlabel: impl Fn(I, &HashMap<usize, usize>) -> I,
     ) {
         log::trace!("building vcode2: {self:?}");
 
-        let blocks = self.graph.all_vertices_weighted().collect::<Vec<_>>();
-
-        //TODO: Must sort the blocks in topological order while accounting for Ordering::Precede
-
-        // Create a graph where all nodes that have Order::Precede relations are merged into 1 node
-        // This can then be sorted and expanded again
-
-        let mut merged = AdjListGraph::<HashSet<usize>, ()>::new();
-
-        // Add nodes in their groups
-        for v in self.graph.all_vertices() {
-            if merged.all_vertices_weighted().all(|(_, w)| !w.contains(&v)) {
-                // v is not in the graph
-                if let Some((v2, _)) = self
-                    .block_order
-                    .edges_incident_on(v)
-                    .find(|(_, o)| **o == Ordering::Precede)
-                {
-                    if let Some((_, set)) = merged
-                        .all_vertices_weighted_mut()
-                        .find(|(_, w)| w.contains(&v2))
-                    {
-                        set.insert(v);
-                        continue;
-                    }
-                }
-                // v does not need to be merged or none of the others in its merge have already been inserted.
-                merged
-                    .new_vertex_weighted([v].into_iter().collect())
-                    .unwrap();
-            }
-        }
-        // dbg!(&self.graph);
-        // dbg!(&self
-        //     .block_order);
-        // dbg!(&merged);
-
-        // add edges between groups
-        for (so, si, _) in self
-            .block_order
-            .all_edges()
-            .filter(|(_, _, o)| **o != Ordering::Precede)
-        {
-            let so_g = merged
-                .all_vertices_weighted()
-                .find(|(_, w)| w.contains(&so))
-                .unwrap()
-                .0;
-            let si_g = merged
-                .all_vertices_weighted()
-                .find(|(_, w)| w.contains(&si))
-                .unwrap()
-                .0;
-
-            merged.add_edge(so_g, si_g).unwrap(); // Could have multiple edges, but that doesn't matter
-        }
-
-        // Find the root vertex
-        let merge_root_v = merged
-            .all_vertices_weighted()
-            .find(|(_, w)| w.contains(&self.graph.root()))
-            .unwrap()
-            .0;
-        let merged = VertexInGraph::<AcyclicGraph<AdjListGraph<_, _>>>::ensure_all(
-            merged,
-            ([merge_root_v], ()),
-        )
-        .unwrap();
-
-        let topo_sort = once(merge_root_v)
-            .chain(Topo::new(&merged).retain(&merged))
-            .flat_map(|mv| {
-                let merge_group = merged.vertex_weight(mv).unwrap();
-
-                let mut sorted_group = VecDeque::with_capacity(merge_group.len());
-                sorted_group.push_front(*merge_group.iter().next().unwrap());
-
-                // Continuously add the previous and the next in the group
-                let mut found_more = true;
-                while found_more {
-                    found_more = false;
-
-                    if let Some((prec, _)) = self
-                        .block_order
-                        .edges_sinked_in(sorted_group[0])
-                        .find(|(_, o)| **o == Ordering::Precede)
-                    {
-                        sorted_group.push_front(prec);
-                        found_more |= true;
-                    }
-                    if let Some((succ, _)) = self
-                        .block_order
-                        .edges_sourced_in(sorted_group.back().cloned().unwrap())
-                        .find(|(_, o)| **o == Ordering::Precede)
-                    {
-                        sorted_group.push_back(succ);
-                        found_more |= true;
-                    }
-                }
-                sorted_group.into_iter()
-            })
-            .collect::<Vec<_>>();
+        let layout = self.compute_layout(block_exit);
 
         // The new block order (and number) no longer fits with the original vcode.
         // MachLabels in instructions depend on the block order and number, so they must be corrected
         // to match the new order and number of the blocks.
-
         let mut label_idx_map = HashMap::new(); // Old idx to new idx
-        let mut new_block_idx = blocks.len();
-        for v in topo_sort.iter().rev() {
+        for (new_idx, v) in layout.iter().enumerate() {
             let bb = self.graph.vertex_weight(v).unwrap();
-            new_block_idx -= 1;
-            label_idx_map.insert(bb.vcode_bb.index(), new_block_idx);
+            label_idx_map.insert(bb.vcode_bb.index(), new_idx);
         }
 
-        // Now that the order is settled, we begin building the new vcode and correcting MachLabels in instructions on the fly.
-        for v in topo_sort
-            .into_iter()
-            .rev()
-            .filter(|v| *v != self.graph.root())
-        {
+        // The builder builds backward, so push the blocks in reverse layout order,
+        // correcting MachLabels in instructions on the fly.
+        for v in layout.iter().rev().filter(|v| **v != self.graph.root()) {
             let bb = self.graph.vertex_weight(v).unwrap();
             for inst in bb.inst.iter().rev() {
                 builder.push(
@@ -429,9 +433,14 @@ impl<I: VCodeInst> VCodeCFG<I> {
     + use<I> {
         let mut dfg = VertexMapGraph::<usize, AdjListGraph<_, _, _>>::new();
 
-        for (v, bb) in self.graph.all_vertices_weighted() {
+        // Add every vertex before any edge: an edge is added while processing its
+        // sink, and its source may have a higher vertex index (e.g. a join block
+        // numbered below one of its predecessors).
+        for v in self.graph.all_vertices() {
             dfg.add_vertex(v).unwrap();
+        }
 
+        for (v, bb) in self.graph.all_vertices_weighted() {
             for (pred, _) in self.graph.edges_sinked_in(v) {
                 let pred_bb = self.graph.vertex_weight(pred).unwrap();
 

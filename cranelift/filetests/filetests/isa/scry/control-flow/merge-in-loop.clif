@@ -1,0 +1,80 @@
+test interpret
+test run
+target scry32
+
+; Branching inside a loop body: the arms of the branch merge before the
+; back edge, so the loop header is a join whose predecessors include a block
+; that is itself a join.
+;
+
+; ---------------------------------------------------------------------------
+; An if-else in the loop body, merging in a dedicated latch block.
+; ---------------------------------------------------------------------------
+function %if_in_loop(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    jump block1(v0, v1)
+
+block1(v2: i32, v3: i32):          ; loop header / join of entry + latch
+    v4 = icmp_imm sgt v2, 0
+    brif v4, block2(v2, v3), block5(v3)
+
+block2(v5: i32, v6: i32):          ; loop body: branch on the accumulator
+    v7 = icmp_imm sgt v6, 100
+    brif v7, block3(v5, v6), block4(v5, v6)
+
+block3(v8: i32, v9: i32):
+    v10 = iadd_imm v9, 1
+    jump block6(v8, v10)
+
+block4(v11: i32, v12: i32):
+    v13 = iadd_imm v12, 10
+    jump block6(v11, v13)
+
+block6(v14: i32, v15: i32):        ; latch: joins the two arms, then loops
+    v16 = iadd_imm v14, -1
+    jump block1(v16, v15)
+
+block5(v17: i32):
+    return v17
+}
+
+; run: %if_in_loop(0, 0) == 0
+; run: %if_in_loop(1, 0) == 10
+; run: %if_in_loop(3, 0) == 30
+; run: %if_in_loop(3, 95) == 107
+; run: %if_in_loop(-1, 7) == 7
+
+; ---------------------------------------------------------------------------
+; The same loop but with the arms jumping straight back to the header, so the
+; header itself is the three-way join (entry + two arms).
+; ---------------------------------------------------------------------------
+function %if_in_loop_direct(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    jump block1(v0, v1)
+
+block1(v2: i32, v3: i32):          ; three predecessors
+    v4 = icmp_imm sgt v2, 0
+    brif v4, block2(v2, v3), block5(v3)
+
+block2(v5: i32, v6: i32):
+    v7 = icmp_imm sgt v6, 100
+    v8 = iadd_imm v5, -1
+    brif v7, block3(v8, v6), block4(v8, v6)
+
+block3(v9: i32, v10: i32):
+    v11 = iadd_imm v10, 1
+    jump block1(v9, v11)
+
+block4(v12: i32, v13: i32):
+    v14 = iadd_imm v13, 10
+    jump block1(v12, v14)
+
+block5(v15: i32):
+    return v15
+}
+
+; run: %if_in_loop_direct(0, 0) == 0
+; run: %if_in_loop_direct(1, 0) == 10
+; run: %if_in_loop_direct(3, 0) == 30
+; run: %if_in_loop_direct(3, 95) == 107
+; run: %if_in_loop_direct(-1, 7) == 7
