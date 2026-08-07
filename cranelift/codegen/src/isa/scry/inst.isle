@@ -192,6 +192,7 @@
     (JumpIssue
       (link WritableReg) ;; Links to the trigger instruction, not actually used
       (dst MachLabel)  ;; Where to jump to
+      (trig u16)       ;; Trigger offset
     )
 
     ;; Issues a conditional branch
@@ -200,10 +201,17 @@
       (dst MachLabel)    ;; Where to jump to
       (dir bool)         ;; Whether jumping forwards or backwards
       (cond Reg)         ;; Condition
+      (trig u16)         ;; Trigger offset
     )
 
+    ;; The point at which the control flow issued by the preceding issues takes
+    ;; effect, and where the block call arguments are delivered. Emits nothing.
+    ;;
+    ;; A block may hold several issues sharing one trigger, such that the
+    ;; branching trigger at the same location regardless of which branch is taken.
+    ;; Such a group of issues and a trigger will all use the same link register.
     (JumpTrigger
-      (link Reg)          ;; Links to the issue instruction, not actually used
+      (link Reg)          ;; Links to the issue instructions, not actually used
       (args RegVec)       ;; Block call arguments
     )
 

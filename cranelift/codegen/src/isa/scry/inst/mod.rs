@@ -558,15 +558,21 @@ impl MInst {
                     .chain(args.iter().map(|p| reg_name(p.vreg)))
                     .chain(once(format!("sig: {sig:?}"))),
             ),
-            JumpIssue { link, dst } => join(
+            JumpIssue { link, dst, trig } => join(
                 "JumpIssue",
-                ["link:".into(), wreg_name(*link), format!("dst: {dst:?}")].into_iter(),
+                [
+                    "link:".into(),
+                    wreg_name(*link),
+                    format!("dst: {dst:?}, trig: {trig}"),
+                ]
+                .into_iter(),
             ),
             BranchIssue {
                 link,
                 cond,
                 dir,
                 dst,
+                trig,
             } => join(
                 "BranchIssue",
                 [
@@ -574,7 +580,7 @@ impl MInst {
                     wreg_name(*link),
                     "cond:".into(),
                     reg_name(*cond),
-                    format!("dir: {dir:?}, dst: {dst:?}"),
+                    format!("dir: {dir:?}, dst: {dst:?}, trig: {trig}"),
                 ]
                 .into_iter(),
             ),
@@ -729,14 +735,7 @@ impl MInst {
         use MInst::*;
         match self {
             Args { .. } => 0,
-            // A constant wider than the 8-bit immediate is emitted as a
-            // `const`+`grow` chain (see `const_emit_bytes`).
-            Const { ty, imm, .. } => match ty.get_known() {
-                Some(t) => Self::const_emit_bytes(t, imm.bits()).len(),
-                // Not yet resolved (only happens before type resolution, whose
-                // callers do not depend on the exact length).
-                None => 1,
-            },
+            Const { .. } | Echo { .. } => self.emitted_length(),
             Nop
             | Rets { .. }
             | JumpTrigger { .. }
@@ -760,6 +759,23 @@ impl MInst {
             | EchoLong { .. }
             | EchoSplit { .. }
             | EchoChain { .. } => 1,
+            ImmJump { .. } => unreachable!(),
+        }
+    }
+
+    /// Returns how many machine instructions this instruction emits.
+    pub(crate) fn emitted_length(&self) -> usize {
+        use MInst::*;
+        match self {
+            Args { .. } | CallArgs { .. } | JumpTrigger { .. } => 0,
+            // A constant wider than the 8-bit immediate is emitted as a
+            // `const`+`grow` chain (see `const_emit_bytes`).
+            Const { ty, imm, .. } => match ty.get_known() {
+                Some(t) => Self::const_emit_bytes(t, imm.bits()).len(),
+                // Not yet resolved (only happens before type resolution, whose
+                // callers do not depend on the exact length).
+                None => 1,
+            },
             Echo { rds, rss } => Self::echo_chain(
                 rds.iter()
                     .cloned()
@@ -769,7 +785,27 @@ impl MInst {
                 || Reg::from_virtual_reg(VReg::new(0, RegClass::Int)),
             )
             .len(),
-            ImmJump { .. } => unreachable!(),
+            Nop
+            | UnaryAlu { .. }
+            | Ret { .. }
+            | Call { .. }
+            | Reorder { .. }
+            | Duplicate { .. }
+            | Store { .. }
+            | Load { .. }
+            | Cast { .. }
+            | JumpIssue { .. }
+            | BranchIssue { .. }
+            | Alu1 { .. }
+            | Alu2 { .. }
+            | Discard { .. }
+            | EchoLong { .. }
+            | EchoSplit { .. }
+            | EchoChain { .. } => 1,
+            // Pseudo-instructions that must have been eliminated by now.
+            Rets { .. } | ImmJump { .. } | IntCmp { .. } | BinaryAlu { .. } | Resize { .. } => {
+                unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
+            }
         }
     }
 

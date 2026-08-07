@@ -1,0 +1,141 @@
+test interpret
+test run
+target scry32
+
+; Multi-way branches (`br_table`).
+;
+
+; ---------------------------------------------------------------------------
+; A plain jump table with a default arm and three cases.
+; ---------------------------------------------------------------------------
+function %switch3(i32 uext) -> i32 sext {
+block0(v0: i32):
+    br_table v0, block4, [block1, block2, block3]
+
+block1:
+    v1 = iconst.i32 10
+    jump block5(v1)
+
+block2:
+    v2 = iconst.i32 20
+    jump block5(v2)
+
+block3:
+    v3 = iconst.i32 30
+    jump block5(v3)
+
+block4:
+    v4 = iconst.i32 -1
+    jump block5(v4)
+
+block5(v5: i32):
+    return v5
+}
+
+; run: %switch3(0) == 10
+; run: %switch3(1) == 20
+; run: %switch3(2) == 30
+; run: %switch3(3) == -1
+; run: %switch3(100) == -1
+
+; ---------------------------------------------------------------------------
+; A jump table whose arms carry block parameters, and where two table entries
+; name the same block.
+; ---------------------------------------------------------------------------
+function %switch_params(i32 uext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    br_table v0, block3(v1), [block1(v1), block2(v1), block1(v1)]
+
+block1(v2: i32):
+    v3 = iadd_imm v2, 1
+    jump block4(v3)
+
+block2(v4: i32):
+    v5 = iadd_imm v4, 2
+    jump block4(v5)
+
+block3(v6: i32):
+    v7 = iadd_imm v6, 100
+    jump block4(v7)
+
+block4(v8: i32):
+    return v8
+}
+
+; run: %switch_params(0, 5) == 6
+; run: %switch_params(1, 5) == 7
+; run: %switch_params(2, 5) == 6
+; run: %switch_params(3, 5) == 105
+
+; ---------------------------------------------------------------------------
+; A jump table used as a loop dispatcher: one of the arms is the loop's back
+; edge, so a multi-way branch closes the cycle.
+; ---------------------------------------------------------------------------
+function %switch_loop(i32 sext) -> i32 sext {
+block0(v0: i32):
+    v1 = iconst.i32 0
+    jump block1(v0, v1)
+
+block1(v2: i32, v3: i32):
+    v4 = iadd_imm v3, 1
+    v5 = iadd_imm v2, -1
+    br_table v2, block3(v3), [block3(v3), block1(v5, v4), block2(v5, v4)]
+
+block2(v6: i32, v7: i32):
+    v8 = iadd_imm v7, 100
+    jump block1(v6, v8)
+
+block3(v9: i32):
+    return v9
+}
+
+; run: %switch_loop(0) == 0
+; run: %switch_loop(1) == 1
+; run: %switch_loop(2) == 102
+
+; ---------------------------------------------------------------------------
+; A wider table.
+; ---------------------------------------------------------------------------
+function %switch_wide(i32 uext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    br_table v0, block7(v1), [block1(v1), block2(v1), block3(v1), block4(v1), block5(v1), block6(v1)]
+
+block1(v2: i32):
+    v3 = iadd_imm v2, 1
+    jump block8(v3)
+
+block2(v4: i32):
+    v5 = iadd_imm v4, 2
+    jump block8(v5)
+
+block3(v6: i32):
+    v7 = iadd_imm v6, 3
+    jump block8(v7)
+
+block4(v8: i32):
+    v9 = iadd_imm v8, 4
+    jump block8(v9)
+
+block5(v10: i32):
+    v11 = iadd_imm v10, 5
+    jump block8(v11)
+
+block6(v12: i32):
+    v13 = iadd_imm v12, 6
+    jump block8(v13)
+
+block7(v14: i32):
+    v15 = iadd_imm v14, 1000
+    jump block8(v15)
+
+block8(v16: i32):
+    return v16
+}
+
+; run: %switch_wide(0, 0) == 1
+; run: %switch_wide(3, 0) == 4
+; run: %switch_wide(5, 0) == 6
+; run: %switch_wide(6, 0) == 1000
+; run: %switch_wide(200, 0) == 1000
+; run: %switch_wide(2, 50) == 53
+; run: %switch_wide(6, -7) == 993
