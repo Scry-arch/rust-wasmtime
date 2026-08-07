@@ -1,0 +1,66 @@
+test interpret
+test run
+target scry32
+
+; Assorted loop shapes that stress the edge-splitting, block-layout and
+; parameter-ordering machinery rather than nesting depth.
+;
+
+; ---------------------------------------------------------------------------
+; A latch whose conditional branch names the loop header on both arms, with
+; different arguments. The header therefore has two distinct edges from the
+; same predecessor.
+; ---------------------------------------------------------------------------
+function %same_target_latch(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):                        ; n, thresh
+    v2 = iconst.i32 0
+    jump block1(v0, v1, v2)                      ; i, thresh, acc
+
+block1(v3: i32, v4: i32, v5: i32):               ; header
+    v6 = icmp_imm sgt v3, 0
+    brif v6, block2(v3, v4, v5), block3(v5)
+
+block2(v7: i32, v8: i32, v9: i32):               ; latch, both arms loop back
+    v10 = icmp sgt v7, v8
+    v11 = iadd_imm v7, -1
+    v12 = iadd_imm v9, 1
+    v13 = iadd_imm v9, 10
+    brif v10, block1(v11, v8, v13), block1(v11, v8, v12)
+
+block3(v14: i32):
+    return v14
+}
+
+; run: %same_target_latch(3, 1) == 21
+; run: %same_target_latch(3, 5) == 3
+; run: %same_target_latch(2, 0) == 20
+; run: %same_target_latch(0, 0) == 0
+
+; ---------------------------------------------------------------------------
+; A loop-carried value that the loop never reads: it is threaded through the
+; header and latch untouched and only used after the loop.
+; ---------------------------------------------------------------------------
+function %dead_carried(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):                        ; n, keep
+    v2 = iconst.i32 0
+    jump block1(v0, v1, v2)                      ; i, keep, acc
+
+block1(v3: i32, v4: i32, v5: i32):               ; `keep` unused in the loop
+    v6 = icmp_imm sgt v3, 0
+    brif v6, block2(v3, v4, v5), block3(v4, v5)
+
+block2(v7: i32, v8: i32, v9: i32):
+    v10 = iadd_imm v7, -1
+    v11 = iadd_imm v9, 1
+    jump block1(v10, v8, v11)
+
+block3(v12: i32, v13: i32):
+    v14 = iadd v12, v13
+    return v14
+}
+
+; run: %dead_carried(3, 100) == 103
+; run: %dead_carried(0, 7) == 7
+; run: %dead_carried(5, 0) == 5
+; run: %dead_carried(0, -4) == -4
+

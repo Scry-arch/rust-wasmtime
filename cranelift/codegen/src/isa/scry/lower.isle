@@ -75,7 +75,7 @@
     (lower_branch (jump block_call) targets)
     (let
       ( (jmp_trig_link WritableReg (temp_writable_reg $I64))
-        (_ Unit (emit (MInst.JumpIssue jmp_trig_link (gen_machlabel targets))))
+        (_ Unit (emit (MInst.JumpIssue jmp_trig_link (gen_machlabel targets) 0)))
       )
       (emit_side_effect
         (SideEffectNoResult.Inst
@@ -94,7 +94,7 @@
     (let
       ( (jmp_trig_link WritableReg (temp_writable_reg $I64))
         ; "block_call_1" is taken if "cond" is true (non-zero). Scry branch is taken on non-zero only for backward branches
-        (_ Unit (emit (MInst.BranchIssue jmp_trig_link (gen_machlabel targets) false cond)))
+        (_ Unit (emit (MInst.BranchIssue jmp_trig_link (gen_machlabel targets) false cond 0)))
       )
       (emit_side_effect
         (SideEffectNoResult.Inst
@@ -105,6 +105,18 @@
         )
       )
     )
+)
+
+;; Lower a jump table.
+;;
+;; Emitted in Rust rather than ISLE because the instruction sequence is as long
+;; as the table. See `lower_br_table`.
+(decl lower_br_table (Value JumpTable MachLabelSlice) Unit)
+(extern constructor lower_br_table lower_br_table)
+
+(rule
+    (lower_branch (br_table idx table) targets)
+    (lower_br_table idx table targets)
 )
 
 ;; Lower return

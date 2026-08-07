@@ -11,8 +11,8 @@ use crate::machinst::{MachInst, isle::*};
 use crate::machinst::{VCodeConstant, VCodeConstantData};
 use crate::{
     ir::{
-        BlockCall, ExternalName, Inst, InstructionData, MemFlags, Opcode, TrapCode, Value,
-        ValueList, immediates::*, types::*,
+        BlockCall, ExternalName, Inst, InstructionData, JumpTable, MemFlags, Opcode, TrapCode,
+        Value, ValueList, immediates::*, types::*,
     },
     isa::scry::inst::*,
     machinst::{ArgPair, CallArgList, CallRetList, InstOutput},
@@ -102,6 +102,77 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
 
     fn get_signature(&mut self, arg0: SigRef) -> Signature {
         self.lower_ctx.dfg().signatures[arg0].clone()
+    }
+
+    /// Lowers a `br_table` into one issue per branch, all linked to a single
+    /// `JumpTrigger`.
+    ///
+    /// The default is issued first as an unconditional jump and each case then
+    /// issues a conditional jump guarded by `idx == case_index`. Since all of
+    /// them name the same trigger, the ISA's rule that the last control flow
+    /// issued for a trigger address wins means a matching case overrides the
+    /// default, and the case tests are mutually exclusive so at most one of them
+    /// ever does. Sharing the trigger also keeps the number of executed
+    /// instructions equal on every path, so the block call arguments reach the
+    /// target with the same remaining flight time whichever branch wins.
+    fn lower_br_table(&mut self, idx: Value, table: JumpTable, targets: &MachLabelSlice) -> Unit {
+        let default_call = {
+            let branches = &self.lower_ctx.dfg().jump_tables[table];
+            assert_eq!(
+                targets.len(),
+                branches.all_branches().len(),
+                "A branch label per jump table branch, the default first"
+            );
+            branches.default_block()
+        };
+        let (default_target, case_targets) = targets.split_first().unwrap();
+
+        let idx_reg = self.lower_ctx.put_value_in_regs(idx).only_reg().unwrap();
+        let idx_ty = self.lower_ctx.value_ty(idx);
+
+        // The conditions come first so that the branch issues stay contiguous
+        let conds: Vec<Reg> = (0..case_targets.len())
+            .map(|case| {
+                let case_const = self.lower_ctx.alloc_tmp(idx_ty).only_reg().unwrap();
+                self.lower_ctx.emit(MInst::Const {
+                    rd: case_const,
+                    ty: IsaType::Invalid,
+                    imm: Imm64::new(case as i64),
+                });
+                let cond = self.lower_ctx.alloc_tmp(I8).only_reg().unwrap();
+                self.lower_ctx.emit(MInst::IntCmp {
+                    cc: IntCC::Equal,
+                    rd: cond,
+                    rs1: idx_reg,
+                    rs2: case_const.to_reg(),
+                });
+                cond.to_reg()
+            })
+            .collect();
+
+        let link = self.lower_ctx.alloc_tmp(I64).only_reg().unwrap();
+
+        // The default comes before the conditionals
+        self.lower_ctx.emit(MInst::JumpIssue {
+            link,
+            dst: *default_target,
+            trig: 0,
+        });
+        for (case_target, cond) in case_targets.iter().zip(conds) {
+            self.lower_ctx.emit(MInst::BranchIssue {
+                link,
+                dst: *case_target,
+                dir: false, // Takes the branch on a logical true
+                cond,
+                trig: 0,
+            });
+        }
+
+        let args = self.block_call_regs(default_call);
+        self.lower_ctx.emit(MInst::JumpTrigger {
+            link: link.to_reg(),
+            args,
+        })
     }
 
     fn block_call_regs(&mut self, block_call: BlockCall) -> RegVec {

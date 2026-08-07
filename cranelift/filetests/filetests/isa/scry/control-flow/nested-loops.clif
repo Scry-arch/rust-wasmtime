@@ -1,0 +1,194 @@
+test interpret
+test run
+target scry32
+
+; Loops nested inside other loops.
+;
+; Every value is threaded explicitly through block parameters, so the only
+; thing under test is the control-flow shape: a loop header that is a join of
+; an outer body and its own back edge, live across an inner loop.
+;
+
+; ---------------------------------------------------------------------------
+; A doubly-nested counting loop computing n*m. The inner loop's induction
+; variable is re-initialised from a value carried by the outer loop, and the
+; accumulator is live across both back edges.
+;
+;   block0 -> block1 <-------------\      (outer header)
+;               |                  |
+;               v                  |
+;             block2 -> block3 <-\ |      (inner header)
+;                         |      | |
+;                         v      | |
+;                       block4 --/ |      (inner latch)
+;                         |        |
+;                         v        |
+;                       block5 ----/      (outer latch)
+;               |
+;               v
+;             block6                      (exit)
+; ---------------------------------------------------------------------------
+function %mul_by_loops(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):                        ; n, m
+    v2 = iconst.i32 0
+    jump block1(v0, v1, v2)                      ; i, m, acc
+
+block1(v3: i32, v4: i32, v5: i32):               ; outer header
+    v6 = icmp_imm sgt v3, 0
+    brif v6, block2(v3, v4, v5), block6(v5)
+
+block2(v7: i32, v8: i32, v9: i32):               ; outer body: seed the inner loop
+    jump block3(v7, v8, v8, v9)                  ; i, m, j, acc
+
+block3(v10: i32, v11: i32, v12: i32, v13: i32):  ; inner header
+    v14 = icmp_imm sgt v12, 0
+    brif v14, block4(v10, v11, v12, v13), block5(v10, v11, v13)
+
+block4(v15: i32, v16: i32, v17: i32, v18: i32):  ; inner body / latch
+    v19 = iadd_imm v17, -1
+    v20 = iadd_imm v18, 1
+    jump block3(v15, v16, v19, v20)
+
+block5(v21: i32, v22: i32, v23: i32):            ; inner exit / outer latch
+    v24 = iadd_imm v21, -1
+    jump block1(v24, v22, v23)
+
+block6(v25: i32):
+    return v25
+}
+
+; run: %mul_by_loops(3, 4) == 12
+; run: %mul_by_loops(1, 1) == 1
+; run: %mul_by_loops(0, 5) == 0
+; run: %mul_by_loops(5, 0) == 0
+; run: %mul_by_loops(-1, 3) == 0
+; run: %mul_by_loops(7, 6) == 42
+
+; ---------------------------------------------------------------------------
+; The same shape, but the inner loop exits straight back to the outer header
+; instead of through a dedicated outer latch. The edge from the inner header
+; (two successors) to the outer header (two predecessors) is critical.
+; ---------------------------------------------------------------------------
+function %nested_direct_backedge(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):                        ; n, m
+    v2 = iconst.i32 0
+    jump block1(v0, v1, v2)                      ; i, m, acc
+
+block1(v3: i32, v4: i32, v5: i32):               ; outer header
+    v6 = icmp_imm sgt v3, 0
+    brif v6, block2(v3, v4, v5), block5(v5)
+
+block2(v7: i32, v8: i32, v9: i32):               ; outer body: decrement here
+    v10 = iadd_imm v7, -1
+    jump block3(v10, v8, v8, v9)                 ; i, m, j, acc
+
+block3(v11: i32, v12: i32, v13: i32, v14: i32):  ; inner header; false arm is the
+    v15 = icmp_imm sgt v13, 0                    ; outer back edge (critical)
+    brif v15, block4(v11, v12, v13, v14), block1(v11, v12, v14)
+
+block4(v16: i32, v17: i32, v18: i32, v19: i32):  ; inner latch
+    v20 = iadd_imm v18, -1
+    v21 = iadd_imm v19, 1
+    jump block3(v16, v17, v20, v21)
+
+block5(v22: i32):
+    return v22
+}
+
+; run: %nested_direct_backedge(3, 4) == 12
+; run: %nested_direct_backedge(1, 1) == 1
+; run: %nested_direct_backedge(0, 5) == 0
+; run: %nested_direct_backedge(5, 0) == 0
+; run: %nested_direct_backedge(7, 6) == 42
+
+; ---------------------------------------------------------------------------
+; Three levels of nesting computing a*b*c, each level with its own latch.
+; The innermost accumulator is live across three back edges.
+; ---------------------------------------------------------------------------
+function %triple_nested(i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):                          ; a, b, c
+    v3 = iconst.i32 0
+    jump block1(v0, v1, v2, v3)                             ; i, b, c, acc
+
+block1(v4: i32, v5: i32, v6: i32, v7: i32):                 ; outer header
+    v8 = icmp_imm sgt v4, 0
+    brif v8, block2(v4, v5, v6, v7), block9(v7)
+
+block2(v9: i32, v10: i32, v11: i32, v12: i32):              ; outer body
+    jump block3(v9, v10, v10, v11, v12)                     ; i, b, j, c, acc
+
+block3(v13: i32, v14: i32, v15: i32, v16: i32, v17: i32):   ; middle header
+    v18 = icmp_imm sgt v15, 0
+    brif v18, block4(v13, v14, v15, v16, v17), block8(v13, v14, v16, v17)
+
+block4(v19: i32, v20: i32, v21: i32, v22: i32, v23: i32):   ; middle body
+    jump block5(v19, v20, v21, v22, v22, v23)               ; i, b, j, c, k, acc
+
+block5(v24: i32, v25: i32, v26: i32, v27: i32, v28: i32, v29: i32):  ; inner header
+    v30 = icmp_imm sgt v28, 0
+    brif v30, block6(v24, v25, v26, v27, v28, v29), block7(v24, v25, v26, v27, v29)
+
+block6(v31: i32, v32: i32, v33: i32, v34: i32, v35: i32, v36: i32):  ; inner latch
+    v37 = iadd_imm v35, -1
+    v38 = iadd_imm v36, 1
+    jump block5(v31, v32, v33, v34, v37, v38)
+
+block7(v39: i32, v40: i32, v41: i32, v42: i32, v43: i32):   ; middle latch
+    v44 = iadd_imm v41, -1
+    jump block3(v39, v40, v44, v42, v43)
+
+block8(v45: i32, v46: i32, v47: i32, v48: i32):             ; outer latch
+    v49 = iadd_imm v45, -1
+    jump block1(v49, v46, v47, v48)
+
+block9(v50: i32):
+    return v50
+}
+
+; run: %triple_nested(2, 3, 4) == 24
+; run: %triple_nested(1, 1, 1) == 1
+; run: %triple_nested(0, 5, 5) == 0
+; run: %triple_nested(2, 0, 3) == 0
+; run: %triple_nested(2, 3, 0) == 0
+; run: %triple_nested(3, 3, 3) == 27
+
+; ---------------------------------------------------------------------------
+; A nested loop whose outer header is a three-way join: the entry, the outer
+; latch, and an extra `continue` edge taken from inside the outer body before
+; the inner loop is ever entered.
+; ---------------------------------------------------------------------------
+function %nested_with_continue(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):                        ; n, m
+    v2 = iconst.i32 0
+    jump block1(v0, v1, v2)                      ; i, m, acc
+
+block1(v3: i32, v4: i32, v5: i32):               ; outer header, three preds
+    v6 = icmp_imm sgt v3, 0
+    brif v6, block2(v3, v4, v5), block6(v5)
+
+block2(v7: i32, v8: i32, v9: i32):               ; skip the inner loop on even-ish
+    v10 = iadd_imm v7, -1                        ; iterations (i == 2)
+    v11 = icmp_imm eq v7, 2
+    brif v11, block1(v10, v8, v9), block3(v10, v8, v8, v9)
+
+block3(v12: i32, v13: i32, v14: i32, v15: i32):  ; inner header
+    v16 = icmp_imm sgt v14, 0
+    brif v16, block4(v12, v13, v14, v15), block5(v12, v13, v15)
+
+block4(v17: i32, v18: i32, v19: i32, v20: i32):  ; inner latch
+    v21 = iadd_imm v19, -1
+    v22 = iadd_imm v20, 1
+    jump block3(v17, v18, v21, v22)
+
+block5(v23: i32, v24: i32, v25: i32):            ; outer latch
+    jump block1(v23, v24, v25)
+
+block6(v26: i32):
+    return v26
+}
+
+; run: %nested_with_continue(3, 4) == 8
+; run: %nested_with_continue(2, 4) == 4
+; run: %nested_with_continue(1, 4) == 4
+; run: %nested_with_continue(0, 4) == 0
+; run: %nested_with_continue(4, 1) == 3

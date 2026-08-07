@@ -67,6 +67,14 @@ impl MachInstEmitState<MInst> for EmitState {
     }
 }
 
+/// Encodes an output reference.
+///
+/// Panics of the reference is out of bounds
+fn out_ref<const N: u32>(out: u16) -> Bits<N, false> {
+    Bits::try_from(out as i32)
+        .expect(format!("Output reference out of bounds: was {out}, limit: {N} bits").as_str())
+}
+
 impl MachInstEmit for MInst {
     type State = EmitState;
     type Info = EmitInfo;
@@ -91,7 +99,7 @@ impl MachInstEmit for MInst {
                 )]
             }
             Alu1 { var, out, .. } => {
-                vec![Instruction::Alu(*var, Bits::try_from(*out as i32).unwrap())]
+                vec![Instruction::Alu(*var, out_ref(*out))]
             }
             Alu2 {
                 var, out_var, outs, ..
@@ -132,50 +140,38 @@ impl MachInstEmit for MInst {
                 insts
             }
             EchoLong { out, .. } => {
-                vec![Instruction::EchoLong(Bits::try_from(*out as i32).unwrap())]
+                vec![Instruction::EchoLong(out_ref(*out))]
             }
             EchoSplit { out1, out2, .. } => vec![if out1 == out2 {
                 // Using a long echo ensures operand order is not changed when targetting the same instruction
                 // unlike Instruction::Echo
-                Instruction::EchoLong(Bits::try_from(*out1 as i32).unwrap())
+                Instruction::EchoLong(out_ref(*out1))
             } else {
-                Instruction::Echo(
-                    false,
-                    Bits::try_from(*out1 as i32).unwrap(),
-                    Bits::try_from(*out2 as i32).unwrap(),
-                )
+                Instruction::Echo(false, out_ref(*out1), out_ref(*out2))
             }],
             EchoChain { out1, out2, .. } => {
-                vec![Instruction::Echo(
-                    true,
-                    Bits::try_from(*out1 as i32).unwrap(),
-                    Bits::try_from(*out2 as i32).unwrap(),
-                )]
+                vec![Instruction::Echo(true, out_ref(*out1), out_ref(*out2))]
             }
             Reorder { out, .. } => {
                 // Can use splitting echo with the same target to reorder
-                vec![Instruction::Echo(
-                    false,
-                    Bits::try_from(*out as i32).unwrap(),
-                    Bits::try_from(*out as i32).unwrap(),
-                )]
+                vec![Instruction::Echo(false, out_ref(*out), out_ref(*out))]
             }
             Duplicate { out1, out2, .. } => vec![Instruction::Duplicate(
                 false,
-                Bits::try_from(*out1 as i32).unwrap(),
-                Bits::try_from(*out2 as i32).unwrap(),
+                out_ref(*out1),
+                out_ref(*out2),
             )],
             Store { .. } => vec![Instruction::Store],
             Load { ty, out, .. } => vec![Instruction::Load(
                 ty.get_known().unwrap().try_into().unwrap(),
-                Bits::try_from(*out as i32).unwrap(),
+                out_ref(*out),
             )],
             Cast { out, ty, .. } => vec![Instruction::Cast(
                 ty.get_known()
                     .unwrap_or(scry_isa::Type::Uint(ty.size_pow2()))
                     .try_into()
                     .unwrap(),
-                Bits::try_from(*out as i32).unwrap(),
+                out_ref(*out),
             )],
             Call { trig, .. } => {
                 vec![Instruction::Call(
@@ -183,11 +179,12 @@ impl MachInstEmit for MInst {
                     Bits::try_from(*trig as i32).unwrap(),
                 )]
             }
-            JumpIssue { dst, .. } | BranchIssue { dst, .. } => {
+            JumpIssue { dst, trig, .. } | BranchIssue { dst, trig, .. } => {
                 sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpLoc7);
                 vec![Instruction::Jump(
                     0.try_into().unwrap(),
-                    0.try_into().unwrap(),
+                    Bits::try_from(*trig as i32)
+                        .expect(format!("Trigger offset out of bounds: {trig}").as_str()),
                 )]
             }
         };

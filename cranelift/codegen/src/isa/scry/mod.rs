@@ -606,7 +606,7 @@ fn prepare_block_params(
         };
 
         // Update jump trigger inputs
-        if let Some((_, trigger)) = get_jmp_issue_trigger(bb) {
+        if let Some((_, trigger)) = get_jmp_issues(bb) {
             // Every position of the output order must carry a value of this block's
             // own. A None position would mean a successor's input order reserves a
             // position for another predecessor's value, which cannot happen as long
@@ -917,12 +917,12 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
 
                     if let Some(pair_idx) = wrong_order_pair {
                         // If the reorder is needed for branch or call arguments, the reorder
-                        // instruction must come before the branch or call issue (because we don't yet support the issue and trigger having instructions between them).
+                        // instruction must come before the branch or call issue. For a block with
+                        // several issues (a lowered `br_table`) that means before the first of
+                        // them, so that the run of issues stays contiguous.
                         let insert_idx = match inst {
                             MInst::JumpTrigger { .. } => {
-                                get_jmp_issue_trigger(bb)
-                                    .expect("JumpTrigger without issue")
-                                    .0
+                                get_jmp_issues(bb).expect("JumpTrigger without issue").0[0]
                             }
                             MInst::CallArgs { .. } => bb.inst[..inst_idx]
                                 .iter()
@@ -1009,6 +1009,23 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
         let ty = abi_param_to_isatype(p);
         let refined = type_map.get(*r).refine(ty).unwrap();
         type_map.update(*r, refined);
+    }
+
+    // For every register that crosses a block boundary, the blocks whose type
+    // reasoning can be affected by it: both endpoints of every dataflow edge
+    // naming it. A block reasons about a register of its own *and* about the
+    // registers on the other side of its edges (see the `JumpTrigger` arm, which
+    // types its successors' parameters), so a change to any of them must
+    // re-queue every block on an edge carrying it, not just the neighbours of
+    // the block that made the change. Registers absent here are block-local and
+    // are handled entirely by the instruction worklist below.
+    let mut reg_blocks: HashMap<Reg, HashSet<usize>> = HashMap::new();
+    for (src, sink, weight) in bb_dfg.all_edges() {
+        for r in weight.1.iter() {
+            let blocks = reg_blocks.entry(*r).or_insert_with(HashSet::new);
+            blocks.insert(src);
+            blocks.insert(sink);
+        }
     }
 
     // Resolve instruction types in each BB
@@ -1286,14 +1303,13 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
             }
         }
 
-        // Add any BBs to the worklist if they depend on a register that was updated by this BB
+        // Re-queue every other block that reasons about a register this block
+        // updated. This block itself is skipped: its instruction worklist above
+        // already ran.
         for changed_r in changed_regs.into_iter() {
-            for (other_v, weight) in bb_dfg.edges_incident_on(bb_v) {
-                let dep_regs = &weight.1;
-                if dep_regs.contains(&changed_r) {
-                    if bb_worklist.iter().all(|v| other_v != *v) {
-                        bb_worklist.push_back(other_v);
-                    }
+            for other_v in reg_blocks.get(&changed_r).into_iter().flatten() {
+                if *other_v != bb_v && bb_worklist.iter().all(|v| other_v != v) {
+                    bb_worklist.push_back(*other_v);
                 }
             }
         }
@@ -1383,44 +1399,64 @@ fn resolve_instruction_types(
     }
 }
 
-pub fn get_jmp_issue_trigger(block: &VCodeBB<MInst>) -> Option<(usize, usize)> {
-    let mut issue = None;
+/// Returns the blocks list of the indices of issuing instructions and their shared trigger
+pub fn get_jmp_issues(block: &VCodeBB<MInst>) -> Option<(Vec<usize>, usize)> {
+    let mut issues = Vec::new();
     let mut trigger = None;
 
     for idx in 0..block.inst.len() {
         match block.inst[idx] {
             MInst::BranchIssue { .. } | MInst::JumpIssue { .. } => {
-                assert!(issue.is_none(), "Multiple jump issues");
-                issue = Some(idx);
+                assert!(trigger.is_none(), "Jump issue after its trigger");
+                issues.push(idx);
             }
             MInst::JumpTrigger { .. } => {
                 assert!(trigger.is_none(), "Multiple jump triggers");
                 trigger = Some(idx);
             }
             MInst::ImmJump { .. } => {
-                assert!(issue.is_none(), "Multiple jump issues");
+                assert!(issues.is_empty(), "Multiple jump issues");
                 assert!(trigger.is_none(), "Multiple jump triggers");
                 trigger = Some(idx);
-                issue = Some(idx);
+                issues.push(idx);
             }
             _ => (),
         }
     }
 
-    match (issue, trigger) {
-        (Some(issue), Some(trigger)) => Some((issue, trigger)),
-        (None, None) => None,
-        _ => panic!(),
+    match trigger {
+        Some(trigger) => {
+            assert!(!issues.is_empty(), "Jump trigger without issue");
+            Some((issues, trigger))
+        }
+        None => {
+            assert!(issues.is_empty(), "Jump issue without trigger");
+            None
+        }
     }
 }
 
 /// The machine-dependent block-exit query for [`VCodeCFG::compute_layout`].
+///
+/// A block with several issues (a lowered `br_table`) names every one of its
+/// successors, the default included, so it has no fall-through and imposes no
+/// layout constraint. It reports the unconditional issue's target as a
+/// [`BlockExit::Jump`], which the layout only treats as a preference.
 fn block_exit(bb: &VCodeBB<MInst>) -> Option<BlockExit> {
-    get_jmp_issue_trigger(bb).and_then(|(issue, _)| match bb.inst[issue] {
+    let issues = get_jmp_issues(bb)?.0;
+
+    if issues.len() > 1 {
+        return issues.iter().find_map(|issue| match bb.inst[*issue] {
+            MInst::JumpIssue { dst, .. } => Some(BlockExit::Jump(Block::new(dst.index()))),
+            _ => None,
+        });
+    }
+
+    match bb.inst[issues[0]] {
         MInst::BranchIssue { dst, .. } => Some(BlockExit::Branch(Block::new(dst.index()))),
         MInst::JumpIssue { dst, .. } => Some(BlockExit::Jump(Block::new(dst.index()))),
         _ => None,
-    })
+    }
 }
 
 /// Fixes the branch conditions to match the final block layout.
@@ -1434,33 +1470,50 @@ fn block_exit(bb: &VCodeBB<MInst>) -> Option<BlockExit> {
 /// forward-jump semantics (taken if the condition is zero), so the condition must
 /// be negated. Only conditions are rewritten — branch targets and block structure
 /// are untouched — so the layout recomputed at emission is identical.
+///
+/// Each conditional issue is handled on its own, so the arms of a lowered
+/// `br_table` may end up jumping in different directions.
 fn fix_branch_conditions(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
     let layout = cfg.compute_layout(block_exit);
     let position: HashMap<usize, usize> = layout.iter().enumerate().map(|(i, v)| (*v, i)).collect();
 
-    // Find each conditional block's branch target.
-    let mut branch_target_of = HashMap::new(); // conditional bb -> branch target vertex
+    // Find every conditional issue's branch target.
+    let mut forward_issues = HashMap::new(); // bb -> its issues that jump forward
     for (bb_v, bb) in cfg.graph.all_vertices_weighted() {
-        if let Some(BlockExit::Branch(target)) = block_exit(bb) {
-            let target_bb_v = cfg
-                .vertex_of_block(target)
-                .expect("Branch target is not a block");
-            branch_target_of.insert(bb_v, target_bb_v);
+        let Some((issues, _)) = get_jmp_issues(bb) else {
+            continue;
+        };
+        let forward: Vec<usize> = issues
+            .into_iter()
+            .filter(|issue| match bb.inst[*issue] {
+                MInst::BranchIssue { dst, .. } => {
+                    let target_bb_v = cfg
+                        .vertex_of_block(Block::new(dst.index()))
+                        .expect("Branch target is not a block");
+                    position[&target_bb_v] > position[&bb_v]
+                }
+                // Unconditional issues have no condition to fix.
+                _ => false,
+            })
+            .collect();
+        if !forward.is_empty() {
+            forward_issues.insert(bb_v, forward);
         }
     }
 
-    // Fix branch conditions to match the layout direction.
-    for (bb_v, target_bb_v) in branch_target_of {
-        if position[&target_bb_v] > position[&bb_v] {
+    // Fix branch conditions to match the layout direction. Later issues first, so
+    // that inserting a negation does not shift the indices still to be handled.
+    for (bb_v, issues) in forward_issues {
+        let bb_mut = cfg.graph.vertex_weight_mut(bb_v).unwrap();
+        for issue in issues.into_iter().rev() {
             // Forward jump: taken if the condition is zero, so negate it.
-            let bb_mut = cfg.graph.vertex_weight_mut(bb_v).unwrap();
-            let (issue, _) = get_jmp_issue_trigger(bb_mut).unwrap();
             match bb_mut.inst[issue] {
                 MInst::BranchIssue {
                     dir,
                     dst,
                     cond,
                     link,
+                    trig,
                 } => {
                     assert!(!dir, "Lowering must emit backward-jump conditions");
                     let neg_cond_r = new_vreg();
@@ -1474,15 +1527,49 @@ fn fix_branch_conditions(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -
                         dst,
                         cond: neg_cond_r,
                         link,
+                        trig,
                     };
                     bb_mut.inst.insert(issue, negation);
                 }
                 _ => unreachable!(),
             }
         }
-        // Backward (or self-loop) jump: taken if the condition is non-zero, which
-        // is what lowering emitted.
+        // Backward (or self-loop) jumps are taken if the condition is non-zero,
+        // which is what lowering emitted.
     }
+}
+
+/// Fills in each branch issue's trigger offset.
+///
+/// Must run last: any pass that adds or removes instructions after an issue
+/// invalidates the offsets.
+fn set_trigger_offsets(cfg: &mut VCodeCFG<MInst>) {
+    log::debug!("set_trigger_offsets");
+    for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
+        let Some((issues, trigger)) = get_jmp_issues(bb) else {
+            continue;
+        };
+        for issue in issues {
+            if issue == trigger {
+                // An `ImmJump` is its own issue and trigger.
+                continue;
+            }
+            let offset: usize = bb.inst[issue + 1..trigger]
+                .iter()
+                .map(MInst::emitted_length)
+                .sum();
+            assert!(
+                offset <= ((1 << 6) - 1),
+                "{offset} instructions between a branch issue and its trigger."
+            );
+            let offset = offset as u16;
+            match &mut bb.inst[issue] {
+                MInst::BranchIssue { trig, .. } | MInst::JumpIssue { trig, .. } => *trig = offset,
+                _ => unreachable!(),
+            }
+        }
+    }
+    log::trace!("VCodeCFG: {cfg:?}");
 }
 
 impl TargetIsa for ScryBackend {
@@ -1522,6 +1609,7 @@ impl TargetIsa for ScryBackend {
                 MInst::JumpIssue {
                     link: WritableReg::from_reg(link),
                     dst,
+                    trig: 0,
                 },
                 MInst::JumpTrigger { link, args },
             ]
@@ -1552,6 +1640,7 @@ impl TargetIsa for ScryBackend {
         fix_orderings(&mut cfg, &mut new_vreg);
         fix_branch_conditions(&mut cfg, &mut new_vreg);
         insert_ref_distances(&mut cfg, &mut new_vreg);
+        set_trigger_offsets(&mut cfg);
 
         let sigs = SigSet::new::<abi::ScryMachineDeps>(func, &self.flags)?;
         let abi = Callee::<abi::ScryMachineDeps>::new(func, self, &self.isa_flags, &sigs)?;
@@ -1571,15 +1660,18 @@ impl TargetIsa for ScryBackend {
                 dst,
                 dir,
                 cond,
+                trig,
             } => MInst::BranchIssue {
                 link,
                 dst: MachLabel::new(label_idx_map[&dst.index()]),
                 dir,
                 cond,
+                trig,
             },
-            MInst::JumpIssue { link, dst } => MInst::JumpIssue {
+            MInst::JumpIssue { link, dst, trig } => MInst::JumpIssue {
                 link,
                 dst: MachLabel::new(label_idx_map[&dst.index()]),
+                trig,
             },
             i => i,
         });
