@@ -10,11 +10,13 @@ block0(v0: i32, v1: i32):
     brif v2, block2(v1), block3(v0)
 
 block2(v3: i32):
-    v4 = iadd_imm v3, 100
+    v20 = iconst.i32 100
+    v4 = iadd v3, v20
     jump block4(v4)
 
 block3(v5: i32):
-    v6 = iadd_imm v5, -100
+    v21 = iconst.i32 -100
+    v6 = iadd v5, v21
     jump block4(v6)
 
 block4(v7: i32):

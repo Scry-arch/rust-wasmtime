@@ -17,14 +17,18 @@ block0(v0: i32, v1: i32):                        ; n, thresh
     jump block1(v0, v1, v2)                      ; i, thresh, acc
 
 block1(v3: i32, v4: i32, v5: i32):               ; header
-    v6 = icmp_imm sgt v3, 0
+    v15 = iconst.i32 0
+    v6 = icmp sgt v3, v15
     brif v6, block2(v3, v4, v5), block3(v5)
 
 block2(v7: i32, v8: i32, v9: i32):               ; latch, both arms loop back
     v10 = icmp sgt v7, v8
-    v11 = iadd_imm v7, -1
-    v12 = iadd_imm v9, 1
-    v13 = iadd_imm v9, 10
+    v16 = iconst.i32 -1
+    v11 = iadd v7, v16
+    v17 = iconst.i32 1
+    v12 = iadd v9, v17
+    v18 = iconst.i32 10
+    v13 = iadd v9, v18
     brif v10, block1(v11, v8, v13), block1(v11, v8, v12)
 
 block3(v14: i32):
@@ -46,12 +50,15 @@ block0(v0: i32, v1: i32):                        ; n, keep
     jump block1(v0, v1, v2)                      ; i, keep, acc
 
 block1(v3: i32, v4: i32, v5: i32):               ; `keep` unused in the loop
-    v6 = icmp_imm sgt v3, 0
+    v15 = iconst.i32 0
+    v6 = icmp sgt v3, v15
     brif v6, block2(v3, v4, v5), block3(v4, v5)
 
 block2(v7: i32, v8: i32, v9: i32):
-    v10 = iadd_imm v7, -1
-    v11 = iadd_imm v9, 1
+    v16 = iconst.i32 -1
+    v10 = iadd v7, v16
+    v17 = iconst.i32 1
+    v11 = iadd v9, v17
     jump block1(v10, v8, v11)
 
 block3(v12: i32, v13: i32):

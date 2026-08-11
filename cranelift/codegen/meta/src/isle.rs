@@ -286,11 +286,11 @@ pub fn get_isle_compilations(
                     clif_lower_isle.clone(),
                 ],
             },
-            // The risc-v instruction selector.
+            // The Scry instruction selector.
             IsleCompilation {
                 name: "scry".to_string(),
                 output: gen_dir.join("isle_scry.rs"),
-                inputs: vec![
+                tracked_inputs: vec![
                     prelude_isle.clone(),
                     prelude_lower_isle.clone(),
                     src_isa_scry.join("inst.isle"),

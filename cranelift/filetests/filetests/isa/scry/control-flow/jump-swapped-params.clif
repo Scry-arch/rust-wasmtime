@@ -8,7 +8,8 @@ target scry32
 
 function %swapped_sub(i32 sext, i32 sext) -> i32 sext {
 block0(v0: i32, v1: i32):
-    v2 = iadd_imm v1, 1
+    v20 = iconst.i32 1
+    v2 = iadd v1, v20
     jump block1(v2, v0)
 
 block1(v3: i32, v4: i32):

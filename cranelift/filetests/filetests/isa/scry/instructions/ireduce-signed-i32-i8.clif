@@ -4,8 +4,9 @@ target scry32
 
 function %add_one_to_i8(i32 sext) -> i8 sext {
 block0(v0: i32):
-	v1 = ireduce.i8 v0
-	v2 = iadd_imm v1, 1
+    v1 = ireduce.i8 v0
+    v20 = iconst.i8 1
+    v2 = iadd v1, v20
     return v2
 }
 

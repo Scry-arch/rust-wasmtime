@@ -1673,16 +1673,6 @@ impl<I: VCodeInst> fmt::Debug for VCode<I> {
                     self.insts[inst].pretty_print_inst(&mut state)
                 )?;
 
-                if !self.operands.is_empty() {
-                    for operand in self.inst_operands(InsnIndex::new(inst)) {
-                        if operand.kind() == OperandKind::Def {
-                            if let Some(Some(fact)) = &self.facts.get(operand.vreg().vreg()) {
-                                writeln!(f, "    v{} ! {}", operand.vreg().vreg(), fact)?;
-                            }
-                        }
-                    }
-                }
-
                 if let Some(user_stack_map) = self.get_user_stack_map(InsnIndex::new(inst)) {
                     writeln!(f, "    {user_stack_map:?}")?;
                 }

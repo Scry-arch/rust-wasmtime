@@ -9,37 +9,37 @@
 
 
 (rule
-    (lower (has_type ty (iconst imm)))
+    (lower (iconst ty imm))
     (const_r ty imm)
 )
 
 (rule
-    (lower (has_type ty (iadd lhs rhs)))
+    (lower (iadd ty lhs rhs))
     (add_trrr ty lhs rhs)
 )
 
 (rule
-    (lower (has_type ty (isub lhs rhs)))
+    (lower (isub ty lhs rhs))
     (isub_wrap_trrr ty lhs rhs)
 )
 
 (rule
-    (lower (has_type ty (icmp cc lhs rhs)))
+    (lower (icmp ty cc lhs rhs))
     (icmp_tcrrr ty cc lhs rhs)
 )
 
 (rule
-    (lower (has_type ty (uextend rs)))
+    (lower (uextend ty rs))
     (resize_vrr (ResizeVariant.Uextend) ty rs)
 )
 
 (rule
-    (lower (has_type ty (sextend rs)))
+    (lower (sextend ty rs))
     (resize_vrr (ResizeVariant.Sextend)  ty rs)
 )
 
 (rule
-    (lower (has_type ty (ireduce rs)))
+    (lower (ireduce ty rs))
     (resize_vrr (ResizeVariant.Reduce)  ty rs)
 )
 
@@ -57,7 +57,7 @@
 (extern extractor infallible imm64_from_offset imm64_from_offset)
 
 (rule
-    (lower (has_type ty (load flags ptr (imm64_from_offset offset))))
+    (lower (load ty flags ptr (imm64_from_offset offset)))
     (ld_trfo ty ptr flags offset)
 )
 
