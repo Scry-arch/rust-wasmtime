@@ -16,21 +16,27 @@ block0(v0: i32, v1: i32):                        ; n, m
     jump block1(v0, v1, v2)                      ; i, m, acc
 
 block1(v3: i32, v4: i32, v5: i32):               ; first header
-    v6 = icmp_imm sgt v3, 0
+    v20 = iconst.i32 0
+    v6 = icmp sgt v3, v20
     brif v6, block2(v3, v4, v5), block3(v4, v5)
 
 block2(v7: i32, v8: i32, v9: i32):               ; first latch
-    v10 = iadd_imm v7, -1
-    v11 = iadd_imm v9, 1
+    v21 = iconst.i32 -1
+    v10 = iadd v7, v21
+    v22 = iconst.i32 1
+    v11 = iadd v9, v22
     jump block1(v10, v8, v11)
 
 block3(v12: i32, v13: i32):                      ; first exit *and* second header
-    v14 = icmp_imm sgt v12, 0
+    v23 = iconst.i32 0
+    v14 = icmp sgt v12, v23
     brif v14, block4(v12, v13), block5(v13)
 
 block4(v15: i32, v16: i32):                      ; second latch
-    v17 = iadd_imm v15, -1
-    v18 = iadd_imm v16, 10
+    v24 = iconst.i32 -1
+    v17 = iadd v15, v24
+    v25 = iconst.i32 10
+    v18 = iadd v16, v25
     jump block3(v17, v18)
 
 block5(v19: i32):
@@ -60,12 +66,15 @@ block2(v4: i32):                                 ; preheader B: start at 100
     jump block3(v4, v5)
 
 block3(v6: i32, v7: i32):                        ; header, three predecessors
-    v8 = icmp_imm sgt v6, 0
+    v14 = iconst.i32 0
+    v8 = icmp sgt v6, v14
     brif v8, block4(v6, v7), block5(v7)
 
 block4(v9: i32, v10: i32):                       ; latch
-    v11 = iadd_imm v9, -1
-    v12 = iadd_imm v10, 1
+    v15 = iconst.i32 -1
+    v11 = iadd v9, v15
+    v16 = iconst.i32 1
+    v12 = iadd v10, v16
     jump block3(v11, v12)
 
 block5(v13: i32):
@@ -87,21 +96,27 @@ block0(v0: i32, v1: i32):                        ; flag, n
     brif v0, block1(v1, v2), block3(v1, v2)
 
 block1(v3: i32, v4: i32):                        ; loop A header
-    v5 = icmp_imm sgt v3, 0
+    v18 = iconst.i32 0
+    v5 = icmp sgt v3, v18
     brif v5, block2(v3, v4), block5(v4)
 
 block2(v6: i32, v7: i32):                        ; loop A latch: +1 per step
-    v8 = iadd_imm v6, -1
-    v9 = iadd_imm v7, 1
+    v19 = iconst.i32 -1
+    v8 = iadd v6, v19
+    v20 = iconst.i32 1
+    v9 = iadd v7, v20
     jump block1(v8, v9)
 
 block3(v10: i32, v11: i32):                      ; loop B header
-    v12 = icmp_imm sgt v10, 0
+    v21 = iconst.i32 0
+    v12 = icmp sgt v10, v21
     brif v12, block4(v10, v11), block5(v11)
 
 block4(v13: i32, v14: i32):                      ; loop B latch: +10 per step
-    v15 = iadd_imm v13, -1
-    v16 = iadd_imm v14, 10
+    v22 = iconst.i32 -1
+    v15 = iadd v13, v22
+    v23 = iconst.i32 10
+    v16 = iadd v14, v23
     jump block3(v15, v16)
 
 block5(v17: i32):                                ; shared exit

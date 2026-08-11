@@ -69,8 +69,8 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
         self.lower_ctx.emit(MInst::Nop);
     }
     fn lower_error(&mut self, arg0: Inst) -> InstOutput {
-        let instr_data: InstructionData = self.inst_data_value(arg0);
-        unreachable!("No valid lowering rule for instruction: {:?}", instr_data);
+        let (ty, instr_data) = self.inst_data_value(arg0);
+        unreachable!("No valid lowering rule for instruction: {:?}, {:?}", ty, instr_data);
     }
 
     /// Catches any branch instruction with no lowering rule. Throws relevant error

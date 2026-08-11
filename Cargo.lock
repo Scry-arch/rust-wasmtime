@@ -1024,7 +1024,7 @@ dependencies = [
  "cranelift-module",
  "gimli 0.33.0",
  "log",
- "object 0.38.1",
+ "object 0.40.0",
  "target-lexicon 0.13.5",
 ]
 
@@ -1882,9 +1882,6 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
-dependencies = [
- "foldhash 0.2.0",
-]
 
 [[package]]
 name = "hashbrown"
@@ -2547,7 +2544,7 @@ name = "min-platform-host"
 version = "49.0.0-dev"
 dependencies = [
  "libloading",
- "object 0.38.1",
+ "object 0.40.0",
  "wasmtime",
 ]
 
@@ -2713,11 +2710,11 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.38.1"
-source = "git+https://github.com/Scry-arch/rust-object.git#11df1b9504be5c9a19e2fcae01ce7cf20c56bbfc"
+version = "0.40.0"
+source = "git+https://github.com/Scry-arch/rust-object.git#7c8af5eba9ab3d56f89a0b73c706745fc956b6e9"
 dependencies = [
  "crc32fast",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "indexmap 2.14.0",
  "memchr",
 ]
@@ -3950,7 +3947,7 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 [[package]]
 name = "target-lexicon"
 version = "0.13.5"
-source = "git+https://github.com/Scry-arch/rust-target-lexicon.git#d647cfce4e26ad0710583b8af719658fae6a4b45"
+source = "git+https://github.com/Scry-arch/rust-target-lexicon.git#437301520f9565601f8f996209c63145696352d2"
 
 [[package]]
 name = "tch"
@@ -4605,7 +4602,7 @@ version = "49.0.0-dev"
 dependencies = [
  "bitflags 2.13.1",
  "byte-array-literals",
- "object 0.38.1",
+ "object 0.40.0",
  "wasip1",
  "wasm-encoder 0.254.0",
  "wit-bindgen-rust-macro 0.60.0",
@@ -4919,7 +4916,7 @@ dependencies = [
  "log",
  "mach2 0.6.0",
  "memfd",
- "object 0.38.1",
+ "object 0.40.0",
  "once_cell",
  "postcard",
  "proptest",
@@ -5027,7 +5024,7 @@ dependencies = [
  "log",
  "memchr",
  "num_cpus",
- "object 0.38.1",
+ "object 0.40.0",
  "pin-project-lite",
  "pulley-interpreter",
  "rand 0.10.2",
@@ -5106,7 +5103,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap 2.14.0",
  "log",
- "object 0.38.1",
+ "object 0.40.0",
  "postcard",
  "rustc-demangle",
  "semver",
@@ -5281,7 +5278,7 @@ dependencies = [
  "gimli 0.33.0",
  "itertools 0.14.0",
  "log",
- "object 0.38.1",
+ "object 0.40.0",
  "pulley-interpreter",
  "smallvec",
  "target-lexicon 0.13.5",
@@ -5358,7 +5355,7 @@ name = "wasmtime-internal-jit-debug"
 version = "49.0.0-dev"
 dependencies = [
  "cc",
- "object 0.38.1",
+ "object 0.40.0",
  "rustix 1.1.4",
  "wasmtime-internal-versioned-export-macros",
 ]
@@ -5378,7 +5375,7 @@ version = "49.0.0-dev"
 dependencies = [
  "cranelift-codegen",
  "log",
- "object 0.38.1",
+ "object 0.40.0",
  "wasmtime-environ",
 ]
 
@@ -5398,7 +5395,7 @@ dependencies = [
  "cranelift-codegen",
  "gimli 0.33.0",
  "log",
- "object 0.38.1",
+ "object 0.40.0",
  "target-lexicon 0.13.5",
  "wasmparser 0.254.0",
  "wasmtime-environ",
@@ -5604,7 +5601,7 @@ version = "49.0.0-dev"
 dependencies = [
  "json-from-wast",
  "log",
- "object 0.38.1",
+ "object 0.40.0",
  "serde_json",
  "tokio",
  "wasmparser 0.254.0",

@@ -2,7 +2,6 @@
 use crate::ir::Inst as IRInst;
 use crate::isa::scry::ScryBackend;
 use crate::isa::scry::lower::isle::generated_code::MInst;
-use crate::machinst::lower::*;
 use crate::machinst::*;
 pub mod isle;
 
@@ -28,6 +27,4 @@ impl LowerBackend for ScryBackend {
     fn maybe_pinned_reg(&self) -> Option<Reg> {
         None
     }
-
-    type FactFlowState = ();
 }

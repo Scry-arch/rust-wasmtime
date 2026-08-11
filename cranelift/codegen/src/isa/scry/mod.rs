@@ -1,7 +1,7 @@
 //! Scry Instruction Set Architecture.
 
 use crate::dominator_tree::DominatorTree;
-use crate::ir::{AbiParam, ArgumentExtension, Signature, pcc};
+use crate::ir::{AbiParam, ArgumentExtension, Signature};
 use crate::ir::{Function, Type};
 use crate::isa::scry::inst::{BinaryAluOp, EmitInfo, MInst, ResizeVariant, UnaryAluOp};
 use crate::isa::scry::settings as scry_settings;
@@ -20,7 +20,7 @@ use crate::result::CodegenResult;
 use crate::settings::{self as shared_settings, Flags};
 use crate::timing;
 use crate::trace;
-use crate::{CodegenError, MachLabel};
+use crate::MachLabel;
 use crate::{VCodeConstants, ir};
 use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
@@ -223,7 +223,7 @@ impl ScryBackend {
         )?;
 
         // Lower the IR.
-        let mut vcode = {
+        let vcode = {
             log::debug!(
                 "Number of CLIF instructions to lower: {}",
                 func.dfg.num_insts()
@@ -240,11 +240,6 @@ impl ScryBackend {
         );
         log::debug!("Number of lowered vcode blocks: {}", vcode.num_blocks());
         trace!("vcode from lowering: \n{:?}", vcode);
-
-        // Perform validation of proof-carrying-code facts, if requested.
-        if self.flags().enable_pcc() {
-            pcc::check_vcode_facts(func, &mut vcode, self).map_err(CodegenError::Pcc)?;
-        }
         // ------ The above code is copied from cranelift/codegen/src/machinst/compile.rs ------
 
         // To be able to create more virtual registers, we crate a new vreg allocator
@@ -1577,6 +1572,7 @@ impl TargetIsa for ScryBackend {
         &self,
         func: &Function,
         domtree: &DominatorTree,
+        _regalloc_ctx: &mut regalloc2::Ctx,
         want_disasm: bool,
         ctrl_plane: &mut ControlPlane,
     ) -> CodegenResult<CompiledCodeStencil> {
@@ -1687,7 +1683,7 @@ impl TargetIsa for ScryBackend {
             want_disasm,
             &self.flags,
             ctrl_plane,
-        );
+        )?;
         let value_labels_ranges = emit_result.value_labels_ranges;
         let buffer = emit_result.buffer;
 

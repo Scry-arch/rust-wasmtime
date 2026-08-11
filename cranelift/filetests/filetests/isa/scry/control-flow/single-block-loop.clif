@@ -7,9 +7,12 @@ block0(v0: i32, v1: i32):
     jump block1(v0, v1)
 
 block1(v2: i32, v3: i32):
-    v4 = icmp_imm sgt v2, 0
-	v5 = iadd_imm v2, -1
-	v6 = iadd_imm v3, 3
+    v20 = iconst.i32 0
+    v4 = icmp sgt v2, v20
+    v21 = iconst.i32 -1
+    v5 = iadd v2, v21
+    v22 = iconst.i32 3
+    v6 = iadd v3, v22
     brif v4, block1(v5, v6), block2(v6)
 
 

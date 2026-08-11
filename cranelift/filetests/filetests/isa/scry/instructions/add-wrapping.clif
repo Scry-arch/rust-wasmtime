@@ -4,7 +4,8 @@ target scry32
 
 function %add_one_i8(i8 sext) -> i8 sext{
 block1(v0: i8):
-    v1 = iadd_imm v0, 1
+    v20 = iconst.i8 1
+    v1 = iadd v0, v20
     return v1
 }
 ; run: %add_one_i8(0) == 1
@@ -14,7 +15,8 @@ block1(v0: i8):
 
 function %add_one_u32(i32 uext) -> i32 uext{
 block1(v0: i32):
-    v1 = iadd_imm v0, 1
+    v20 = iconst.i32 1
+    v1 = iadd v0, v20
     return v1
 }
 ; run: %add_one_u32(0) == 1
@@ -46,7 +48,8 @@ block1(v0: i32, v1: i32):
 
 function %add_one_i16(i16 sext) -> i16 sext {
 block1(v0: i16):
-    v1 = iadd_imm v0, 1
+    v20 = iconst.i16 1
+    v1 = iadd v0, v20
     return v1
 }
 ; run: %add_one_i16(0) == 1

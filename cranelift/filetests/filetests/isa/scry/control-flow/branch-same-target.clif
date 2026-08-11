@@ -16,7 +16,8 @@ block0(v0: i32, v1: i32):
     brif v0, block1(v1), block1(v1)
 
 block1(v2: i32):
-    v3 = iadd_imm v2, 1
+    v4 = iconst.i32 1
+    v3 = iadd v2, v4
     return v3
 }
 
@@ -33,7 +34,8 @@ block0(v0: i32, v1: i32, v2: i32):
     brif v0, block1(v1), block1(v2)
 
 block1(v3: i32):
-    v4 = iadd_imm v3, 1
+    v5 = iconst.i32 1
+    v4 = iadd v3, v5
     return v4
 }
 
@@ -51,11 +53,13 @@ block0(v0: i32):
     jump block1(v0)
 
 block1(v1: i32):
-    v2 = icmp_imm sgt v1, 0
+    v6 = iconst.i32 0
+    v2 = icmp sgt v1, v6
     brif v2, block2(v1), block3(v1)
 
 block2(v3: i32):
-    v4 = iadd_imm v3, -1
+    v7 = iconst.i32 -1
+    v4 = iadd v3, v7
     brif v4, block1(v4), block1(v4)   ; both arms loop back
 
 block3(v5: i32):

@@ -270,11 +270,13 @@ impl MachInst for MInst {
     fn worst_case_size() -> CodeOffset {
         2
     }
-
-    fn ref_type_regclass(_settings: &settings::Flags) -> RegClass {
-        unimplemented!()
+    
+    fn worst_case_island_growth() -> CodeOffset
+    {
+        // TODO: Copied from RISC-V target with no analysis
+        128
     }
-
+    
     fn function_alignment() -> FunctionAlignment {
         FunctionAlignment {
             minimum: 2,

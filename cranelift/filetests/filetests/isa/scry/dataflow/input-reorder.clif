@@ -5,7 +5,8 @@ target scry32
 ; Tests can maintain the correct input order for subtraction
 function %sub_added_one(i32 sext, i32 sext) -> i32 sext{
 block1(v0: i32, v1: i32):
-	v2 = iadd_imm v1, 1
+    v20 = iconst.i32 1
+    v2 = iadd v1, v20
     v3 = isub v2, v0 	; v2 is produced later but needed as the first operand
     return v3
 }

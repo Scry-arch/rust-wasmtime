@@ -37,7 +37,8 @@ block2(v2: i32):
     jump block3(v2)
 
 block3(v3: i32):
-    v4 = iadd_imm v3, 1
+    v20 = iconst.i32 1
+    v4 = iadd v3, v20
     return v4
 }
 
