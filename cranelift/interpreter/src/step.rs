@@ -213,7 +213,10 @@ where
 
     let calculate_addr =
         |addr_ty: Type, imm: DataValue, args: SmallVec<[DataValue; 1]>| -> ValueResult<u64> {
-            let imm = imm.convert(ValueConversionKind::ZeroExtend(addr_ty))?;
+            // The offset immediate is signed (Offset32); a negative offset
+            // must subtract from the address, so sign-extend it. The address
+            // arguments are unsigned and stay zero-extended.
+            let imm = imm.convert(ValueConversionKind::SignExtend(addr_ty))?;
             let args = args
                 .into_iter()
                 .map(|v| v.convert(ValueConversionKind::ZeroExtend(addr_ty)))

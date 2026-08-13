@@ -1,0 +1,84 @@
+test interpret
+test run
+target scry32
+
+; Dynamically computed addresses for plain loads/stores. Addresses are
+; laundered through memory to force the plain load/store path (see
+; load-store.clif).
+
+; The address is a laundered base plus a byte offset passed as an argument.
+function %dynamic_addr(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 128
+    ss1 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    v3 = stack_addr.i32 ss1
+    store notrap v2, v3
+    v4 = load.i32 notrap v3
+    v5 = iadd v4, v0
+    store notrap v1, v5
+    v6 = load.i32 notrap v5
+    return v6
+}
+; run: %dynamic_addr(0, 7) == 7
+; run: %dynamic_addr(100, 9) == 9
+; run: %dynamic_addr(33, 5) == 5
+; run: %dynamic_addr(124, -1) == -1
+
+; The same address built by a chain of small additions and by a single
+; offset.
+function %chained_adds(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    v4 = iconst.i32 4
+    v5 = iadd v3, v4
+    v6 = iconst.i32 4
+    v7 = iadd v5, v6
+    v8 = iconst.i32 4
+    v9 = iadd v7, v8
+    store notrap v0, v9
+    v10 = load.i32 notrap v3+12
+    return v10
+}
+; run: %chained_adds(0) == 0
+; run: %chained_adds(1234567) == 1234567
+
+; A loop walking memory: iteration i stores the current countdown value at
+; base + 4*i (the cursor advances by 4 each iteration). Afterwards the value
+; at a chosen byte offset is loaded back. Only valid for n >= 1 iterations
+; and offset <= 4*(n-1). The laundered base is threaded through the blocks
+; as parameters (once as the moving cursor, once unchanged for the final
+; load).
+function %loop_store(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 400
+    ss1 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    v3 = stack_addr.i32 ss1
+    store notrap v2, v3
+    v4 = load.i32 notrap v3
+    jump block1(v0, v4, v1, v4)
+
+block1(v5: i32, v6: i32, v7: i32, v8: i32):
+    store notrap v5, v6
+    v9 = iconst.i32 4
+    v10 = iadd v6, v9
+    v11 = iconst.i32 1
+    v12 = isub v5, v11
+    brif v12, block1(v12, v10, v7, v8), block2(v7, v8)
+
+block2(v13: i32, v14: i32):
+    v15 = iadd v14, v13
+    v16 = load.i32 notrap v15
+    return v16
+}
+; run: %loop_store(1, 0) == 1
+; run: %loop_store(5, 0) == 5
+; run: %loop_store(5, 4) == 4
+; run: %loop_store(5, 16) == 1
+; run: %loop_store(100, 396) == 1

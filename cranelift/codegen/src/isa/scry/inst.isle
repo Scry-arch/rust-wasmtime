@@ -329,9 +329,22 @@
   )
 )
 
-(decl st_rrfo (Reg Reg MemFlags Offset32) InstOutput)
-(rule
-  (st_rrfo val dst flags off)
+(decl st_rrfo (Reg Reg MemFlags Imm64) InstOutput)
+
+; Catches stores with non-zero offsets
+(rule 10
+  (st_rrfo val dst flags (nonzero_imm64 off))
+  (let
+    ( (offset_r Reg (const_r $I32 off))
+      (dst_off_r Reg (add_trrr $I32 offset_r dst))
+    )
+    (side_effect (SideEffectNoResult.Inst (MInst.Store val dst_off_r)))
+  )
+)
+
+; Catches stores with zero offsets
+(rule 0
+  (st_rrfo val dst flags _)
   (side_effect (SideEffectNoResult.Inst (MInst.Store val dst)))
 )
 
