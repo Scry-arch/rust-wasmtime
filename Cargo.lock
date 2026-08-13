@@ -834,6 +834,7 @@ dependencies = [
  "num_cpus",
  "pulley-interpreter",
  "scry_asm",
+ "scry_isa",
  "scry_sim",
  "serde",
  "serde_derive",

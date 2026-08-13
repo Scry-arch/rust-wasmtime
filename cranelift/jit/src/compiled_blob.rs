@@ -276,6 +276,14 @@ impl CompiledBlob {
                     }
                 }
 
+                // A 32-bit absolute address in the Scry simulator's guest
+                // address space. Host addresses do not fit in 32 bits, so this
+                // cannot be resolved here: the Scry test harness copies the
+                // code into a guest address space of its own layout and
+                // patches these relocations on that copy. The host copy is
+                // never executed.
+                Reloc::ScryAbs32 => {}
+
                 // See <https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#pc-relative-symbol-addresses>
                 // for why `0x800` is added here.
                 Reloc::RiscvPCRelHi20 => {

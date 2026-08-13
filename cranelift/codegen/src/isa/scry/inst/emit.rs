@@ -1,5 +1,6 @@
 //! Scry ISA: binary code emission.
 
+use crate::binemit::Reloc;
 use crate::ir::{self};
 use crate::isa::scry::inst::*;
 use crate::isa::scry::lower::isle::generated_code::MInst;
@@ -137,6 +138,18 @@ impl MachInstEmit for MInst {
                         .rev()
                         .map(|b| Instruction::Grow(Bits::try_from(*b as i32).unwrap())),
                 );
+                insts
+            }
+            LoadExtName { name, .. } => {
+                // A const + 3*grow chain materializing a 32-bit absolute
+                // address. The immediates are filled in when the ScryAbs32
+                // relocation is applied: the const receives the most
+                // significant byte, each following grow the next.
+                sink.add_reloc(Reloc::ScryAbs32, &**name, 0);
+                let ty: Bits<3, false> = scry_isa::Type::Uint(2).try_into().unwrap();
+                let zero = Bits::try_from(0i32).unwrap();
+                let mut insts = vec![Instruction::Constant(ty, zero)];
+                insts.extend((0..3).map(|_| Instruction::Grow(zero)));
                 insts
             }
             EchoLong { out, .. } => {

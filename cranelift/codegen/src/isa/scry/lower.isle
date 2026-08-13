@@ -71,6 +71,19 @@
     (call_ind_srv sig_ref ptr args)
 )
 
+;; A direct call materializes the callee's address (via relocation) and then
+;; behaves exactly like an indirect call: the address is an unsigned value,
+;; which the machine's call instruction treats as absolute.
+(rule
+    (lower (call (func_ref_data sig_ref name _ _) args))
+    (call_ind_srv sig_ref (load_ext_name name) args)
+)
+
+(rule
+    (lower (func_addr ty (func_ref_data _ name _ _)))
+    (load_ext_name name)
+)
+
 (decl imm64_from_offset (Imm64) Offset32)
 (extern extractor infallible imm64_from_offset imm64_from_offset)
 

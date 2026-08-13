@@ -8,8 +8,9 @@ use cranelift_codegen::ir::{
     ExternalName, Function, InstBuilder, InstructionData, LibCall, Opcode, Signature,
     UserExternalName, UserFuncName,
 };
+use cranelift_codegen::binemit::Reloc;
 use cranelift_codegen::isa::{OwnedTargetIsa, TargetIsa};
-use cranelift_codegen::{CodegenError, Context, ir, settings};
+use cranelift_codegen::{CodegenError, Context, FinalizedRelocTarget, ir, settings};
 use cranelift_control::ControlPlane;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -26,6 +27,42 @@ use target_lexicon::Architecture;
 use thiserror::Error;
 
 const TESTFILE_NAMESPACE: u32 = 0;
+
+/// The compiled code of one function destined for the Scry simulator.
+///
+/// The simulator runs the code in a 32-bit guest address space of the test
+/// harness's own layout (host code addresses do not fit in the guest's 4-byte
+/// pointers), so the harness keeps each function's unrelocated code and
+/// patches the relocations itself once the guest code layout is decided at
+/// call time. The JIT module's host copy of the code is never executed.
+#[derive(Debug)]
+struct ScryCompiledFunction {
+    /// The unrelocated code bytes.
+    code: Vec<u8>,
+
+    /// ScryAbs32 relocations: (code offset, linked index of the referenced
+    /// function). The linked index is the index of the referenced function's
+    /// [UserExternalName].
+    relocs: Vec<(u32, u32)>,
+}
+
+/// Patches a ScryAbs32 relocation: writes the value's bytes into the
+/// immediates of the const + 3*grow chain at `offset`, most significant byte
+/// in the const and descending through the grows.
+fn patch_scry_abs32(code: &mut [u8], offset: usize, value: u32) {
+    use scry_isa::Instruction;
+    for i in 0..4 {
+        let byte = ((value >> (8 * (3 - i))) & 0xFF) as i32;
+        let pos = offset + 2 * i;
+        let word = u16::from_le_bytes([code[pos], code[pos + 1]]);
+        let patched = match Instruction::decode(word) {
+            Instruction::Constant(ty, _) => Instruction::Constant(ty, byte.try_into().unwrap()),
+            Instruction::Grow(_) => Instruction::Grow(byte.try_into().unwrap()),
+            i => panic!("ScryAbs32 relocation applied to unexpected instruction: {i:?}"),
+        };
+        code[pos..pos + 2].copy_from_slice(&patched.encode().to_le_bytes());
+    }
+}
 
 /// Holds information about a previously defined function.
 #[derive(Debug)]
@@ -91,6 +128,11 @@ pub struct TestFileCompiler {
     ///
     /// The trampoline is defined in `defined_functions` as any other regular function.
     trampolines: HashMap<Signature, UserFuncName>,
+
+    /// For the Scry target: every defined function's code, keyed by the
+    /// function's linked index (its [UserExternalName] index). See
+    /// [ScryCompiledFunction]. Empty for other targets.
+    scry_functions: HashMap<u32, ScryCompiledFunction>,
 }
 
 impl TestFileCompiler {
@@ -122,6 +164,7 @@ impl TestFileCompiler {
             ctx,
             defined_functions: HashMap::new(),
             trampolines: HashMap::new(),
+            scry_functions: HashMap::new(),
         }
     }
 
@@ -263,6 +306,7 @@ impl TestFileCompiler {
             .defined_functions
             .get(&func.name)
             .ok_or(anyhow!("Undeclared function {} found!", &func.name))?;
+        let linked_index = defined_func.new_name.index;
 
         self.ctx.func = self.apply_func_rename(func, defined_func)?;
         self.module.define_function_with_control_plane(
@@ -270,6 +314,48 @@ impl TestFileCompiler {
             &mut self.ctx,
             ctrl_plane,
         )?;
+
+        // For Scry, keep the (unrelocated) code and its relocations: the
+        // simulator runs a copy of the code in a guest address space laid out
+        // and relocated by the test harness itself (see
+        // [ScryCompiledFunction]).
+        if matches!(
+            self.module.isa().triple().architecture,
+            Architecture::Scry(_)
+        ) {
+            let compiled = self
+                .ctx
+                .compiled_code()
+                .expect("the function was just compiled");
+            let mut relocs = Vec::new();
+            for reloc in compiled.buffer.relocs() {
+                match (reloc.kind, &reloc.target) {
+                    (
+                        Reloc::ScryAbs32,
+                        FinalizedRelocTarget::ExternalName(ExternalName::User(name_ref)),
+                    ) => {
+                        let name = &self.ctx.func.params.user_named_funcs()[*name_ref];
+                        assert_eq!(
+                            name.namespace, TESTFILE_NAMESPACE,
+                            "Unexpected relocation namespace"
+                        );
+                        assert_eq!(reloc.addend, 0, "Unexpected relocation addend");
+                        relocs.push((reloc.offset, name.index));
+                    }
+                    (kind, target) => {
+                        panic!("Unsupported Scry relocation: {kind:?} -> {target:?}")
+                    }
+                }
+            }
+            self.scry_functions.insert(
+                linked_index,
+                ScryCompiledFunction {
+                    code: compiled.code_buffer().to_vec(),
+                    relocs,
+                },
+            );
+        }
+
         self.module.clear_context(&mut self.ctx);
         Ok(())
     }
@@ -353,6 +439,7 @@ impl TestFileCompiler {
             module: Some(self.module),
             defined_functions: self.defined_functions,
             trampolines: self.trampolines,
+            scry_functions: self.scry_functions,
         })
     }
 }
@@ -370,6 +457,10 @@ pub struct CompiledTestFile {
     /// Trampolines available in this [JITModule].
     /// See [TestFileCompiler] for more info.
     trampolines: HashMap<Signature, UserFuncName>,
+
+    /// For the Scry target: every defined function's code, keyed by linked
+    /// index. See [TestFileCompiler] for more info.
+    scry_functions: HashMap<u32, ScryCompiledFunction>,
 }
 
 impl CompiledTestFile {
@@ -378,16 +469,17 @@ impl CompiledTestFile {
     /// Returns None if [TestFileCompiler::create_trampoline_for_function] wasn't called for this function.
     pub fn get_trampoline(&self, func: &Function) -> Option<Trampoline<'_>> {
         let defined_func = self.defined_functions.get(&func.name)?;
-        let trampoline_id = self
+        let trampoline_df = self
             .trampolines
             .get(&func.signature)
-            .and_then(|name| self.defined_functions.get(name))
-            .map(|df| df.func_id)?;
+            .and_then(|name| self.defined_functions.get(name))?;
         Some(Trampoline {
             module: self.module.as_ref()?,
             func_id: defined_func.func_id,
+            func_index: defined_func.new_name.index,
             func_signature: &defined_func.signature,
-            trampoline_id,
+            trampoline_id: trampoline_df.func_id,
+            trampoline_index: trampoline_df.new_name.index,
         })
     }
 }
@@ -411,8 +503,12 @@ std::thread_local! {
 pub struct Trampoline<'a> {
     module: &'a JITModule,
     func_id: FuncId,
+    /// The linked index ([UserExternalName] index) of the target function.
+    func_index: u32,
     func_signature: &'a Signature,
     trampoline_id: FuncId,
+    /// The linked index ([UserExternalName] index) of the trampoline.
+    trampoline_index: u32,
 }
 
 impl<'a> Trampoline<'a> {
@@ -426,7 +522,13 @@ impl<'a> Trampoline<'a> {
 
         COMPILED_TEST_FILE.set(compiled as *const _);
         unsafe {
-            self.call_raw(trampoline_ptr, function_ptr, arguments_address, values.0.len());
+            self.call_raw(
+                compiled,
+                trampoline_ptr,
+                function_ptr,
+                arguments_address,
+                values.0.len(),
+            );
         }
         COMPILED_TEST_FILE.set(std::ptr::null());
 
@@ -435,6 +537,7 @@ impl<'a> Trampoline<'a> {
 
     unsafe fn call_raw(
         &self,
+        compiled: &CompiledTestFile,
         trampoline_ptr: *const u8,
         function_ptr: *const u8,
         arguments_address: *mut u128,
@@ -463,43 +566,17 @@ impl<'a> Trampoline<'a> {
             // For Scry, run on the simulator
             Architecture::Scry(_) => {
                 use scry_sim::{
-                    Block, BlockedMemory, CallFrameState, ExecState, Executor, MemError, Memory,
-                    OperandList, Scalar, StackFrame, Value,
+                    Block, BlockedMemory, CallFrameState, ExecState, Executor, Memory, OperandList,
+                    Scalar, StackFrame, Value,
                 };
 
-                /// Presents a 32-bit guest address space for the simulated
-                /// program's data, while code (in the 64-bit
-                /// host addresses) is fetched untranslated.
-                ///
-                /// Mapping the data (stack and argument buffer) into low guest
-                /// addresses keeps all data pointers representable in scry32's
-                /// 4-byte pointer type, so addresses survive being stored to
-                /// and reloaded from memory. It also makes the stack frame
-                /// base an address of our choosing, satisfying the Scry ABI's
-                /// guarantee of a 16-aligned frame base independently of host
-                /// allocation alignment.
-                struct GuestMemory {
-                    guest: BlockedMemory,
-                }
-
-                impl Memory for GuestMemory {
-                    fn read_raw(&mut self, addr: usize) -> Result<u8, MemError> {
-                        if addr <= u32::MAX as usize {
-                            self.guest.read_raw(addr)
-                        } else {
-                            Ok(unsafe { *(addr as *const u8) })
-                        }
-                    }
-
-                    fn write_raw(&mut self, addr: usize, data: u8) -> Result<(), MemError> {
-                        if addr <= u32::MAX as usize {
-                            self.guest.write_raw(addr, data)
-                        } else {
-                            unsafe { *(addr as *mut u8) = data };
-                            Ok(())
-                        }
-                    }
-                }
+                // Everything the simulated program touches -- code, stack and
+                // the argument buffer -- lives in a 32-bit guest address
+                // space of the harness's own layout, so all pointers
+                // (including function addresses) are representable in
+                // scry32's 4-byte pointer type. The stack base address is
+                // chosen 16-aligned, satisfying the Scry ABI's frame base
+                // alignment guarantee.
 
                 /// Guest address of the stack frame base. 16-aligned, per the
                 /// Scry ABI guarantee.
@@ -507,21 +584,45 @@ impl<'a> Trampoline<'a> {
                 const STACK_SIZE: usize = 1 << 12;
                 /// Guest address the argument buffer is mapped at.
                 const ARGS_BASE: usize = 0x10_0000;
+                /// Guest address the code region starts at.
+                const CODE_BASE: usize = 0x100_0000;
+
+                // Lay out every function's code in the guest address space,
+                // in linked-index order.
+                let mut indices: Vec<u32> = compiled.scry_functions.keys().copied().collect();
+                indices.sort();
+                let mut code_addrs = HashMap::new();
+                let mut next_addr = CODE_BASE;
+                for idx in &indices {
+                    code_addrs.insert(*idx, next_addr);
+                    next_addr += compiled.scry_functions[idx].code.len().next_multiple_of(16);
+                }
 
                 let args_size = arguments_len * UnboxedValues::SLOT_SIZE;
                 let args_bytes = unsafe {
                     std::slice::from_raw_parts(arguments_address as *const u8, args_size)
                 };
 
-                let mut guest = BlockedMemory::empty();
-                guest.add_block(std::iter::repeat(0u8).take(STACK_SIZE), STACK_BASE);
-                guest.add_block(args_bytes.iter().cloned(), ARGS_BASE);
-                let mut mem = GuestMemory { guest };
+                let mut mem = BlockedMemory::empty();
+                mem.add_block(std::iter::repeat(0u8).take(STACK_SIZE), STACK_BASE);
+                mem.add_block(args_bytes.iter().cloned(), ARGS_BASE);
 
-                // Ready inputs: the function pointer (a host code address) and
+                // Load the code, resolving the relocations against the guest
+                // code layout.
+                for idx in &indices {
+                    let func = &compiled.scry_functions[idx];
+                    let mut code = func.code.clone();
+                    for (offset, target) in &func.relocs {
+                        patch_scry_abs32(&mut code, *offset as usize, code_addrs[target] as u32);
+                    }
+                    mem.add_block(code.into_iter(), code_addrs[idx]);
+                }
+
+                // Ready inputs: the called function's guest code address and
                 // the guest address of the argument buffer
                 let mut op_queue = HashMap::new();
-                let fn_ptr = Value::singleton::<u64>(Scalar::from_sized(function_ptr as usize, 8));
+                let fn_ptr =
+                    Value::singleton::<u32>(Scalar::from_sized(code_addrs[&self.func_index], 4));
                 let ld_ptr = Value::singleton::<u32>(Scalar::from_sized(ARGS_BASE, 4));
                 op_queue.insert(0, OperandList::new(fn_ptr, vec![ld_ptr]));
 
@@ -533,9 +634,9 @@ impl<'a> Trampoline<'a> {
                     base_size: 0,
                 };
                 let original_state = ExecState {
-                    // Data pointers are 4 bytes (2^2): the guest address space
+                    // Pointers are 4 bytes (2^2): the guest address space
                     addr_space: 2,
-                    address: trampoline_ptr as usize,
+                    address: code_addrs[&self.trampoline_index],
                     frame: CallFrameState {
                         ret_addr: 0,
                         branches: HashMap::new(),
@@ -552,7 +653,8 @@ impl<'a> Trampoline<'a> {
                 };
 
                 let mut res =
-                    Executor::<GuestMemory, _>::from_state(&original_state, &mut mem).step(&mut ());
+                    Executor::<BlockedMemory, _>::from_state(&original_state, &mut mem)
+                        .step(&mut ());
 
                 loop {
                     match res {

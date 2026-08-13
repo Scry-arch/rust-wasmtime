@@ -1,0 +1,106 @@
+test interpret
+test run
+target scry32
+
+; Direct calls between functions in this file.
+
+function %add_ten(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = iconst.i32 10
+    v2 = iadd v0, v1
+    return v2
+}
+
+function %call_simple(i32 uext) -> i32 uext {
+    fn0 = %add_ten(i32 uext) -> i32 uext
+block0(v0: i32):
+    v1 = call fn0(v0)
+    return v1
+}
+; run: %call_simple(0) == 10
+; run: %call_simple(90) == 100
+; run: %call_simple(-10) == 0
+
+function %sub2(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = isub v0, v1
+    return v2
+}
+
+; Argument order must be preserved across the call (the caller passes its
+; own arguments swapped).
+function %call_swapped(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %sub2(i32 uext, i32 uext) -> i32 uext
+block0(v0: i32, v1: i32):
+    v2 = call fn0(v1, v0)
+    return v2
+}
+; run: %call_swapped(1, 100) == 99
+; run: %call_swapped(100, 1) == -99
+
+function %const_seven() -> i32 uext {
+block0:
+    v0 = iconst.i32 7
+    return v0
+}
+
+; A zero-argument callee.
+function %call_no_args(i32 uext) -> i32 uext {
+    fn0 = %const_seven() -> i32 uext
+block0(v0: i32):
+    v1 = call fn0()
+    v2 = iadd v1, v0
+    return v2
+}
+; run: %call_no_args(0) == 7
+; run: %call_no_args(3) == 10
+
+; Three arguments, all order-sensitive.
+function %sub3(i32 uext, i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = isub v0, v1
+    v4 = isub v3, v2
+    return v4
+}
+
+function %call_three(i32 uext, i32 uext, i32 uext) -> i32 uext {
+    fn0 = %sub3(i32 uext, i32 uext, i32 uext) -> i32 uext
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = call fn0(v0, v1, v2)
+    return v3
+}
+; run: %call_three(100, 30, 5) == 65
+; run: %call_three(5, 3, 10) == -8
+
+; Two sequential calls to the same callee.
+function %call_twice(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %add_ten(i32 uext) -> i32 uext
+block0(v0: i32, v1: i32):
+    v2 = call fn0(v0)
+    v3 = call fn0(v1)
+    v4 = isub v2, v3
+    return v4
+}
+; run: %call_twice(100, 1) == 99
+; run: %call_twice(1, 100) == -99
+
+; A call result feeding the next call's argument.
+function %call_chained(i32 uext) -> i32 uext {
+    fn0 = %add_ten(i32 uext) -> i32 uext
+block0(v0: i32):
+    v1 = call fn0(v0)
+    v2 = call fn0(v1)
+    return v2
+}
+; run: %call_chained(0) == 20
+; run: %call_chained(5) == 25
+
+; The same callee via a colocated reference.
+function %call_colocated(i32 uext) -> i32 uext {
+    fn0 = colocated %add_ten(i32 uext) -> i32 uext
+block0(v0: i32):
+    v1 = call fn0(v0)
+    return v1
+}
+; run: %call_colocated(0) == 10
+; run: %call_colocated(32) == 42

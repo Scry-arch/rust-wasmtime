@@ -1,0 +1,66 @@
+test interpret
+test run
+target scry32
+
+; Values computed before a call and used after it. In Scry, the caller's
+; in-flight values pause for the duration of the call and resume after the
+; return, so their references must account for the call issue and its
+; trigger.
+
+function %add_ten(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = iconst.i32 10
+    v2 = iadd v0, v1
+    return v2
+}
+
+; One value crossing one call: (a+b) - add_ten(a) == b - 10.
+function %live_one(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %add_ten(i32 uext) -> i32 uext
+block0(v0: i32, v1: i32):
+    v2 = iadd v0, v1
+    v3 = call fn0(v0)
+    v4 = isub v2, v3
+    return v4
+}
+; run: %live_one(5, 100) == 90
+; run: %live_one(0, 10) == 0
+
+; Two values crossing the same call:
+; ((a+b) - (a-b)) - add_ten(b) == 2b - (b+10) == b - 10.
+function %live_two(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %add_ten(i32 uext) -> i32 uext
+block0(v0: i32, v1: i32):
+    v2 = iadd v0, v1
+    v3 = isub v0, v1
+    v4 = call fn0(v1)
+    v5 = isub v2, v3
+    v6 = isub v5, v4
+    return v6
+}
+; run: %live_two(7, 100) == 90
+; run: %live_two(50, 10) == 0
+
+; A value crossing two calls: (a+b) - add_ten(add_ten(a)) == b - 20.
+function %live_across_two(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %add_ten(i32 uext) -> i32 uext
+block0(v0: i32, v1: i32):
+    v2 = iadd v0, v1
+    v3 = call fn0(v0)
+    v4 = call fn0(v3)
+    v5 = isub v2, v4
+    return v5
+}
+; run: %live_across_two(5, 30) == 10
+; run: %live_across_two(0, 20) == 0
+
+; A raw block parameter used only after the call.
+function %param_after_call(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %add_ten(i32 uext) -> i32 uext
+block0(v0: i32, v1: i32):
+    v2 = call fn0(v0)
+    v3 = isub v2, v1
+    return v3
+}
+; run: %param_after_call(5, 10) == 5
+; run: %param_after_call(0, 20) == -10
