@@ -1,0 +1,44 @@
+test interpret
+test run
+target scry32
+
+; Functions returning multiple values, both called directly by the harness
+; and consumed by another function.
+
+function %swap(i32 uext, i32 uext) -> i32 uext, i32 uext {
+block0(v0: i32, v1: i32):
+    return v1, v0
+}
+; run: %swap(1, 2) == [2, 1]
+; run: %swap(-5, 10) == [10, -5]
+
+function %sum_diff(i32 uext, i32 uext) -> i32 uext, i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = iadd v0, v1
+    v3 = isub v0, v1
+    return v2, v3
+}
+; run: %sum_diff(30, 12) == [42, 18]
+; run: %sum_diff(1, 2) == [3, -1]
+
+; A caller consuming both results: (a+b) - (a-b) == 2b.
+function %use_both(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %sum_diff(i32 uext, i32 uext) -> i32 uext, i32 uext
+block0(v0: i32, v1: i32):
+    v2, v3 = call fn0(v0, v1)
+    v4 = isub v2, v3
+    return v4
+}
+; run: %use_both(100, 20) == 40
+; run: %use_both(1, 50) == 100
+
+; A caller using the results in reverse order.
+function %use_reversed(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %sum_diff(i32 uext, i32 uext) -> i32 uext, i32 uext
+block0(v0: i32, v1: i32):
+    v2, v3 = call fn0(v0, v1)
+    v4 = isub v3, v2
+    return v4
+}
+; run: %use_reversed(100, 20) == -40
+; run: %use_reversed(1, 50) == -100

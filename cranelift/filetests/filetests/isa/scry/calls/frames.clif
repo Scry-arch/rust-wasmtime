@@ -1,0 +1,121 @@
+test interpret
+test run
+target scry32
+
+; Interaction between calls and stack frames: the callee's reserve/free must
+; leave the caller's frame intact, and pointers into a caller's frame must
+; stay valid inside the callee.
+
+; A callee that uses its own stack frame; returns 2*x.
+function %slot_user(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0+12
+    store notrap v0, v2
+    v3 = load.i32 notrap v1
+    v4 = load.i32 notrap v2
+    v5 = iadd v3, v4
+    return v5
+}
+
+; The caller's slot must survive the callee's frame use: a - 2b.
+function %caller_slots(i32 uext, i32 uext) -> i32 uext {
+    fn0 = %slot_user(i32 uext) -> i32 uext
+    ss0 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    store notrap v0, v2
+    v3 = call fn0(v1)
+    v4 = stack_addr.i32 ss0
+    v5 = load.i32 notrap v4
+    v6 = isub v5, v3
+    return v6
+}
+; run: %caller_slots(100, 20) == 60
+; run: %caller_slots(5, 10) == -15
+
+; A callee with no return values that writes through a pointer argument.
+function %write_thru(i32 uext, i32 uext) {
+block0(v0: i32, v1: i32):
+    store notrap v1, v0
+    return
+}
+
+; The callee writes into the caller's frame.
+function %caller_ptr(i32 uext) -> i32 uext {
+    fn0 = %write_thru(i32 uext, i32 uext)
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    call fn0(v1, v0)
+    v2 = stack_addr.i32 ss0
+    v3 = load.i32 notrap v2
+    return v3
+}
+; run: %caller_ptr(42) == 42
+; run: %caller_ptr(-1) == -1
+
+; The callee reads from the caller's frame.
+function %read_thru(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = load.i32 notrap v0
+    return v1
+}
+
+function %caller_read(i32 uext) -> i32 uext {
+    fn0 = %read_thru(i32 uext) -> i32 uext
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0
+    v3 = call fn0(v2)
+    return v3
+}
+; run: %caller_read(99) == 99
+; run: %caller_read(0) == 0
+
+; Frames three levels deep, each with its own slot that must survive the
+; deeper calls. level2(x) = x+1, level1(x) = level2(x) + x, level0(x) =
+; level1(x) + x, so level0(x) = 3x + 1.
+function %level2(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store notrap v0, v1
+    v2 = load.i32 notrap v1
+    v3 = iconst.i32 1
+    v4 = iadd v2, v3
+    return v4
+}
+
+function %level1(i32 uext) -> i32 uext {
+    fn0 = %level2(i32 uext) -> i32 uext
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store notrap v0, v1
+    v2 = call fn0(v0)
+    v3 = stack_addr.i32 ss0
+    v4 = load.i32 notrap v3
+    v5 = iadd v2, v4
+    return v5
+}
+
+function %level0(i32 uext) -> i32 uext {
+    fn0 = %level1(i32 uext) -> i32 uext
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store notrap v0, v1
+    v2 = call fn0(v0)
+    v3 = stack_addr.i32 ss0
+    v4 = load.i32 notrap v3
+    v5 = iadd v2, v4
+    return v5
+}
+; run: %level0(0) == 1
+; run: %level0(10) == 31
+; run: %level0(1) == 4

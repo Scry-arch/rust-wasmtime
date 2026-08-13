@@ -138,6 +138,11 @@ pub enum Reloc {
     /// this relocation needs to fill the 8-bit immediate that's part of the
     /// `call_indirect_host` opcode (an opaque identifier used by the host).
     PulleyCallIndirectHost,
+
+    /// Scry - a 32-bit absolute address materialized by a `const` + 3*`grow`
+    /// instruction chain. The const's 8-bit immediate receives the most
+    /// significant byte of the address and each following grow the next.
+    ScryAbs32,
 }
 
 impl fmt::Display for Reloc {
@@ -176,6 +181,7 @@ impl fmt::Display for Reloc {
             Self::S390xTlsGdCall => write!(f, "TlsGdCall"),
             Self::PulleyPcRel => write!(f, "PulleyPcRel"),
             Self::PulleyCallIndirectHost => write!(f, "PulleyCallIndirectHost"),
+            Self::ScryAbs32 => write!(f, "ScryAbs32"),
         }
     }
 }

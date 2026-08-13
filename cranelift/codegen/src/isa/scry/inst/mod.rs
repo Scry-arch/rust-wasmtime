@@ -60,7 +60,7 @@ impl MachInst for MInst {
             StoreStack { rs, .. } => {
                 collector.reg_use(rs);
             }
-            SAddr { rd, .. } | LoadStack { rd, .. } => {
+            SAddr { rd, .. } | LoadStack { rd, .. } | LoadExtName { rd, .. } => {
                 collector.reg_def(rd);
             }
             Discard { rss } => {
@@ -185,6 +185,7 @@ impl MachInst for MInst {
             | Ret { .. }
             | Rets { .. }
             | Const { .. }
+            | LoadExtName { .. }
             | Store { .. }
             | Load { .. }
             | StoreStack { .. }
@@ -360,6 +361,10 @@ impl MInst {
                     format!("imm: {}", imm.bits()),
                 ]
                 .into_iter(),
+            ),
+            LoadExtName { rd, name } => join(
+                "LoadExtName",
+                ["rd:".into(), wreg_name(*rd), format!("name: {name:?}")].into_iter(),
             ),
             Echo { rds, rss } => join(
                 "Echo",
@@ -659,6 +664,7 @@ impl MInst {
             | Ret { .. }
             | Args { .. }
             | Const { .. }
+            | LoadExtName { .. }
             | JumpIssue { .. }
             | ImmJump { .. }
             | LoadStack { .. }
@@ -764,6 +770,7 @@ impl MInst {
             | Load { rd, .. }
             | LoadStack { rd, .. }
             | SAddr { rd, .. }
+            | LoadExtName { rd, .. }
             | BinaryAlu { rd, .. }
             | IntCmp { rd, .. }
             | Resize { rd, .. }
@@ -799,7 +806,7 @@ impl MInst {
         use MInst::*;
         match self {
             Args { .. } => 0,
-            Const { .. } | Echo { .. } => self.emitted_length(),
+            Const { .. } | LoadExtName { .. } | Echo { .. } => self.emitted_length(),
             Nop
             | Rets { .. }
             | JumpTrigger { .. }
@@ -844,6 +851,9 @@ impl MInst {
                 // callers do not depend on the exact length).
                 None => 1,
             },
+            // An address is materialized as a const + 3*grow chain patched by
+            // the ScryAbs32 relocation.
+            LoadExtName { .. } => 4,
             Echo { rds, rss } => Self::echo_chain(
                 rds.iter()
                     .cloned()

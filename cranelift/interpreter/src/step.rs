@@ -426,7 +426,10 @@ where
         }
         Opcode::CallIndirect | Opcode::ReturnCallIndirect => {
             let args = args();
-            let addr_dv = DataValue::I64(arg(0).into_int_unsigned()? as i64);
+            // Keep the pointer's own width: the virtual address encoding
+            // differs between 32- and 64-bit addresses, so widening a 32-bit
+            // function address to I64 would decode it as the wrong region.
+            let addr_dv = arg(0);
             let addr = Address::try_from(addr_dv.clone()).map_err(StepError::MemoryError)?;
 
             let func = state

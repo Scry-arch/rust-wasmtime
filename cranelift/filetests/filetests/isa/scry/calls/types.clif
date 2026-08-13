@@ -1,0 +1,100 @@
+test interpret
+test run
+target scry32
+
+; Narrow argument and return types across calls: the ABI extension
+; attributes (uext/sext) must be honored on both sides.
+
+function %widen_u8(i8 uext) -> i32 uext {
+block0(v0: i8):
+    v1 = uextend.i32 v0
+    return v1
+}
+
+function %call_u8(i8 uext) -> i32 uext {
+    fn0 = %widen_u8(i8 uext) -> i32 uext
+block0(v0: i8):
+    v1 = call fn0(v0)
+    return v1
+}
+; run: %call_u8(0) == 0
+; run: %call_u8(-1) == 255
+; run: %call_u8(127) == 127
+
+function %widen_s8(i8 sext) -> i32 sext {
+block0(v0: i8):
+    v1 = sextend.i32 v0
+    return v1
+}
+
+function %call_s8(i8 sext) -> i32 sext {
+    fn0 = %widen_s8(i8 sext) -> i32 sext
+block0(v0: i8):
+    v1 = call fn0(v0)
+    return v1
+}
+; run: %call_s8(-1) == -1
+; run: %call_s8(-128) == -128
+; run: %call_s8(127) == 127
+
+function %add_i16(i16 sext, i16 sext) -> i16 sext {
+block0(v0: i16, v1: i16):
+    v2 = iadd v0, v1
+    return v2
+}
+
+function %call_i16(i16 sext, i16 sext) -> i16 sext {
+    fn0 = %add_i16(i16 sext, i16 sext) -> i16 sext
+block0(v0: i16, v1: i16):
+    v2 = call fn0(v0, v1)
+    return v2
+}
+; run: %call_i16(-5, 10) == 5
+; run: %call_i16(32767, 1) == -32768
+
+; The caller narrows a value before passing it.
+function %narrow_arg(i32 uext) -> i32 uext {
+    fn0 = %widen_u8(i8 uext) -> i32 uext
+block0(v0: i32):
+    v1 = ireduce.i8 v0
+    v2 = call fn0(v1)
+    return v2
+}
+; run: %narrow_arg(300) == 44
+; run: %narrow_arg(255) == 255
+
+; The callee returns a narrow value the caller widens.
+function %ret_u8(i32 uext) -> i8 uext {
+block0(v0: i32):
+    v1 = ireduce.i8 v0
+    return v1
+}
+
+function %widen_result(i32 uext) -> i32 uext {
+    fn0 = %ret_u8(i32 uext) -> i8 uext
+block0(v0: i32):
+    v1 = call fn0(v0)
+    v2 = uextend.i32 v1
+    return v2
+}
+; run: %widen_result(300) == 44
+; run: %widen_result(7) == 7
+
+; Mixed widths in one signature, all order-sensitive.
+function %mixed(i32 uext, i16 uext, i8 uext) -> i32 uext {
+block0(v0: i32, v1: i16, v2: i8):
+    v3 = uextend.i32 v1
+    v4 = uextend.i32 v2
+    v5 = isub v0, v3
+    v6 = isub v5, v4
+    return v6
+}
+
+function %call_mixed(i32 uext, i16 uext, i8 uext) -> i32 uext {
+    fn0 = %mixed(i32 uext, i16 uext, i8 uext) -> i32 uext
+block0(v0: i32, v1: i16, v2: i8):
+    v3 = call fn0(v0, v1, v2)
+    return v3
+}
+; run: %call_mixed(1000, 100, 10) == 890
+; run: %call_mixed(10, 100, 3) == -93

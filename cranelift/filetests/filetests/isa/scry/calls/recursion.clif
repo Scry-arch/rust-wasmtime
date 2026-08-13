@@ -1,0 +1,88 @@
+test interpret
+test run
+target scry32
+
+; Self- and mutually-recursive calls.
+
+; count(n) = 0 if n == 0 else count(n-1) + 1.
+function %count(i32 uext) -> i32 uext {
+    fn0 = %count(i32 uext) -> i32 uext
+block0(v0: i32):
+    brif v0, block1(v0), block2
+
+block1(v1: i32):
+    v2 = iconst.i32 1
+    v3 = isub v1, v2
+    v4 = call fn0(v3)
+    v5 = iconst.i32 1
+    v6 = iadd v4, v5
+    return v6
+
+block2:
+    v7 = iconst.i32 0
+    return v7
+}
+; run: %count(0) == 0
+; run: %count(1) == 1
+; run: %count(7) == 7
+
+; sum(n) = n + sum(n-1) with sum(0) = 0. The argument stays live across the
+; recursive call.
+function %sum_rec(i32 uext) -> i32 uext {
+    fn0 = %sum_rec(i32 uext) -> i32 uext
+block0(v0: i32):
+    brif v0, block1(v0), block2
+
+block1(v1: i32):
+    v2 = iconst.i32 1
+    v3 = isub v1, v2
+    v4 = call fn0(v3)
+    v5 = iadd v4, v1
+    return v5
+
+block2:
+    v6 = iconst.i32 0
+    return v6
+}
+; run: %sum_rec(1) == 1
+; run: %sum_rec(5) == 15
+; run: %sum_rec(10) == 55
+
+; Mutual recursion: parity by cross-calling.
+function %is_even(i32 uext) -> i32 uext {
+    fn0 = %is_odd(i32 uext) -> i32 uext
+block0(v0: i32):
+    brif v0, block1(v0), block2
+
+block1(v1: i32):
+    v2 = iconst.i32 1
+    v3 = isub v1, v2
+    v4 = call fn0(v3)
+    return v4
+
+block2:
+    v5 = iconst.i32 1
+    return v5
+}
+; run: %is_even(0) == 1
+; run: %is_even(7) == 0
+; run: %is_even(10) == 1
+
+function %is_odd(i32 uext) -> i32 uext {
+    fn0 = %is_even(i32 uext) -> i32 uext
+block0(v0: i32):
+    brif v0, block1(v0), block2
+
+block1(v1: i32):
+    v2 = iconst.i32 1
+    v3 = isub v1, v2
+    v4 = call fn0(v3)
+    return v4
+
+block2:
+    v5 = iconst.i32 0
+    return v5
+}
+; run: %is_odd(3) == 1
+; run: %is_odd(8) == 0
+; run: %is_odd(0) == 0

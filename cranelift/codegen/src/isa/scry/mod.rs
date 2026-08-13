@@ -897,7 +897,12 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                                 .insert(bb.inst.len() - inst_idx, MInst::Echo { rds, rss });
                             continue 'a;
                         }
-                        MInst::Const { rd, .. } | MInst::LoadStack { rd, .. } | MInst::SAddr { rd, .. } if ref_dists[&0] > 0 => {
+                        MInst::Const { rd, .. }
+                        | MInst::LoadExtName { rd, .. }
+                        | MInst::LoadStack { rd, .. }
+                        | MInst::SAddr { rd, .. }
+                            if ref_dists[&0] > 0 =>
+                        {
                             // Consumer is not directly after the instruction which outputs only to next.
                             // Use echo to bridge the gap
                             let rd = rd.to_reg();
@@ -989,6 +994,12 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
                                 .iter()
                                 .rposition(|i| matches!(i, MInst::Call { .. }))
                                 .expect("CallArgs without preceding Call"),
+                            // Return values are consumed by the ret trigger, so
+                            // their reorder must execute before the Ret issue.
+                            MInst::Rets { .. } => bb.inst[..inst_idx]
+                                .iter()
+                                .rposition(|i| matches!(i, MInst::Ret { .. }))
+                                .expect("Rets without preceding Ret"),
                             _ => inst_idx,
                         };
 
