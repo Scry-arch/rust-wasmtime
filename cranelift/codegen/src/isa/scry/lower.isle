@@ -44,7 +44,7 @@
 )
 
 (rule
-    (lower (store flags val dst off))
+    (lower (store flags val dst (imm64_from_offset off)))
     (st_rrfo val dst flags off)
 )
 

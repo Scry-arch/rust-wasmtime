@@ -1,0 +1,100 @@
+test interpret
+test run
+target scry32
+
+; i8/i16 plain loads/stores. Addresses are laundered through memory to force
+; the plain load/store path (see load-store.clif).
+
+function %roundtrip_i8(i8 sext) -> i8 sext {
+    ss0 = explicit_slot 1
+    ss1 = explicit_slot 4
+block0(v0: i8):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3
+    v4 = load.i8 notrap v3
+    return v4
+}
+; run: %roundtrip_i8(0) == 0
+; run: %roundtrip_i8(-128) == -128
+; run: %roundtrip_i8(127) == 127
+
+function %roundtrip_i16(i16 sext) -> i16 sext {
+    ss0 = explicit_slot 2
+    ss1 = explicit_slot 4
+block0(v0: i16):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3
+    v4 = load.i16 notrap v3
+    return v4
+}
+; run: %roundtrip_i16(0) == 0
+; run: %roundtrip_i16(-100) == -100
+; run: %roundtrip_i16(32767) == 32767
+
+; Adjacent bytes are independent.
+function %adjacent_bytes(i8 uext, i8 uext) -> i8 uext {
+    ss0 = explicit_slot 2 ; data: two bytes
+    ss1 = explicit_slot 8 ; two address cells
+block0(v0: i8, v1: i8):
+    v2 = stack_addr.i32 ss0
+    v3 = stack_addr.i32 ss1
+    store notrap v2, v3
+    v4 = stack_addr.i32 ss0+1
+    v5 = stack_addr.i32 ss1+4
+    store notrap v4, v5
+    v6 = load.i32 notrap v3
+    v7 = load.i32 notrap v5
+    store notrap v0, v6
+    store notrap v1, v7
+    v8 = load.i8 notrap v6
+    v9 = load.i8 notrap v7
+    v10 = isub v8, v9
+    return v10
+}
+; run: %adjacent_bytes(10, 3) == 7
+; run: %adjacent_bytes(3, 10) == -7
+
+; An i16 at an odd address.
+function %i16_odd_addr(i16 sext) -> i16 sext {
+    ss0 = explicit_slot 4
+    ss1 = explicit_slot 4
+block0(v0: i16):
+    v1 = stack_addr.i32 ss0+1
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3
+    v4 = load.i16 notrap v3
+    return v4
+}
+; run: %i16_odd_addr(-100) == -100
+; run: %i16_odd_addr(32767) == 32767
+
+; A byte store between two known bytes must clobber neither: returns
+; a - c + b for bytes a, b, c stored at offsets +0, +2, +1 (b last).
+function %byte_store_bounded(i8 uext, i8 uext, i8 uext) -> i8 uext {
+    ss0 = explicit_slot 4
+    ss1 = explicit_slot 4
+block0(v0: i8, v1: i8, v2: i8):
+    v3 = stack_addr.i32 ss0
+    v4 = stack_addr.i32 ss1
+    store notrap v3, v4
+    v5 = load.i32 notrap v4
+    store notrap v0, v5
+    store notrap v1, v5+2
+    store notrap v2, v5+1
+    v6 = load.i8 notrap v5
+    v7 = load.i8 notrap v5+2
+    v8 = isub v6, v7
+    v9 = load.i8 notrap v5+1
+    v10 = iadd v8, v9
+    return v10
+}
+; run: %byte_store_bounded(10, 3, 1) == 8
+; run: %byte_store_bounded(3, 10, 100) == 93

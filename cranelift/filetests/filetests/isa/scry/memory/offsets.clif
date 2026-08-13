@@ -1,0 +1,170 @@
+test interpret
+test run
+target scry32
+
+; CLIF-level offsets (`v+N`, `v-N`) on plain loads/stores. Addresses are
+; laundered through memory to force the plain load/store path (see
+; load-store.clif).
+
+function %store_load_offset(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3+8
+    v4 = load.i32 notrap v3+8
+    return v4
+}
+; run: %store_load_offset(0) == 0
+; run: %store_load_offset(42) == 42
+; run: %store_load_offset(4294967295) == 4294967295
+
+; The offset is part of the effective address: +0 and +4 must not clobber
+; each other.
+function %offset_no_clobber(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    v3 = stack_addr.i32 ss1
+    store notrap v2, v3
+    v4 = load.i32 notrap v3
+    store notrap v0, v4
+    store notrap v1, v4+4
+    v5 = load.i32 notrap v4
+    v6 = load.i32 notrap v4+4
+    v7 = isub v5, v6
+    return v7
+}
+; run: %offset_no_clobber(0, 0) == 0
+; run: %offset_no_clobber(100, 1) == 99
+; run: %offset_no_clobber(1, 100) == -99
+
+; An offset store and a computed-address load hit the same memory.
+function %offset_vs_computed(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3+12
+    v4 = iconst.i32 12
+    v5 = iadd v3, v4
+    v6 = load.i32 notrap v5
+    return v6
+}
+; run: %offset_vs_computed(0) == 0
+; run: %offset_vs_computed(77) == 77
+
+; And the reverse: a computed-address store and an offset load.
+function %computed_vs_offset(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    v4 = iconst.i32 12
+    v5 = iadd v3, v4
+    store notrap v0, v5
+    v6 = load.i32 notrap v3+12
+    return v6
+}
+; run: %computed_vs_offset(0) == 0
+; run: %computed_vs_offset(77) == 77
+
+; Nothing requires the address of a plain access to be aligned to the access
+; size.
+function %unaligned_addr(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+1
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3
+    v4 = load.i32 notrap v3
+    return v4
+}
+; run: %unaligned_addr(42) == 42
+; run: %unaligned_addr(4294967295) == 4294967295
+
+; An address computed by subtraction reaches below its base.
+function %isub_addr(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+12
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    v4 = iconst.i32 8
+    v5 = isub v3, v4
+    store notrap v0, v5
+    v6 = load.i32 notrap v5
+    return v6
+}
+; run: %isub_addr(0) == 0
+; run: %isub_addr(123) == 123
+
+; A literal negative offset reaches below its base address. The base points
+; into the second half of the slot, so the accesses stay inside the
+; reservation.
+function %negative_offset(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+12
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3-8
+    v4 = load.i32 notrap v3-8
+    return v4
+}
+; run: %negative_offset(0) == 0
+; run: %negative_offset(123) == 123
+
+; A negative-offset store read back through an isub-computed address.
+function %negative_vs_computed(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+12
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3-8
+    v4 = iconst.i32 8
+    v5 = isub v3, v4
+    v6 = load.i32 notrap v5
+    return v6
+}
+; run: %negative_vs_computed(0) == 0
+; run: %negative_vs_computed(77) == 77
+
+; And the reverse: an isub-computed store read back through a negative
+; offset.
+function %computed_vs_negative(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+12
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    v4 = iconst.i32 8
+    v5 = isub v3, v4
+    store notrap v0, v5
+    v6 = load.i32 notrap v3-8
+    return v6
+}
+; run: %computed_vs_negative(0) == 0
+; run: %computed_vs_negative(77) == 77

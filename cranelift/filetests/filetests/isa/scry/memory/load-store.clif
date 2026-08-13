@@ -1,0 +1,104 @@
+test interpret
+test run
+target scry32
+
+; Plain (non-stack) loads/stores.
+;
+; Data lives in stack slots so the interpreter can run these tests too. To
+; force plain ld/st instead of the backend's fused stack accesses, every
+; address is "laundered": stored into a slot and loaded back. The reloaded
+; address is an ordinary value, not a stack_addr result, so the
+; stack_addr+load/store fusion cannot apply and the access must go through
+; the plain load/store path.
+
+function %roundtrip_u32(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4 ; data
+    ss1 = explicit_slot 4 ; address cell used for laundering
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3
+    v4 = load.i32 notrap v3
+    return v4
+}
+; run: %roundtrip_u32(0) == 0
+; run: %roundtrip_u32(42) == 42
+; run: %roundtrip_u32(4294967295) == 4294967295
+
+function %roundtrip_i32(i32 sext) -> i32 sext {
+    ss0 = explicit_slot 4
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    store notrap v0, v3
+    v4 = load.i32 notrap v3
+    return v4
+}
+; run: %roundtrip_i32(1) == 1
+; run: %roundtrip_i32(-1) == -1
+; run: %roundtrip_i32(-2147483648) == -2147483648
+
+; Distinct addresses hold distinct values. isub is order-sensitive, so this
+; also catches swapped values.
+function %two_addresses(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8 ; data: two words
+    ss1 = explicit_slot 8 ; two address cells
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    v3 = stack_addr.i32 ss1
+    store notrap v2, v3
+    v4 = stack_addr.i32 ss0+4
+    v5 = stack_addr.i32 ss1+4
+    store notrap v4, v5
+    v6 = load.i32 notrap v3
+    v7 = load.i32 notrap v5
+    store notrap v0, v6
+    store notrap v1, v7
+    v8 = load.i32 notrap v6
+    v9 = load.i32 notrap v7
+    v10 = isub v8, v9
+    return v10
+}
+; run: %two_addresses(0, 0) == 0
+; run: %two_addresses(100, 1) == 99
+; run: %two_addresses(1, 100) == -99
+
+; A second store to the same address overwrites the first.
+function %overwrite(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+    ss1 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    v3 = stack_addr.i32 ss1
+    store notrap v2, v3
+    v4 = load.i32 notrap v3
+    store notrap v0, v4
+    store notrap v1, v4
+    v5 = load.i32 notrap v4
+    return v5
+}
+; run: %overwrite(11, 22) == 22
+; run: %overwrite(22, 11) == 11
+
+; Store a constant value; the loaded value flows on through normal dataflow.
+function %store_const(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    v4 = iconst.i32 77
+    store notrap v4, v3
+    v5 = load.i32 notrap v3
+    v6 = iadd v5, v0
+    return v6
+}
+; run: %store_const(0) == 77
+; run: %store_const(23) == 100
