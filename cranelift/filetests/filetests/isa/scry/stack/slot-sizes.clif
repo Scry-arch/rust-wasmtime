@@ -1,0 +1,75 @@
+test interpret
+test run
+target scry32
+
+; Both ends of a large frame. Offset 60 is index 15 at scale 4.
+function %large_slot_ends(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 64
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    store notrap v0, v2
+    v3 = stack_addr.i32 ss0+60
+    store notrap v1, v3
+    v4 = stack_addr.i32 ss0
+    v5 = load.i32 notrap v4
+    v6 = stack_addr.i32 ss0+60
+    v7 = load.i32 notrap v6
+    v8 = isub v5, v7
+    return v8
+}
+; run: %large_slot_ends(0, 0) == 0
+; run: %large_slot_ends(100, 1) == 99
+; run: %large_slot_ends(1, 100) == -99
+
+; Offset 252 is index 63 at scale 4 — larger than small immediate index
+; fields, forcing an address-based fallback if the encoding cannot reach it.
+function %huge_offset(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 256
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+252
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0+252
+    v3 = load.i32 notrap v2
+    return v3
+}
+; run: %huge_offset(0) == 0
+; run: %huge_offset(4294967295) == 4294967295
+
+; An odd-sized slot; access at its last byte.
+function %odd_slot(i8 sext) -> i8 sext {
+    ss0 = explicit_slot 3
+block0(v0: i8):
+    v1 = stack_addr.i32 ss0+2
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0+2
+    v3 = load.i8 notrap v2
+    return v3
+}
+; run: %odd_slot(0) == 0
+; run: %odd_slot(-128) == -128
+; run: %odd_slot(127) == 127
+
+; A slot with explicit alignment.
+function %aligned_slot(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8, align = 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0
+    v3 = load.i32 notrap v2
+    return v3
+}
+; run: %aligned_slot(42) == 42
+; run: %aligned_slot(-1) == -1
+
+; A declared slot that is never accessed: frame setup/teardown must still
+; be balanced and not corrupt the return value.
+function %unused_slot(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 16
+block0(v0: i32):
+    v1 = iconst.i32 1
+    v2 = iadd v0, v1
+    return v2
+}
+; run: %unused_slot(0) == 1
+; run: %unused_slot(41) == 42

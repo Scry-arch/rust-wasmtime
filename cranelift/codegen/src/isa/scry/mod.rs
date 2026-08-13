@@ -642,6 +642,71 @@ fn prepare_block_params(
     log::trace!("VCodeCFG: {cfg:?}");
 }
 
+/// Inserts the stack frame reservation and release instructions.
+///
+/// The frame (sized by the function's stack slots) is reserved on the private
+/// frame at function entry and released before every return by freeing the
+/// shared frame (which, being empty, shrinks the private frame and actually
+/// releases the memory).
+///
+/// The reserve/free instructions can only encode power-of-two amounts, so one
+/// instruction per set bit of the frame size is emitted.
+///
+/// Must run before [`insert_ref_distances`] so in-flight operands crossing the
+/// inserted instructions get correct distances. The reserve is placed after the
+/// entry block's parameter-echo prefix: the function's arguments arrive at the
+/// first executed instruction, and a reserve must never have operands delivered
+/// to it.
+fn insert_frame_limits(cfg: &mut VCodeCFG<MInst>, frame_bytes: u32) {
+    if frame_bytes == 0 {
+        return;
+    }
+    assert!(
+        frame_bytes < (1 << 16),
+        "Stack frame too large: {frame_bytes} bytes"
+    );
+    let pows: Vec<u16> = (0..16u16).filter(|k| frame_bytes & (1 << k) != 0).collect();
+
+    // Reserve at entry, after the leading Args/Echo/Discard parameter handling.
+    let entry_bb = cfg.graph.root_weight_mut();
+    let mut pos = 0;
+    while pos < entry_bb.inst.len()
+        && matches!(
+            entry_bb.inst[pos],
+            MInst::Args { .. } | MInst::Echo { .. } | MInst::Discard { .. }
+        )
+    {
+        pos += 1;
+    }
+    for k in pows.iter() {
+        entry_bb.inst.insert(
+            pos,
+            MInst::StackAdjust {
+                reserve: true,
+                amount_pow2: *k,
+            },
+        );
+        pos += 1;
+    }
+
+    // Free directly before every return.
+    for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
+        if let Some(ret_idx) = bb.inst.iter().position(|i| matches!(i, MInst::Ret { .. })) {
+            for (i, k) in pows.iter().enumerate() {
+                bb.inst.insert(
+                    ret_idx + i,
+                    MInst::StackAdjust {
+                        reserve: false,
+                        amount_pow2: *k,
+                    },
+                );
+            }
+        }
+    }
+
+    log::trace!("VCodeCFG: {cfg:?}");
+}
+
 /// Replaces the all uses of the `find` register with the `replace` register
 fn replace_all_uses(bb: &mut VCodeBB<MInst>, find: Reg, replace: Reg) {
     while replace_first_use(bb, find, replace) {}
@@ -832,8 +897,9 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                                 .insert(bb.inst.len() - inst_idx, MInst::Echo { rds, rss });
                             continue 'a;
                         }
-                        MInst::Const { rd, .. } if ref_dists[&0] > 0 => {
-                            // Consumer is not directly after the const, use echo to bridge the gap
+                        MInst::Const { rd, .. } | MInst::LoadStack { rd, .. } | MInst::SAddr { rd, .. } if ref_dists[&0] > 0 => {
+                            // Consumer is not directly after the instruction which outputs only to next.
+                            // Use echo to bridge the gap
                             let rd = rd.to_reg();
                             let fresh = new_vreg();
                             replace_all_uses(bb, rd, fresh);
@@ -1377,9 +1443,15 @@ fn resolve_instruction_types(
 
                     assert!(rd_t.is_int());
 
-                    *ty = rd_t;
+                    // A constant whose consumers never constrain its signedness
+                    // (e.g. one only stored to memory) defaults to unsigned:
+                    // only the raw bits matter to such consumers.
+                    *ty = match rd_t {
+                        IsaType::Integer(size) => IsaType::new_known_int(size, false),
+                        t => t,
+                    };
                 }
-                MInst::Load { ty, rd, .. } => {
+                MInst::Load { ty, rd, .. } | MInst::LoadStack { ty, rd, .. } => {
                     let rd_t = type_map.get(rd.to_reg());
 
                     if rd_t.is_known() {
@@ -1629,6 +1701,23 @@ impl TargetIsa for ScryBackend {
         });
 
         log::trace!("VCodeCFG: {cfg:?}");
+
+        // The stack frame size: the end of the stack slot region (slot offsets
+        // are assigned by `Callee::new`, which the stack access lowerings also
+        // use), rounded up so the frame stays 16-aligned. The frame base is
+        // 16-aligned by ABI guarantee, and keeping every frame's size aligned
+        // preserves that guarantee for callees (a callee's frame base is this
+        // frame's split point).
+        let frame_bytes = func
+            .sized_stack_slots
+            .iter()
+            .zip(vcode.abi.sized_stackslot_offsets().iter())
+            .map(|((_, data), (_, offset))| offset + data.size)
+            .max()
+            .unwrap_or(0)
+            .next_multiple_of(16);
+
+        insert_frame_limits(&mut cfg, frame_bytes);
 
         resolve_instruction_types(&mut cfg, reg_type, vcode.abi.signature());
         insert_duplicates(&mut cfg, &mut new_vreg);

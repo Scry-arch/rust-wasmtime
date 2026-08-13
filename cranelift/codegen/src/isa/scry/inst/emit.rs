@@ -166,6 +166,33 @@ impl MachInstEmit for MInst {
                 ty.get_known().unwrap().try_into().unwrap(),
                 out_ref(*out),
             )],
+            StoreStack { idx, .. } => vec![Instruction::StoreStack(
+                Bits::try_from(*idx as i32).expect("Stack index out of bounds"),
+            )],
+            LoadStack { ty, idx, .. } => vec![Instruction::LoadStack(
+                ty.get_known().unwrap().try_into().unwrap(),
+                Bits::try_from(*idx as i32).expect("Stack index out of bounds"),
+            )],
+            SAddr {
+                scale_pow2, idx, ..
+            } => vec![Instruction::StackAddr(
+                Bits::try_from(*scale_pow2 as i32).expect("Scale out of bounds"),
+                Bits::try_from(*idx as i32).expect("Stack index out of bounds"),
+            )],
+            StackAdjust {
+                reserve,
+                amount_pow2,
+            } => {
+                // Reserves target the private frame (which claims fresh memory);
+                // frees target the shared frame, which releases the memory that
+                // freeing the private frame alone would only merge into the
+                // shared frame.
+                vec![Instruction::StackRes(
+                    *reserve,
+                    Bits::try_from(*amount_pow2 as i32).expect("Stack amount out of bounds"),
+                    *reserve,
+                )]
+            }
             Cast { out, ty, .. } => vec![Instruction::Cast(
                 ty.get_known()
                     .unwrap_or(scry_isa::Type::Uint(ty.size_pow2()))

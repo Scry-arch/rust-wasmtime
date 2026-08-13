@@ -56,7 +56,13 @@ impl MachInst for MInst {
     fn get_operands(&mut self, collector: &mut impl OperandVisitor) {
         use MInst::*;
         match self {
-            Nop | Ret { .. } | ImmJump { .. } => (),
+            Nop | Ret { .. } | ImmJump { .. } | StackAdjust { .. } => (),
+            StoreStack { rs, .. } => {
+                collector.reg_use(rs);
+            }
+            SAddr { rd, .. } | LoadStack { rd, .. } => {
+                collector.reg_def(rd);
+            }
             Discard { rss } => {
                 rss.iter_mut().for_each(|r| {
                     collector.reg_use(r);
@@ -181,6 +187,10 @@ impl MachInst for MInst {
             | Const { .. }
             | Store { .. }
             | Load { .. }
+            | StoreStack { .. }
+            | LoadStack { .. }
+            | SAddr { .. }
+            | StackAdjust { .. }
             | Call { .. }
             | CallArgs { .. }
             | Duplicate { .. }
@@ -463,6 +473,45 @@ impl MInst {
                 "Store",
                 ["rs:".into(), reg_name(*rs), "rd:".into(), reg_name(*rd)].into_iter(),
             ),
+            StoreStack { rs, idx } => join(
+                "StoreStack",
+                ["rs:".into(), reg_name(*rs), format!("idx: {idx}")].into_iter(),
+            ),
+            LoadStack { ty, rd, idx } => join(
+                "LoadStack",
+                [
+                    format!("ty: {ty:?}"),
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    format!("idx: {idx}"),
+                ]
+                .into_iter(),
+            ),
+            SAddr {
+                rd,
+                scale_pow2,
+                idx,
+            } => join(
+                "SAddr",
+                [
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    format!("scale_pow2: {scale_pow2}"),
+                    format!("idx: {idx}"),
+                ]
+                .into_iter(),
+            ),
+            StackAdjust {
+                reserve,
+                amount_pow2,
+            } => join(
+                "StackAdjust",
+                [
+                    format!("reserve: {reserve}"),
+                    format!("amount_pow2: {amount_pow2}"),
+                ]
+                .into_iter(),
+            ),
             Load { ty, rd, rs, out } => join(
                 "Load",
                 [
@@ -606,9 +655,18 @@ impl MInst {
     pub(crate) fn name(self: reference([Self])) -> impl Iterator<Item = reference([Reg])> {
         use MInst::*;
         match self {
-            Nop | Ret { .. } | Args { .. } | Const { .. } | JumpIssue { .. } | ImmJump { .. } => {
+            Nop
+            | Ret { .. }
+            | Args { .. }
+            | Const { .. }
+            | JumpIssue { .. }
+            | ImmJump { .. }
+            | LoadStack { .. }
+            | SAddr { .. }
+            | StackAdjust { .. } => {
                 vec![]
             }
+            StoreStack { rs, .. } => vec![rs],
             Reorder { rs1, rs2, .. } => {
                 vec![rs1, rs2]
             }
@@ -672,6 +730,8 @@ impl MInst {
             | Rets { .. }
             | Ret { .. }
             | Store { .. }
+            | StoreStack { .. }
+            | StackAdjust { .. }
             | JumpTrigger { .. }
             | ImmJump { .. }
             | Call { .. }
@@ -702,6 +762,8 @@ impl MInst {
             Alu1 { rd, .. }
             | UnaryAlu { rd, .. }
             | Load { rd, .. }
+            | LoadStack { rd, .. }
+            | SAddr { rd, .. }
             | BinaryAlu { rd, .. }
             | IntCmp { rd, .. }
             | Resize { rd, .. }
@@ -752,6 +814,10 @@ impl MInst {
             | Duplicate { .. }
             | Store { .. }
             | Load { .. }
+            | StoreStack { .. }
+            | LoadStack { .. }
+            | SAddr { .. }
+            | StackAdjust { .. }
             | Cast { .. }
             | JumpIssue { .. }
             | BranchIssue { .. }
@@ -795,6 +861,10 @@ impl MInst {
             | Duplicate { .. }
             | Store { .. }
             | Load { .. }
+            | StoreStack { .. }
+            | LoadStack { .. }
+            | SAddr { .. }
+            | StackAdjust { .. }
             | Cast { .. }
             | JumpIssue { .. }
             | BranchIssue { .. }

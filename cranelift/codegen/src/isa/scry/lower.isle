@@ -48,6 +48,24 @@
     (st_rrfo val dst flags off)
 )
 
+;; Accesses whose address comes directly from a stack_addr use the dedicated
+;; stack instructions (st.s/ld.s) where possible instead of materializing the
+;; address.
+(rule 10
+    (lower (store flags val (stack_addr _ ss slot_off) off))
+    (lower_stack_store val ss slot_off off)
+)
+
+(rule 10
+    (lower (load ty flags (stack_addr _ ss slot_off) off))
+    (lower_stack_load ty ss slot_off off)
+)
+
+(rule
+    (lower (stack_addr ty ss off))
+    (lower_stack_addr ss off)
+)
+
 (rule
     (lower (call_indirect sig_ref ptr args))
     (call_ind_srv sig_ref ptr args)

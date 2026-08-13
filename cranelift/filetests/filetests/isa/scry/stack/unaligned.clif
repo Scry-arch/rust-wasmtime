@@ -1,0 +1,64 @@
+test interpret
+test run
+target scry32
+
+; The Scry load-stack/store-stack instructions address memory as scale*idx,
+; which is always scalar-aligned. These tests use slot offsets that are NOT
+; a multiple of the access size, so a lowering that pattern-matches
+; stack_addr + load/store into ld.s/st.s must fall back (e.g. saddr + plain
+; ld/st) when the offset cannot be expressed as a scaled index.
+
+function %i32_at_1(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+1
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0+1
+    v3 = load.i32 notrap v2
+    return v3
+}
+; run: %i32_at_1(0) == 0
+; run: %i32_at_1(42) == 42
+; run: %i32_at_1(4294967295) == 4294967295
+
+function %i32_at_2(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+2
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0+2
+    v3 = load.i32 notrap v2
+    return v3
+}
+; run: %i32_at_2(-1) == -1
+; run: %i32_at_2(100) == 100
+
+function %i16_at_1(i16 sext) -> i16 sext {
+    ss0 = explicit_slot 4
+block0(v0: i16):
+    v1 = stack_addr.i32 ss0+1
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0+1
+    v3 = load.i16 notrap v2
+    return v3
+}
+; run: %i16_at_1(-100) == -100
+; run: %i16_at_1(32767) == 32767
+
+; Unaligned accesses at different offsets must still be independent.
+function %unaligned_no_clobber(i16 uext, i16 uext) -> i16 uext {
+    ss0 = explicit_slot 8
+block0(v0: i16, v1: i16):
+    v2 = stack_addr.i32 ss0+1
+    store notrap v0, v2
+    v3 = stack_addr.i32 ss0+3
+    store notrap v1, v3
+    v4 = stack_addr.i32 ss0+1
+    v5 = load.i16 notrap v4
+    v6 = stack_addr.i32 ss0+3
+    v7 = load.i16 notrap v6
+    v8 = isub v5, v7
+    return v8
+}
+; run: %unaligned_no_clobber(100, 1) == 99
+; run: %unaligned_no_clobber(1, 100) == -99

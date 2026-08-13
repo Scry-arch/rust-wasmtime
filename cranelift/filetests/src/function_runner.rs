@@ -426,7 +426,7 @@ impl<'a> Trampoline<'a> {
 
         COMPILED_TEST_FILE.set(compiled as *const _);
         unsafe {
-            self.call_raw(trampoline_ptr, function_ptr, arguments_address);
+            self.call_raw(trampoline_ptr, function_ptr, arguments_address, values.0.len());
         }
         COMPILED_TEST_FILE.set(std::ptr::null());
 
@@ -438,6 +438,7 @@ impl<'a> Trampoline<'a> {
         trampoline_ptr: *const u8,
         function_ptr: *const u8,
         arguments_address: *mut u128,
+        arguments_len: usize,
     ) {
         match self.module.isa().triple().architecture {
             // For the pulley target this is pulley bytecode, not machine code,
@@ -462,28 +463,78 @@ impl<'a> Trampoline<'a> {
             // For Scry, run on the simulator
             Architecture::Scry(_) => {
                 use scry_sim::{
-                    Block, CallFrameState, ExecState, Executor, HostMemory, OperandList, Scalar,
-                    StackFrame, Value,
+                    Block, BlockedMemory, CallFrameState, ExecState, Executor, MemError, Memory,
+                    OperandList, Scalar, StackFrame, Value,
                 };
 
-                // Ready inputs
+                /// Presents a 32-bit guest address space for the simulated
+                /// program's data, while code (in the 64-bit
+                /// host addresses) is fetched untranslated.
+                ///
+                /// Mapping the data (stack and argument buffer) into low guest
+                /// addresses keeps all data pointers representable in scry32's
+                /// 4-byte pointer type, so addresses survive being stored to
+                /// and reloaded from memory. It also makes the stack frame
+                /// base an address of our choosing, satisfying the Scry ABI's
+                /// guarantee of a 16-aligned frame base independently of host
+                /// allocation alignment.
+                struct GuestMemory {
+                    guest: BlockedMemory,
+                }
+
+                impl Memory for GuestMemory {
+                    fn read_raw(&mut self, addr: usize) -> Result<u8, MemError> {
+                        if addr <= u32::MAX as usize {
+                            self.guest.read_raw(addr)
+                        } else {
+                            Ok(unsafe { *(addr as *const u8) })
+                        }
+                    }
+
+                    fn write_raw(&mut self, addr: usize, data: u8) -> Result<(), MemError> {
+                        if addr <= u32::MAX as usize {
+                            self.guest.write_raw(addr, data)
+                        } else {
+                            unsafe { *(addr as *mut u8) = data };
+                            Ok(())
+                        }
+                    }
+                }
+
+                /// Guest address of the stack frame base. 16-aligned, per the
+                /// Scry ABI guarantee.
+                const STACK_BASE: usize = 0x1_0000;
+                const STACK_SIZE: usize = 1 << 12;
+                /// Guest address the argument buffer is mapped at.
+                const ARGS_BASE: usize = 0x10_0000;
+
+                let args_size = arguments_len * UnboxedValues::SLOT_SIZE;
+                let args_bytes = unsafe {
+                    std::slice::from_raw_parts(arguments_address as *const u8, args_size)
+                };
+
+                let mut guest = BlockedMemory::empty();
+                guest.add_block(std::iter::repeat(0u8).take(STACK_SIZE), STACK_BASE);
+                guest.add_block(args_bytes.iter().cloned(), ARGS_BASE);
+                let mut mem = GuestMemory { guest };
+
+                // Ready inputs: the function pointer (a host code address) and
+                // the guest address of the argument buffer
                 let mut op_queue = HashMap::new();
                 let fn_ptr = Value::singleton::<u64>(Scalar::from_sized(function_ptr as usize, 8));
-                let ld_ptr =
-                    Value::singleton::<u64>(Scalar::from_sized(arguments_address as usize, 8));
+                let ld_ptr = Value::singleton::<u32>(Scalar::from_sized(ARGS_BASE, 4));
                 op_queue.insert(0, OperandList::new(fn_ptr, vec![ld_ptr]));
 
-                let mut stack_mem = [0u8; 1 << 10]; // 1kB for stack memory
-                let stack_buffer = 1 << 12;
                 let base_stack = StackFrame {
                     block: Block {
-                        address: (&mut stack_mem).as_mut_ptr() as usize,
+                        address: STACK_BASE,
                         size: 0,
                     },
                     base_size: 0,
                 };
                 let original_state = ExecState {
-                    addr_space: 3,
+                    // Data pointers are 4 bytes (2^2): the guest address space
+                    addr_space: 2,
                     address: trampoline_ptr as usize,
                     frame: CallFrameState {
                         ret_addr: 0,
@@ -497,24 +548,35 @@ impl<'a> Trampoline<'a> {
                         op_queue: HashMap::new(),
                         stack: base_stack,
                     }],
-                    stack_buffer,
+                    stack_buffer: STACK_SIZE,
                 };
 
-                let mut hm = HostMemory();
                 let mut res =
-                    Executor::<HostMemory, _>::from_state(&original_state, &mut hm).step(&mut ());
+                    Executor::<GuestMemory, _>::from_state(&original_state, &mut mem).step(&mut ());
 
-                while res.is_ok() {
-                    let exec = res.unwrap();
-                    let state = exec.state();
-
-                    if state.frame_stack.len() == 0 {
-                        // Done
-                        return;
+                loop {
+                    match res {
+                        Ok(exec) => {
+                            if exec.state().frame_stack.len() == 0 {
+                                // Done
+                                break;
+                            }
+                            res = exec.step(&mut ());
+                        }
+                        Err(err) => unreachable!("Error: {:?}", err),
                     }
-                    res = exec.step(&mut ());
                 }
-                unreachable!("Error: {:?}", res.err())
+
+                // Copy the guest argument buffer back so the host sees the
+                // returned values.
+                let args_out = unsafe {
+                    std::slice::from_raw_parts_mut(arguments_address as *mut u8, args_size)
+                };
+                for (i, b) in args_out.iter_mut().enumerate() {
+                    if let Ok(byte) = mem.read_raw(ARGS_BASE + i) {
+                        *b = byte;
+                    }
+                }
             }
 
             // Other targets natively execute this machine code.
