@@ -1,0 +1,66 @@
+test interpret
+test run
+target scry32
+
+; Pointer arithmetic on a stack address: base address + iconst reaches the
+; same memory as stack_addr with an offset.
+function %addr_iadd_offset(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0+4
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss0
+    v3 = iconst.i32 4
+    v4 = iadd v2, v3
+    v5 = load.i32 notrap v4
+    return v5
+}
+; run: %addr_iadd_offset(0) == 0
+; run: %addr_iadd_offset(123) == 123
+
+; The reverse: store through the computed pointer, load via offset stack_addr.
+function %addr_iadd_store(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    v2 = iconst.i32 4
+    v3 = iadd v1, v2
+    store notrap v0, v3
+    v4 = stack_addr.i32 ss0+4
+    v5 = load.i32 notrap v4
+    return v5
+}
+; run: %addr_iadd_store(0) == 0
+; run: %addr_iadd_store(123) == 123
+
+; One address value used three times: two stores and a load.
+function %addr_multi_use(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    store notrap v0, v2
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    return v3
+}
+; run: %addr_multi_use(11, 22) == 22
+; run: %addr_multi_use(22, 11) == 11
+
+; The address itself round-trips through the stack: store a stack address
+; into another slot, load it back, and use it as a pointer. (Addresses fit in
+; 4 bytes: the run harness maps data into a 32-bit guest address space.)
+function %addr_through_memory(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+    ss1 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store notrap v0, v1
+    v2 = stack_addr.i32 ss1
+    store notrap v1, v2
+    v3 = load.i32 notrap v2
+    v4 = load.i32 notrap v3
+    return v4
+}
+; run: %addr_through_memory(0) == 0
+; run: %addr_through_memory(42) == 42
+; run: %addr_through_memory(4294967295) == 4294967295

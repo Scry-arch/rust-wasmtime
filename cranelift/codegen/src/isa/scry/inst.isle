@@ -177,6 +177,39 @@
       (out u16)        ;; Output reference
     )
 
+    ;; Store to the stack frame. The store address is scale*idx from the
+    ;; frame base, where the scale is the size of the stored value.
+    (StoreStack
+      (rs Reg)  ;; value to store
+      (idx u16) ;; Stack index to store at
+    )
+
+    ;; Load from the stack frame. The load address is scale*idx from the
+    ;; frame base, where the scale is the size of the loaded type.
+    (LoadStack
+      (ty IsaType)     ;; Type of loaded value
+      (rd WritableReg) ;; Loaded value
+      (idx u16)        ;; Stack index to load from
+    )
+
+    ;; Address of a stack frame location: frame base + scale*idx. The
+    ;; result is always delivered to the next instruction (the encoding has no
+    ;; output reference) and is typed by the machine as an unsigned integer of
+    ;; its pointer size.
+    (SAddr
+      (rd WritableReg)  ;; Resulting address
+      (scale_pow2 u16)  ;; Power-of-two scale of the indexed unit
+      (idx u16)         ;; Stack index
+    )
+
+    ;; Reserve or free stack frame bytes (rsrv/free). Reserves target the
+    ;; private frame; frees target the shared frame, which releases the memory
+    ;; (freeing the private frame would only merge it into the shared frame).
+    (StackAdjust
+      (reserve bool)    ;; true = reserve, false = free
+      (amount_pow2 u16) ;; 2^amount_pow2 bytes
+    )
+
     (Cast
       (rd WritableReg)
       (ty IsaType)
@@ -363,6 +396,20 @@
 ;; cranelift/codegen/src/isa/scry/inst.isle
 ;; Types like InstOutput and Unit come from the shared prelude built into Cranelift’s ISLE build.
 
+
+;; Materializes the address of a stack slot location (saddr + cast).
+(decl lower_stack_addr (StackSlot Offset32) Reg)
+(extern constructor lower_stack_addr lower_stack_addr)
+
+;; Loads from a stack slot location, using ld.s when the frame offset can be
+;; expressed as a scaled index, and saddr + a plain load otherwise.
+(decl lower_stack_load (Type StackSlot Offset32 Offset32) Reg)
+(extern constructor lower_stack_load lower_stack_load)
+
+;; Stores to a stack slot location, using st.s when the frame offset can be
+;; expressed as a scaled index, and saddr + a plain store otherwise.
+(decl lower_stack_store (Value StackSlot Offset32 Offset32) InstOutput)
+(extern constructor lower_stack_store lower_stack_store)
 
 ;; Emits return instruction
 (decl emit_ret (ValueSlice) InstOutput)

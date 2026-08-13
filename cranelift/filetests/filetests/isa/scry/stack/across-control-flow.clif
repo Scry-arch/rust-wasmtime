@@ -1,0 +1,115 @@
+test interpret
+test run
+target scry32
+
+; A slot written in different branch arms is read at the merge point.
+; (The stored value travels as a block parameter: the backend does not support
+; cross-block SSA uses that are not block parameters.)
+function %store_in_branches(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    brif v0, block1(v1), block2
+
+block1(v10: i32):
+    v2 = stack_addr.i32 ss0
+    store notrap v10, v2
+    jump block3
+
+block2:
+    v3 = iconst.i32 7
+    v4 = stack_addr.i32 ss0
+    store notrap v3, v4
+    jump block3
+
+block3:
+    v5 = stack_addr.i32 ss0
+    v6 = load.i32 notrap v5
+    return v6
+}
+; run: %store_in_branches(1, 42) == 42
+; run: %store_in_branches(0, 42) == 7
+; run: %store_in_branches(1, -5) == -5
+
+; A slot written before a diamond is read in both arms.
+function %read_in_both_arms(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    store notrap v1, v2
+    brif v0, block1, block2
+
+block1:
+    v3 = stack_addr.i32 ss0
+    v4 = load.i32 notrap v3
+    v5 = iconst.i32 1
+    v6 = iadd v4, v5
+    jump block3(v6)
+
+block2:
+    v7 = stack_addr.i32 ss0
+    v8 = load.i32 notrap v7
+    v9 = iconst.i32 2
+    v10 = iadd v8, v9
+    jump block3(v10)
+
+block3(v11: i32):
+    return v11
+}
+; run: %read_in_both_arms(1, 10) == 11
+; run: %read_in_both_arms(0, 10) == 12
+; run: %read_in_both_arms(1, -1) == 0
+
+; A stack address computed in the entry block and carried as a block
+; parameter into the blocks that use it.
+function %addr_as_block_param(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    store notrap v1, v2
+    brif v0, block1(v2), block2(v2)
+
+block1(v3: i32):
+    v4 = load.i32 notrap v3
+    v5 = iconst.i32 1
+    v6 = iadd v4, v5
+    jump block3(v6)
+
+block2(v7: i32):
+    v8 = load.i32 notrap v7
+    v9 = iconst.i32 2
+    v10 = iadd v8, v9
+    jump block3(v10)
+
+block3(v11: i32):
+    return v11
+}
+; run: %addr_as_block_param(1, 10) == 11
+; run: %addr_as_block_param(0, 10) == 12
+
+; A slot used as a loop accumulator: each iteration loads, adds, stores back.
+; Computes n + (n-1) + ... + 1. Only valid for n >= 1.
+function %loop_accum(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    v1 = iconst.i32 0
+    v2 = stack_addr.i32 ss0
+    store notrap v1, v2
+    jump block1(v0)
+
+block1(v3: i32):
+    v4 = stack_addr.i32 ss0
+    v5 = load.i32 notrap v4
+    v6 = iadd v5, v3
+    store notrap v6, v4
+    v7 = iconst.i32 1
+    v8 = isub v3, v7
+    brif v8, block1(v8), block2
+
+block2:
+    v9 = stack_addr.i32 ss0
+    v10 = load.i32 notrap v9
+    return v10
+}
+; run: %loop_accum(1) == 1
+; run: %loop_accum(5) == 15
+; run: %loop_accum(10) == 55
