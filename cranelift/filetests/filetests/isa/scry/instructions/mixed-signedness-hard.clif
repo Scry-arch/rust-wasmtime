@@ -1,0 +1,177 @@
+test interpret
+test run
+target scry32
+
+; Signedness conflicts in tag-SENSITIVE contexts: comparisons, extends,
+; overflow arithmetic and plain moves. Unlike wrapping add/sub (see
+; mixed-signedness.clif), these operations interpret their operands'
+; signedness, so a conflicting operand cannot simply be computed with the
+; effective input type -- it must be re-tagged (same-size cast) before use.
+
+; ---- Comparisons ----
+
+; A signed comparison of unsigned-annotated values compares their bits as
+; signed.
+function %slt_of_unsigned(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp slt v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %slt_of_unsigned(1, 2) == 1
+; run: %slt_of_unsigned(2, 1) == 0
+; run: %slt_of_unsigned(4294967295, 1) == 1
+; run: %slt_of_unsigned(1, 4294967295) == 0
+
+; An unsigned comparison of signed-annotated values compares their bits as
+; unsigned.
+function %ult_of_signed(i32 sext, i32 sext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp ult v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %ult_of_signed(-1, 1) == 0
+; run: %ult_of_signed(1, -1) == 1
+; run: %ult_of_signed(5, 9) == 1
+
+; Only one comparison operand conflicts.
+function %slt_mixed(i32 sext, i8 uext) -> i32 uext {
+block0(v0: i32, v1: i8):
+    v2 = uextend.i32 v1
+    v3 = icmp slt v0, v2
+    v4 = uextend.i32 v3
+    return v4
+}
+; run: %slt_mixed(-1, 200) == 1
+; run: %slt_mixed(300, 200) == 0
+; run: %slt_mixed(100, 200) == 1
+
+; Equality is signedness-insensitive (bits only), but its operand
+; unification currently conflicts all the same.
+function %eq_mixed(i32 sext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp eq v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %eq_mixed(-1, 4294967295) == 1
+; run: %eq_mixed(1, 2) == 0
+; run: %eq_mixed(-5, 4294967291) == 1
+
+; ---- Extends ----
+
+; Sign-extending an unsigned-annotated value extends its sign bit.
+function %sext_of_unsigned(i8 uext) -> i32 sext {
+block0(v0: i8):
+    v1 = sextend.i32 v0
+    return v1
+}
+; run: %sext_of_unsigned(200) == -56
+; run: %sext_of_unsigned(127) == 127
+; run: %sext_of_unsigned(255) == -1
+
+; Zero-extending a signed-annotated value extends with zeros.
+function %uext_of_signed(i8 sext) -> i32 uext {
+block0(v0: i8):
+    v1 = uextend.i32 v0
+    return v1
+}
+; run: %uext_of_signed(-1) == 255
+; run: %uext_of_signed(-128) == 128
+; run: %uext_of_signed(100) == 100
+
+; The same at i16, with sign-bit-set values.
+function %sext_of_u16(i16 uext) -> i32 sext {
+block0(v0: i16):
+    v1 = sextend.i32 v0
+    return v1
+}
+; run: %sext_of_u16(40000) == -25536
+; run: %sext_of_u16(100) == 100
+; run: %sext_of_u16(65535) == -1
+
+; ---- Two-output ALU (DoubleAlu) ----
+
+; sadd_overflow of unsigned-annotated values: the flag reflects SIGNED
+; overflow of the bits (not the carry).
+function %saddof_of_unsigned(i32 uext, i32 uext) -> i32 sext, i8 uext {
+block0(v0: i32, v1: i32):
+    v2, v3 = sadd_overflow v0, v1
+    return v2, v3
+}
+; run: %saddof_of_unsigned(1, 2) == [3, 0]
+; run: %saddof_of_unsigned(2147483647, 1) == [-2147483648, 1]
+; run: %saddof_of_unsigned(4294967295, 1) == [0, 0]
+; run: %saddof_of_unsigned(2147483648, 2147483648) == [0, 1]
+
+; Only one sadd_overflow operand conflicts.
+function %saddof_mixed(i32 sext, i8 uext) -> i32 sext, i8 uext {
+block0(v0: i32, v1: i8):
+    v2 = uextend.i32 v1
+    v3, v4 = sadd_overflow v0, v2
+    return v3, v4
+}
+; run: %saddof_mixed(1, 2) == [3, 0]
+; run: %saddof_mixed(2147483647, 1) == [-2147483648, 1]
+; run: %saddof_mixed(-1, 255) == [254, 0]
+; run: %saddof_mixed(-256, 255) == [-1, 0]
+
+; ---- Moves (ABI attribute vs consumer through the parameter echo) ----
+
+; A uext-annotated parameter returned through a sext-annotated return: the
+; bits pass through unchanged, but the conflicting demands meet in the
+; parameter's move chain.
+function %uext_returned_sext(i32 uext) -> i32 sext {
+block0(v0: i32):
+    return v0
+}
+; run: %uext_returned_sext(0) == 0
+; run: %uext_returned_sext(-5) == -5
+; run: %uext_returned_sext(4294967295) == -1
+
+function %sext_returned_uext(i32 sext) -> i32 uext {
+block0(v0: i32):
+    return v0
+}
+; run: %sext_returned_uext(0) == 0
+; run: %sext_returned_uext(-1) == 4294967295
+; run: %sext_returned_uext(123) == 123
+
+; Computes a + (b < 0), with a signed test on the sext parameter: the result
+; observably depends on the second argument arriving signed-tagged.
+function %add_sign_bit(i32 uext, i32 sext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = iconst.i32 0
+    v3 = icmp slt v1, v2
+    v4 = uextend.i32 v3
+    v5 = iadd v0, v4
+    return v5
+}
+; run: %add_sign_bit(5, -1) == 6
+; run: %add_sign_bit(5, 1) == 5
+
+; The same value passed as both arguments of one call whose parameters have
+; conflicting annotations: the uext slot must keep the unsigned tag while
+; the sext slot is re-tagged. (A wrong or missing re-tag turns the callee's
+; signed test into an unsigned one and changes the result.)
+function %same_value_both_ways(i32 uext) -> i32 uext {
+    fn0 = %add_sign_bit(i32 uext, i32 sext) -> i32 uext
+block0(v0: i32):
+    v1 = call fn0(v0, v0)
+    return v1
+}
+; run: %same_value_both_ways(0) == 0
+; run: %same_value_both_ways(5) == 5
+; run: %same_value_both_ways(4294967295) == 0
+
+; The same register as both operands of a comparison that conflicts with its
+; type: both uses need a re-tag.
+function %slt_self(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = icmp slt v0, v0
+    v2 = uextend.i32 v1
+    return v2
+}
+; run: %slt_self(0) == 0
+; run: %slt_self(4294967295) == 0
