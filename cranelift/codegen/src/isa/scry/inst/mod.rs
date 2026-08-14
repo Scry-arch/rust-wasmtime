@@ -761,6 +761,20 @@ impl MInst {
     /// values are emitted by the machine and therefore arrive at a shared consumer.
     /// Ordering passes rely on this.
     pub(crate) fn get_defs(&self) -> impl Iterator<Item = Reg> + use<> {
+        self.get_def_wregs()
+            .map(|wr| wr.to_reg())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[duplicate::duplicate_item[
+        name            reference(type) iterate;
+        [get_def_wregs] [& type]        [iter];
+        [get_defs_mut]  [&mut type]     [iter_mut];
+    ]]
+    /// Returns the writable registers defined by this instruction, in
+    /// physical production order (see [Self::get_defs]).
+    pub(crate) fn name(self: reference([Self])) -> impl Iterator<Item = reference([WritableReg])> {
         use MInst::*;
         match self {
             Nop
@@ -776,32 +790,35 @@ impl MInst {
             | BranchIssue { .. }
             | Discard { .. } => vec![],
             Echo { rds, .. } | EchoLong { rds, .. } | Alu2 { rds, .. } => {
-                rds.iter().map(|wr| wr.to_reg()).collect::<Vec<_>>()
+                rds.iterate().collect::<Vec<_>>()
             }
             Duplicate { rd1, rd2, .. } | EchoSplit { rd1, rd2, .. } => {
-                vec![rd1.to_reg(), rd2.to_reg()]
+                vec![rd1, rd2]
             }
             DoubleAlu { rdl, rdh, .. } => {
                 // Physical production order: when both outputs go to the same
                 // consumer, the machine delivers the low output before the
                 // high one (the resolved Alu2 uses FirstLow in that case).
-                vec![rdl.to_reg(), rdh.to_reg()]
+                vec![rdl, rdh]
             }
             Reorder { rd1, rd2, .. } => {
                 // Physical production order: a reorder is an echo with both outputs on
                 // the same target, which emits its second input before its first.
-                vec![rd2.to_reg(), rd1.to_reg()]
+                vec![rd2, rd1]
             }
             EchoChain {
                 rd1, rd2, rd_chain, ..
             } => {
                 // Physical production order: the echo emits its second input before its
                 // first, and the chained values are produced by the following echo.
-                let mut defs = vec![rd2.to_reg(), rd1.to_reg()];
-                defs.extend(rd_chain.iter().map(|r| r.to_reg()));
+                let mut defs = vec![rd2, rd1];
+                defs.extend(rd_chain.iterate());
                 defs
             }
-            Args { args } => args.iter().map(|a| a.vreg.to_reg()).collect(),
+            Args { args } => args
+                .iterate()
+                .map(|a| reference([(a.vreg)]))
+                .collect::<Vec<_>>(),
             Alu1 { rd, .. }
             | UnaryAlu { rd, .. }
             | Load { rd, .. }
@@ -813,9 +830,12 @@ impl MInst {
             | Resize { rd, .. }
             | Cast { rd, .. }
             | Const { rd, .. } => {
-                vec![rd.to_reg()]
+                vec![rd]
             }
-            CallArgs { rets, .. } => rets.iter().map(|p| p.vreg.to_reg()).collect(),
+            CallArgs { rets, .. } => rets
+                .iterate()
+                .map(|p| reference([(p.vreg)]))
+                .collect::<Vec<_>>(),
         }
         .into_iter()
     }
