@@ -24,7 +24,7 @@ pub use self::emit::*;
 use crate::isa::scry::abi::ScryMachineDeps;
 
 pub use crate::isa::scry::lower::isle::generated_code::{
-    BinaryAluOp, MInst, ResizeVariant, UnaryAluOp,
+    BinaryAluOp, DoubleAluOp, MInst, ResizeVariant, UnaryAluOp,
 };
 use crate::opts::{I8, I16, I32, I64};
 
@@ -82,6 +82,14 @@ impl MachInst for MInst {
             }
             BinaryAlu { rd, rs1, rs2, .. } | IntCmp { rd, rs1, rs2, .. } => {
                 collector.reg_def(rd);
+                collector.reg_use(rs1);
+                collector.reg_use(rs2);
+            }
+            DoubleAlu {
+                rdl, rdh, rs1, rs2, ..
+            } => {
+                collector.reg_def(rdl);
+                collector.reg_def(rdh);
                 collector.reg_use(rs1);
                 collector.reg_use(rs2);
             }
@@ -203,6 +211,7 @@ impl MachInst for MInst {
             | Alu1 { .. }
             | Alu2 { .. }
             | BinaryAlu { .. }
+            | DoubleAlu { .. }
             | UnaryAlu { .. }
             | IntCmp { .. }
             | Resize { .. }
@@ -281,13 +290,12 @@ impl MachInst for MInst {
     fn worst_case_size() -> CodeOffset {
         2
     }
-    
-    fn worst_case_island_growth() -> CodeOffset
-    {
+
+    fn worst_case_island_growth() -> CodeOffset {
         // TODO: Copied from RISC-V target with no analysis
         128
     }
-    
+
     fn function_alignment() -> FunctionAlignment {
         FunctionAlignment {
             minimum: 2,
@@ -565,6 +573,27 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
+            DoubleAlu {
+                op,
+                rdl,
+                rdh,
+                rs1,
+                rs2,
+            } => join(
+                "DoubleAlu",
+                [
+                    format!("op: {op:?}"),
+                    "rdl:".into(),
+                    wreg_name(*rdl),
+                    "rdh:".into(),
+                    wreg_name(*rdh),
+                    "rs1:".into(),
+                    reg_name(*rs1),
+                    "rs2:".into(),
+                    reg_name(*rs2),
+                ]
+                .into_iter(),
+            ),
             UnaryAlu { op, rd, rs } => join(
                 "UnaryAlu",
                 [
@@ -693,7 +722,9 @@ impl MInst {
                 uses
             }
             EchoSplit { rs1, rs2, .. } => vec![rs1, rs2],
-            BinaryAlu { rs1, rs2, .. } | IntCmp { rs1, rs2, .. } => vec![rs1, rs2],
+            BinaryAlu { rs1, rs2, .. } | DoubleAlu { rs1, rs2, .. } | IntCmp { rs1, rs2, .. } => {
+                vec![rs1, rs2]
+            }
 
             UnaryAlu { rs, .. }
             | Duplicate { rs, .. }
@@ -749,6 +780,12 @@ impl MInst {
             }
             Duplicate { rd1, rd2, .. } | EchoSplit { rd1, rd2, .. } => {
                 vec![rd1.to_reg(), rd2.to_reg()]
+            }
+            DoubleAlu { rdl, rdh, .. } => {
+                // Physical production order: when both outputs go to the same
+                // consumer, the machine delivers the low output before the
+                // high one (the resolved Alu2 uses FirstLow in that case).
+                vec![rdl.to_reg(), rdh.to_reg()]
             }
             Reorder { rd1, rd2, .. } => {
                 // Physical production order: a reorder is an echo with both outputs on
@@ -834,7 +871,7 @@ impl MInst {
             | EchoLong { .. }
             | EchoSplit { .. }
             | EchoChain { .. } => 1,
-            ImmJump { .. } => unreachable!(),
+            DoubleAlu { .. } | ImmJump { .. } => unreachable!(),
         }
     }
 
@@ -885,7 +922,12 @@ impl MInst {
             | EchoSplit { .. }
             | EchoChain { .. } => 1,
             // Pseudo-instructions that must have been eliminated by now.
-            Rets { .. } | ImmJump { .. } | IntCmp { .. } | BinaryAlu { .. } | Resize { .. } => {
+            Rets { .. }
+            | ImmJump { .. }
+            | IntCmp { .. }
+            | BinaryAlu { .. }
+            | DoubleAlu { .. }
+            | Resize { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
         }

@@ -144,7 +144,10 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     }
     fn lower_error(&mut self, arg0: Inst) -> InstOutput {
         let (ty, instr_data) = self.inst_data_value(arg0);
-        unreachable!("No valid lowering rule for instruction: {:?}, {:?}", ty, instr_data);
+        unreachable!(
+            "No valid lowering rule for instruction: {:?}, {:?}",
+            ty, instr_data
+        );
     }
 
     /// Catches any branch instruction with no lowering rule. Throws relevant error
@@ -179,7 +182,13 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
         self.emit_stack_addr(frame_offset)
     }
 
-    fn lower_stack_load(&mut self, ty: Type, ss: StackSlot, slot_off: Offset32, off: Offset32) -> Reg {
+    fn lower_stack_load(
+        &mut self,
+        ty: Type,
+        ss: StackSlot,
+        slot_off: Offset32,
+        off: Offset32,
+    ) -> Reg {
         let frame_offset = self.stack_frame_offset(ss, slot_off, off);
         let rd = self.lower_ctx.alloc_tmp(ty).only_reg().unwrap();
         match access_index(frame_offset, ty.bytes()) {

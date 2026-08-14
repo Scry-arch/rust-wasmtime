@@ -5,7 +5,7 @@ use crate::ir::{self};
 use crate::isa::scry::inst::*;
 use crate::isa::scry::lower::isle::generated_code::MInst;
 use cranelift_control::ControlPlane;
-use scry_isa::{AluVariant, Bits, CallVariant, Instruction};
+use scry_isa::{Alu2OutputVariant, AluVariant, Bits, CallVariant, Instruction};
 
 pub struct EmitInfo {
     #[expect(dead_code, reason = "may want to be used in the future")]
@@ -87,6 +87,7 @@ impl MachInstEmit for MInst {
             | ImmJump { .. }
             | IntCmp { .. }
             | BinaryAlu { .. }
+            | DoubleAlu { .. }
             | Resize { .. }
             | Echo { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
@@ -105,11 +106,24 @@ impl MachInstEmit for MInst {
             Alu2 {
                 var, out_var, outs, ..
             } => {
-                assert_eq!(outs.len(), 1);
+                // The encoding has a single offset field. A single output uses
+                // it directly (with the stored Low/High variant selecting
+                // which machine output survives). For two outputs, either
+                // both share the offset (FirstLow: delivered value first,
+                // matching get_defs order) or one goes to the next
+                // instruction and the other to the offset (NextLow/NextHigh).
+                // insert_ref_distances guarantees one of these encodings fits.
+                let (out_var, offset) = match outs.as_slice() {
+                    [o] => (*out_var, *o),
+                    [lo, hi] if lo == hi => (Alu2OutputVariant::FirstLow, *lo),
+                    [0, hi] => (Alu2OutputVariant::NextLow, *hi),
+                    [lo, 0] => (Alu2OutputVariant::NextHigh, *lo),
+                    _ => unreachable!("Unencodable two-output references: {outs:?}"),
+                };
                 vec![Instruction::Alu2(
-                    *var,
-                    *out_var,
-                    Bits::try_from(outs[0] as i32).unwrap(),
+                    var.clone(),
+                    out_var,
+                    Bits::try_from(offset as i32).unwrap(),
                 )]
             }
             UnaryAlu { .. } => {

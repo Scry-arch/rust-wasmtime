@@ -24,6 +24,11 @@
 )
 
 (rule
+    (lower (sadd_overflow ty lhs rhs))
+    (sadd_overflow_rrr ty lhs rhs)
+)
+
+(rule
     (lower (icmp ty cc lhs rhs))
     (icmp_tcrrr ty cc lhs rhs)
 )
