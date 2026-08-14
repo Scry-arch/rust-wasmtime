@@ -1157,7 +1157,36 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
         }
     }
 
-    // Resolve instruction types in each BB
+    // The fixpoint runs in two phases. The first propagates only hard
+    // constraints (ABI attributes, extends, comparisons, ...). The second
+    // additionally enables the best-effort BinaryAlu unification, which is
+    // only a preference: wrapping add/sub accepts mixed-signedness operands
+    // (see the BinaryAlu arm). Running the preference only after every hard
+    // constraint has settled keeps the result order-independent: the
+    // unification can never commit a signedness that a hard constraint would
+    // later contradict.
+    type_analysis_phase(cfg, func_sig, &reg_blocks, &mut type_map, false);
+    type_analysis_phase(cfg, func_sig, &reg_blocks, &mut type_map, true);
+
+    log::trace!("Resolved types: {type_map:?}");
+
+    type_map
+}
+
+/// One phase of the [type_analysis] fixpoint: analyzes every block, and
+/// re-analyzes affected instructions and blocks on every type change, until
+/// the assignment stabilizes.
+///
+/// `enable_soft` gates the best-effort BinaryAlu unification (see that arm).
+fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
+    cfg: &VCodeCFG<MInst>,
+    func_sig: &Signature,
+    reg_blocks: &HashMap<Reg, HashSet<usize>>,
+    type_map: &mut TypeMap<F>,
+    enable_soft: bool,
+) {
+    let bb_dfg = cfg.dataflow_graph();
+
     let mut bb_worklist: VecDeque<usize> = VecDeque::new();
 
     // All blocks analyzed at least once
@@ -1200,15 +1229,26 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
             use MInst::*;
             match inst {
                 BinaryAlu { rd, rs1, rs2, .. } => {
-                    let t1 = type_map.get(*rs1);
-                    let t2 = type_map.get(*rs2);
-                    let td = type_map.get(rd.to_reg());
+                    // Wrapping add/sub is signedness-agnostic: the machine
+                    // accepts mixed-signedness operands, computing with the
+                    // effective input type (unsigned unless both operands are
+                    // signed). Unifying operands and result here is therefore
+                    // only a preference: it runs in the soft phase (once all
+                    // hard constraints have settled) and is skipped on a
+                    // signedness conflict, which resolve_instruction_types
+                    // later reconciles with a cast if the effective type does
+                    // not match the required result type.
+                    if enable_soft {
+                        let t1 = type_map.get(*rs1);
+                        let t2 = type_map.get(*rs2);
+                        let td = type_map.get(rd.to_reg());
 
-                    let refined = t1.refine(t2).unwrap().refine(td).unwrap();
-
-                    update_changed(rs1, refined, &mut type_map);
-                    update_changed(rs2, refined, &mut type_map);
-                    update_changed(&rd.to_reg(), refined, &mut type_map);
+                        if let Some(refined) = t1.refine(t2).and_then(|t12| t12.refine(td)) {
+                            update_changed(rs1, refined, type_map);
+                            update_changed(rs2, refined, type_map);
+                            update_changed(&rd.to_reg(), refined, type_map);
+                        }
+                    }
                 }
                 DoubleAlu {
                     op: DoubleAluOp::SaddOverflow,
@@ -1234,9 +1274,9 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                         refined
                     };
 
-                    update_changed(rs1, refined, &mut type_map);
-                    update_changed(rs2, refined, &mut type_map);
-                    update_changed(&rdl.to_reg(), refined, &mut type_map);
+                    update_changed(rs1, refined, type_map);
+                    update_changed(rs2, refined, type_map);
+                    update_changed(&rdl.to_reg(), refined, type_map);
 
                     // The flag (the machine's high output) is a u8 at runtime,
                     // but its signedness is left to its consumers: nothing
@@ -1275,9 +1315,9 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                             }
                         };
 
-                        update_changed(rs1, in_refined, &mut type_map);
-                        update_changed(rs2, in_refined, &mut type_map);
-                        update_changed(&rd.to_reg(), td, &mut type_map);
+                        update_changed(rs1, in_refined, type_map);
+                        update_changed(rs2, in_refined, type_map);
+                        update_changed(&rd.to_reg(), td, type_map);
                     }
                 }
                 Resize { var, rd, rs }
@@ -1297,7 +1337,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                             rs,
                             rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), sign))
                                 .unwrap(),
-                            &mut type_map,
+                            type_map,
                         );
                     }
                     if rd_t.is_int() {
@@ -1305,7 +1345,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                             &rd.to_reg(),
                             rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), sign))
                                 .unwrap(),
-                            &mut type_map,
+                            type_map,
                         );
                     }
                 }
@@ -1319,7 +1359,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
 
                     if rs_t.is_same_signedness(&rd_t) {
                         // They are the same, just assign rd
-                        update_changed(&rd.to_reg(), rd_t, &mut type_map);
+                        update_changed(&rd.to_reg(), rd_t, type_map);
                     } else if rs_t.is_known() && rd_t.is_known() {
                         panic!("Incompatible type requirements: rs_t {rs_t:?}, rd_t {rd_t:?}");
                     } else if rs_t.is_known() || rd_t.is_known() {
@@ -1331,7 +1371,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                                 rs,
                                 rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), sign))
                                     .unwrap(),
-                                &mut type_map,
+                                type_map,
                             );
                         }
                         if rd_t.is_int() {
@@ -1339,14 +1379,14 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                                 &rd.to_reg(),
                                 rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), sign))
                                     .unwrap(),
-                                &mut type_map,
+                                type_map,
                             );
                         }
                     }
                 }
                 Const { rd, .. } => {
                     let rd_t = type_map.get(rd.to_reg());
-                    update_changed(&rd.to_reg(), rd_t, &mut type_map);
+                    update_changed(&rd.to_reg(), rd_t, type_map);
                 }
                 Echo { rds, rss, .. } => {
                     if rss.len() != 0 {
@@ -1357,8 +1397,8 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                             // echoed copy is refined by a later consumer).
                             let merged =
                                 type_map.get(*rs).refine(type_map.get(rd.to_reg())).unwrap();
-                            update_changed(rs, merged, &mut type_map);
-                            update_changed(&rd.to_reg(), merged, &mut type_map);
+                            update_changed(rs, merged, type_map);
+                            update_changed(&rd.to_reg(), merged, type_map);
                         });
                     } else {
                         assert!(!rds.is_empty());
@@ -1372,14 +1412,14 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                         .get(*rs1)
                         .refine(type_map.get(rd1.to_reg()))
                         .unwrap();
-                    update_changed(rs1, merged1, &mut type_map);
-                    update_changed(&rd1.to_reg(), merged1, &mut type_map);
+                    update_changed(rs1, merged1, type_map);
+                    update_changed(&rd1.to_reg(), merged1, type_map);
                     let merged2 = type_map
                         .get(*rs2)
                         .refine(type_map.get(rd2.to_reg()))
                         .unwrap();
-                    update_changed(rs2, merged2, &mut type_map);
-                    update_changed(&rd2.to_reg(), merged2, &mut type_map);
+                    update_changed(rs2, merged2, type_map);
+                    update_changed(&rd2.to_reg(), merged2, type_map);
                 }
                 Duplicate { rd1, rd2, rs, .. } => {
                     let rs_t = type_map.get(*rs);
@@ -1388,9 +1428,9 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
 
                     let merged_t = rs_t.refine(rd1_t).unwrap().refine(rd2_t).unwrap();
 
-                    update_changed(rs, merged_t, &mut type_map);
-                    update_changed(&rd1.to_reg(), merged_t, &mut type_map);
-                    update_changed(&rd2.to_reg(), merged_t, &mut type_map);
+                    update_changed(rs, merged_t, type_map);
+                    update_changed(&rd1.to_reg(), merged_t, type_map);
+                    update_changed(&rd2.to_reg(), merged_t, type_map);
                 }
                 Load { rs, .. } => {
                     update_changed(
@@ -1399,7 +1439,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                             .get(*rs)
                             .refine(IsaType::Known(scry_isa::Type::Uint(2)))
                             .expect("Load source refine fail"),
-                        &mut type_map,
+                        type_map,
                     );
 
                     // We don't assign the type of the destination since we must get the type requirements from other instructions
@@ -1415,20 +1455,20 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                         update_changed(
                             &r.to_reg(),
                             type_map.get(r.to_reg()).refine(ty).unwrap(),
-                            &mut type_map,
+                            type_map,
                         );
                     }
 
                     for (r, p) in args.iter().map(|p| p.vreg).zip(sig.params.iter()) {
                         let ty = abi_param_to_isatype(p);
-                        update_changed(&r, type_map.get(r).refine(ty).unwrap(), &mut type_map);
+                        update_changed(&r, type_map.get(r).refine(ty).unwrap(), type_map);
                     }
                 }
                 Rets { rets } => {
                     assert_eq!(rets.len(), func_sig.returns.len());
                     for (r, p) in rets.iter().map(|p| p.vreg).zip(func_sig.returns.iter()) {
                         let ty = abi_param_to_isatype(p);
-                        update_changed(&r, type_map.get(r).refine(ty).unwrap(), &mut type_map);
+                        update_changed(&r, type_map.get(r).refine(ty).unwrap(), type_map);
                     }
                 }
                 JumpTrigger { args, .. } => {
@@ -1460,7 +1500,7 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                                     })
                                     .flatten(),
                             )
-                            .for_each(|r| update_changed(&r, shared_ty, &mut type_map));
+                            .for_each(|r| update_changed(&r, shared_ty, type_map));
                     }
                 }
                 _ => (),
@@ -1478,15 +1518,13 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
             }
         }
     }
-    log::trace!("Resolved types: {type_map:?}");
-
-    type_map
 }
 
 fn resolve_instruction_types(
     cfg: &mut VCodeCFG<MInst>,
     vreg_type: impl Fn(Reg) -> Option<Type>,
     func_sig: &Signature,
+    mut new_vreg: impl FnMut() -> Reg,
 ) {
     let type_map = type_analysis(cfg, vreg_type, func_sig);
 
@@ -1494,7 +1532,11 @@ fn resolve_instruction_types(
 
     // Resolve type specific instructions into Scry instructions
     for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
-        for inst in bb.inst.iter_mut() {
+        // Casts to insert after the loop: (index of the producing
+        // instruction, cast).
+        let mut casts: Vec<(usize, MInst)> = Vec::new();
+
+        for (inst_idx, inst) in bb.inst.iter_mut().enumerate() {
             match inst {
                 MInst::BinaryAlu { op, rd, rs1, rs2 } => {
                     let binary_alu_to_alu2 = |b| match b {
@@ -1502,10 +1544,39 @@ fn resolve_instruction_types(
                         BinaryAluOp::IntSubWrap => Alu2Variant::Sub,
                     };
 
+                    // The machine tags the result with the effective input
+                    // type: unsigned unless both operands are signed (an
+                    // operand of undetermined signedness resolves to unsigned,
+                    // matching constant resolution). If the consumers require
+                    // the opposite signedness, compute into a fresh register
+                    // and re-tag it with a cast (same size, so bit-identical).
+                    let td = type_map.get(rd.to_reg());
+                    let eff_signed =
+                        type_map.get(*rs1).is_signed_int() && type_map.get(*rs2).is_signed_int();
+                    let needs_cast = td
+                        .get_known()
+                        .is_some_and(|t| t.is_signed_int() != eff_signed);
+
+                    let alu_rd = if needs_cast {
+                        let raw = WritableReg::from_reg(new_vreg());
+                        casts.push((
+                            inst_idx,
+                            MInst::Cast {
+                                rd: *rd,
+                                ty: td,
+                                rs: raw.to_reg(),
+                                out: 0,
+                            },
+                        ));
+                        raw
+                    } else {
+                        *rd
+                    };
+
                     *inst = MInst::Alu2 {
                         var: binary_alu_to_alu2(*op),
                         out_var: Alu2OutputVariant::Low,
-                        rds: vec![*rd],
+                        rds: vec![alu_rd],
                         rss: vec![*rs1, *rs2],
                         outs: vec![0],
                     };
@@ -1587,6 +1658,12 @@ fn resolve_instruction_types(
                 }
                 _ => (),
             }
+        }
+
+        // Insert the queued casts directly after their producers, in reverse
+        // so the earlier indices stay valid.
+        for (idx, cast) in casts.into_iter().rev() {
+            bb.inst.insert(idx + 1, cast);
         }
     }
 }
@@ -1844,7 +1921,7 @@ impl TargetIsa for ScryBackend {
 
         insert_frame_limits(&mut cfg, frame_bytes);
 
-        resolve_instruction_types(&mut cfg, reg_type, vcode.abi.signature());
+        resolve_instruction_types(&mut cfg, reg_type, vcode.abi.signature(), &mut new_vreg);
         insert_duplicates(&mut cfg, &mut new_vreg);
         expand_echoes(&mut cfg, &mut new_vreg);
         fix_orderings(&mut cfg, &mut new_vreg);
