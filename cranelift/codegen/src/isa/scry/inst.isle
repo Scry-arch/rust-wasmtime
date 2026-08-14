@@ -32,6 +32,12 @@
   )
 )
 
+(type DoubleAluOp
+  (enum
+    (SaddOverflow)  ;; Signed wrapping addition + signed-overflow flag
+  )
+)
+
 ;; Instruction formats.
 (type MInst
   (enum
@@ -62,6 +68,16 @@
     (BinaryAlu          ; 2 input, 1 output ALU instruction using effective input types
       (op BinaryAluOp)
       (rd WritableReg)
+      (rs1 Reg)
+      (rs2 Reg)
+    )
+
+    ;; 2-input, 2-output ALU pseudo-instruction; resolved to a two-output
+    ;; Alu2 after type analysis.
+    (DoubleAlu
+      (op DoubleAluOp)
+      (rdl WritableReg) ;; The machine's low output (e.g. the value result)
+      (rdh WritableReg) ;; The machine's high output (e.g. the flag result)
       (rs1 Reg)
       (rs2 Reg)
     )
@@ -301,6 +317,18 @@
       (_ Unit (emit (MInst.BinaryAlu (BinaryAluOp.IntAddWrap)  dst src1 src2)))
     )
     dst
+  )
+)
+
+(decl sadd_overflow_rrr (Type Reg Reg) InstOutput)
+(rule
+  (sadd_overflow_rrr ty x y)
+  (let
+    ( (rdl WritableReg (temp_writable_reg ty))
+      (rdh WritableReg (temp_writable_reg $I8))
+      (_ Unit (emit (MInst.DoubleAlu (DoubleAluOp.SaddOverflow) rdl rdh x y)))
+    )
+    (output_pair (value_reg rdl) (value_reg rdh))
   )
 )
 

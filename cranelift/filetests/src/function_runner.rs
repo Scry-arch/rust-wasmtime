@@ -2,13 +2,13 @@
 use anyhow::{Context as _, Result, anyhow};
 use core::mem;
 use cranelift::prelude::Imm64;
+use cranelift_codegen::binemit::Reloc;
 use cranelift_codegen::cursor::{Cursor, FuncCursor};
 use cranelift_codegen::data_value::DataValue;
 use cranelift_codegen::ir::{
     ExternalName, Function, InstBuilder, InstructionData, LibCall, Opcode, Signature,
     UserExternalName, UserFuncName,
 };
-use cranelift_codegen::binemit::Reloc;
 use cranelift_codegen::isa::{OwnedTargetIsa, TargetIsa};
 use cranelift_codegen::{CodegenError, Context, FinalizedRelocTarget, ir, settings};
 use cranelift_control::ControlPlane;
@@ -652,9 +652,8 @@ impl<'a> Trampoline<'a> {
                     stack_buffer: STACK_SIZE,
                 };
 
-                let mut res =
-                    Executor::<BlockedMemory, _>::from_state(&original_state, &mut mem)
-                        .step(&mut ());
+                let mut res = Executor::<BlockedMemory, _>::from_state(&original_state, &mut mem)
+                    .step(&mut ());
 
                 loop {
                     match res {

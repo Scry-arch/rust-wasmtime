@@ -1,9 +1,12 @@
 //! Scry Instruction Set Architecture.
 
+use crate::MachLabel;
 use crate::dominator_tree::DominatorTree;
 use crate::ir::{AbiParam, ArgumentExtension, Signature};
 use crate::ir::{Function, Type};
-use crate::isa::scry::inst::{BinaryAluOp, EmitInfo, MInst, ResizeVariant, UnaryAluOp};
+use crate::isa::scry::inst::{
+    BinaryAluOp, DoubleAluOp, EmitInfo, MInst, ResizeVariant, UnaryAluOp,
+};
 use crate::isa::scry::settings as scry_settings;
 use crate::isa::unwind::systemv;
 use crate::isa::{
@@ -20,7 +23,6 @@ use crate::result::CodegenResult;
 use crate::settings::{self as shared_settings, Flags};
 use crate::timing;
 use crate::trace;
-use crate::MachLabel;
 use crate::{VCodeConstants, ir};
 use alloc::string::String;
 use alloc::{boxed::Box, vec::Vec};
@@ -819,6 +821,37 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                 });
 
                 if inst.get_defs().count() >= 1 {
+                    // A def without any use would leave its value stranded in
+                    // the operand queue. A two-output Alu2 can simply not emit
+                    // the dead output (the Low/High single-output variants);
+                    // anything else routes the value to an explicit discard.
+                    let dead = inst
+                        .get_defs()
+                        .enumerate()
+                        .find(|(_, def)| !use_pos.contains_key(def));
+                    if let Some((dead_slot, dead)) = dead {
+                        match inst {
+                            MInst::Alu2 {
+                                out_var, rds, outs, ..
+                            } if rds.len() == 2 => {
+                                rds.remove(dead_slot);
+                                outs.remove(dead_slot);
+                                *out_var = if dead_slot == 1 {
+                                    Alu2OutputVariant::Low
+                                } else {
+                                    Alu2OutputVariant::High
+                                };
+                            }
+                            _ => {
+                                bb.inst.insert(
+                                    bb.inst.len() - inst_idx,
+                                    MInst::Discard { rss: vec![dead] },
+                                );
+                            }
+                        }
+                        continue 'a;
+                    }
+
                     let ref_dists = inst
                         .get_defs()
                         .enumerate()
@@ -827,6 +860,51 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                             (i, ref_dist - use_idx.1 - (inst.reference_length() as u16))
                         })
                         .collect::<HashMap<_, _>>();
+
+                    // A def whose value the machine can only deliver to the
+                    // next instruction, while its consumer sits further away,
+                    // is bridged with an echo that carries the remaining
+                    // distance.
+                    let bridge_reg = match inst {
+                        // These deliver their output to the next instruction
+                        // (their encodings have no output reference field).
+                        MInst::Const { rd, .. }
+                        | MInst::LoadExtName { rd, .. }
+                        | MInst::LoadStack { rd, .. }
+                        | MInst::SAddr { rd, .. }
+                            if ref_dists[&0] > 0 =>
+                        {
+                            Some(rd.to_reg())
+                        }
+                        // The two-output Alu2 encoding sends both outputs to
+                        // one shared reference, or one output to the next
+                        // instruction and the other to the reference (see
+                        // emission). Two distinct non-zero references cannot
+                        // be encoded: bridge the second (high) output, which
+                        // preserves the physical production order.
+                        MInst::Alu2 { rds, .. }
+                            if rds.len() == 2
+                                && ref_dists[&0] != ref_dists[&1]
+                                && ref_dists[&0] > 0
+                                && ref_dists[&1] > 0 =>
+                        {
+                            Some(rds[1].to_reg())
+                        }
+                        _ => None,
+                    };
+                    if let Some(rd) = bridge_reg {
+                        let fresh = new_vreg();
+                        replace_all_uses(bb, rd, fresh);
+                        bb.inst.insert(
+                            bb.inst.len() - inst_idx,
+                            MInst::EchoLong {
+                                rds: vec![Writable::from_reg(fresh)],
+                                rss: vec![rd],
+                                out: 0,
+                            },
+                        );
+                        continue 'a;
+                    }
 
                     match inst {
                         MInst::Alu1 { out, .. }
@@ -895,27 +973,6 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
 
                             bb.inst
                                 .insert(bb.inst.len() - inst_idx, MInst::Echo { rds, rss });
-                            continue 'a;
-                        }
-                        MInst::Const { rd, .. }
-                        | MInst::LoadExtName { rd, .. }
-                        | MInst::LoadStack { rd, .. }
-                        | MInst::SAddr { rd, .. }
-                            if ref_dists[&0] > 0 =>
-                        {
-                            // Consumer is not directly after the instruction which outputs only to next.
-                            // Use echo to bridge the gap
-                            let rd = rd.to_reg();
-                            let fresh = new_vreg();
-                            replace_all_uses(bb, rd, fresh);
-                            bb.inst.insert(
-                                bb.inst.len() - inst_idx,
-                                MInst::EchoLong {
-                                    rds: vec![Writable::from_reg(fresh)],
-                                    rss: vec![rd],
-                                    out: 0,
-                                },
-                            );
                             continue 'a;
                         }
                         _ => (),
@@ -1152,6 +1209,41 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
                     update_changed(rs1, refined, &mut type_map);
                     update_changed(rs2, refined, &mut type_map);
                     update_changed(&rd.to_reg(), refined, &mut type_map);
+                }
+                DoubleAlu {
+                    op: DoubleAluOp::SaddOverflow,
+                    rdl,
+                    rdh,
+                    rs1,
+                    rs2,
+                } => {
+                    let t1 = type_map.get(*rs1);
+                    let t2 = type_map.get(*rs2);
+                    let td = type_map.get(rdl.to_reg());
+
+                    let refined = t1.refine(t2).unwrap().refine(td).unwrap();
+
+                    // The machine's Add produces the signed-overflow flag only
+                    // for signed operands, so force the operands and the value
+                    // result signed.
+                    let refined = if refined.is_int() {
+                        refined
+                            .refine(IsaType::new_known_int(refined.size_pow2(), true))
+                            .unwrap()
+                    } else {
+                        refined
+                    };
+
+                    update_changed(rs1, refined, &mut type_map);
+                    update_changed(rs2, refined, &mut type_map);
+                    update_changed(&rdl.to_reg(), refined, &mut type_map);
+
+                    // The flag (the machine's high output) is a u8 at runtime,
+                    // but its signedness is left to its consumers: nothing
+                    // emits the flag's compile-time type, and forcing it
+                    // unsigned would conflict with signed consumers (the
+                    // 0/1 value widens identically either way).
+                    let _ = rdh;
                 }
                 IntCmp { rd, rs1, rs2, cc } => {
                     let t1 = type_map.get(*rs1);
@@ -1416,6 +1508,28 @@ fn resolve_instruction_types(
                         rds: vec![*rd],
                         rss: vec![*rs1, *rs2],
                         outs: vec![0],
+                    };
+                }
+                MInst::DoubleAlu {
+                    op,
+                    rdl,
+                    rdh,
+                    rs1,
+                    rs2,
+                } => {
+                    let var = match op {
+                        DoubleAluOp::SaddOverflow => Alu2Variant::Add,
+                    };
+
+                    *inst = MInst::Alu2 {
+                        var,
+                        // Placeholder for the two-output form: the final
+                        // output variant is chosen at emission from the
+                        // output references (see emit.rs).
+                        out_var: Alu2OutputVariant::FirstLow,
+                        rds: vec![*rdl, *rdh],
+                        rss: vec![*rs1, *rs2],
+                        outs: vec![0, 0],
                     };
                 }
                 MInst::IntCmp { cc, rd, rs1, rs2 } => {
