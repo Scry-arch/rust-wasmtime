@@ -1,0 +1,65 @@
+test interpret
+test run
+target scry32
+
+; Arithmetic over values of mixed signedness: one operand derived from a
+; signed context, the other from an unsigned one. The bits of wrapping
+; add/sub do not depend on signedness, and the machine accepts mixed
+; operands (it computes with the "effective type": unsigned wins, the wider
+; size wins).
+
+; The simplest conflict: two parameters of the same width but different
+; extension annotations meet in an iadd.
+function %mixed_params(i32 sext, i32 uext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = iadd v0, v1
+    return v2
+}
+; run: %mixed_params(0, 0) == 0
+; run: %mixed_params(-5, 10) == 5
+; run: %mixed_params(2147483647, 1) == -2147483648
+
+; An unsigned-widened value added to a signed value.
+function %uext_into_signed(i32 sext, i8 uext) -> i32 sext {
+block0(v0: i32, v1: i8):
+    v2 = uextend.i32 v1
+    v3 = iadd v0, v2
+    return v3
+}
+; run: %uext_into_signed(0, 0) == 0
+; run: %uext_into_signed(-5, 200) == 195
+; run: %uext_into_signed(100, 255) == 355
+; run: %uext_into_signed(-300, 44) == -256
+
+; A signed-widened value added to an unsigned value.
+function %sext_into_unsigned(i32 uext, i8 sext) -> i32 uext {
+block0(v0: i32, v1: i8):
+    v2 = sextend.i32 v1
+    v3 = iadd v0, v2
+    return v3
+}
+; run: %sext_into_unsigned(10, -1) == 9
+; run: %sext_into_unsigned(0, -128) == -128
+; run: %sext_into_unsigned(1000, 127) == 1127
+
+; Subtraction with a mixed operand.
+function %mixed_sub(i32 sext, i16 uext) -> i32 sext {
+block0(v0: i32, v1: i16):
+    v2 = uextend.i32 v1
+    v3 = isub v0, v2
+    return v3
+}
+; run: %mixed_sub(0, 65535) == -65535
+; run: %mixed_sub(100, 50) == 50
+
+; An overflow flag (unsigned by nature) widened unsigned and added to the signed value result.
+function %flag_into_signed(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2, v3 = sadd_overflow v0, v1
+    v4 = uextend.i32 v3
+    v5 = iadd v2, v4
+    return v5
+}
+; run: %flag_into_signed(1, 2) == 3
+; run: %flag_into_signed(2147483647, 1) == -2147483647
+; run: %flag_into_signed(-2147483648, -1) == -2147483648
