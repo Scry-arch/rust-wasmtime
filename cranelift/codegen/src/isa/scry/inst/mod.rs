@@ -911,7 +911,7 @@ impl MInst {
             // An address is materialized as a const + 3*grow chain patched by
             // the ScryAbs32 relocation.
             LoadExtName { .. } => 4,
-            Echo { rds, rss } => Self::echo_chain(
+            Echo { rds, rss } => Self::receive_chain(
                 rds.iter()
                     .cloned()
                     .zip(rss.iter().cloned())
@@ -953,76 +953,113 @@ impl MInst {
         }
     }
 
-    /// Constructs an echo chain that splits all input/output/ref triplets into a most 3 per
-    pub(crate) fn echo_chain(
-        ops: &[(WritableReg, Reg)],
-        new_vreg: impl FnMut() -> Reg,
-    ) -> Vec<Self> {
-        Self::echo_chain_impl(ops, new_vreg, Vec::new())
-    }
-
-    /// Constructs an echo chain that splits all input/output/ref triplets into a most 3 per
-    pub fn echo_chain_impl(
+    /// Constructs the echo chain that receives a set of delivered operands
+    /// (block parameters or call return values) and reroutes each to its
+    /// consumer.
+    ///
+    /// `ops` are `(destination, delivered operand)` pairs in wire order. Since
+    /// one instruction can ingest at most [`QUEUE_CAPACITY`] operands, the
+    /// producers deliver the operands spread over the chain's instructions
+    /// according to [`delivery_group`]: the first 4 to the first echo, then 2
+    /// per following echo. Each echo's ready queue holds the newly delivered
+    /// operands (first, their producers having executed earlier) followed by
+    /// the operands chained on from the previous echo; it terminally outputs
+    /// the first 2 with individual references and chains the rest to the next
+    /// instruction. Every following echo therefore has up to 2 queue slots
+    /// occupied by the chain, which is what limits the delivery groups after
+    /// the first to 2 operands.
+    pub(crate) fn receive_chain(
         ops: &[(WritableReg, Reg)],
         mut new_vreg: impl FnMut() -> Reg,
-        mut result: Vec<Self>,
     ) -> Vec<Self> {
-        if ops.len() == 0 {
-            return result;
+        let mut result = Vec::new();
+
+        // The first echo's queue is filled entirely with delivered operands.
+        let first_group = min(QUEUE_CAPACITY, ops.len());
+        let mut queue: Vec<(WritableReg, Reg)> = ops[..first_group].to_vec();
+        let mut remaining = &ops[first_group..];
+
+        while !queue.is_empty() {
+            let mut rds = vec![];
+            let mut rss = vec![];
+
+            // The first 2 queue operands are terminally output
+            let taken = min(2, queue.len());
+            for op in &queue[..taken] {
+                rds.push(op.0);
+                rss.push(op.1);
+            }
+
+            // The rest are chained on to the following echo
+            let chained = queue[taken..]
+                .iter()
+                .map(|op| {
+                    let new_rd = new_vreg();
+
+                    rds.push(WritableReg::from_reg(new_rd));
+                    rss.push(op.1);
+
+                    (op.0, new_rd)
+                })
+                .collect::<Vec<_>>();
+
+            result.push(if rds.len() == 1 {
+                MInst::EchoLong { rds, rss, out: 0 }
+            } else if rds.len() == 2 {
+                MInst::EchoSplit {
+                    rd1: rds[0],
+                    rd2: rds[1],
+                    rs1: rss[0],
+                    rs2: rss[1],
+                    out1: 0,
+                    out2: 0,
+                }
+            } else {
+                MInst::EchoChain {
+                    rd1: rds[0],
+                    rd2: rds[1],
+                    rs1: rss[0],
+                    rs2: rss[1],
+                    out1: 0,
+                    out2: 0,
+                    rd_chain: rds[2..].iter().cloned().collect(),
+                    rs_chain: rss[2..].iter().cloned().collect(),
+                }
+            });
+
+            // The next echo receives as many newly delivered operands as the
+            // chained operands leave queue capacity for, followed by the
+            // chained operands themselves.
+            let next_group = min(remaining.len(), QUEUE_CAPACITY - chained.len());
+            queue = remaining[..next_group]
+                .iter()
+                .cloned()
+                .chain(chained)
+                .collect();
+            remaining = &remaining[next_group..];
         }
 
-        let mut rds = vec![];
-        let mut rss = vec![];
+        result
+    }
+}
 
-        // The first 2 are kept as is
-        let mut insert = |op: &(WritableReg, Reg)| {
-            rds.push(op.0);
-            rss.push(op.1);
-        };
-        let ops_taken = min(2, ops.len());
-        ops.iter().take(ops_taken).for_each(&mut insert);
+/// The maximum number of operands an instruction's ready queue can hold;
+/// operands delivered beyond this are dropped by the machine.
+pub(crate) const QUEUE_CAPACITY: usize = 4;
 
-        // The rest are rerouted to a following echo
-        let map_to_next = |op: (WritableReg, Reg)| {
-            let new_rd = new_vreg();
-
-            rds.push(WritableReg::from_reg(new_rd));
-            rss.push(op.1);
-
-            (op.0, new_rd)
-        };
-
-        let next_ops = ops[(ops_taken)..]
-            .iter()
-            .cloned()
-            .map(map_to_next)
-            .collect::<Vec<_>>();
-
-        result.push(if rds.len() == 1 {
-            MInst::EchoLong { rds, rss, out: 0 }
-        } else if rds.len() == 2 {
-            MInst::EchoSplit {
-                rd1: rds[0],
-                rd2: rds[1],
-                rs1: rss[0],
-                rs2: rss[1],
-                out1: 0,
-                out2: 0,
-            }
-        } else {
-            MInst::EchoChain {
-                rd1: rds[0],
-                rd2: rds[1],
-                rs1: rss[0],
-                rs2: rss[1],
-                out1: 0,
-                out2: 0,
-                rd_chain: rds[2..].iter().cloned().collect(),
-                rs_chain: rss[2..].iter().cloned().collect(),
-            }
-        });
-
-        Self::echo_chain_impl(&next_ops, new_vreg, result)
+/// Returns which instruction of a receiving echo chain the operand at
+/// wire-order position `wire_idx` must be delivered to (0 meaning the chain's
+/// first instruction, e.g. a block's first executed instruction).
+///
+/// Must mirror [`MInst::receive_chain`], which builds the receiving side of
+/// this schedule: the first echo has queue capacity for 4 delivered operands,
+/// every following echo has 2 slots occupied by the previous echo's chained
+/// operands and so can receive only 2.
+pub(crate) fn delivery_group(wire_idx: usize) -> usize {
+    if wire_idx < QUEUE_CAPACITY {
+        0
+    } else {
+        1 + (wire_idx - QUEUE_CAPACITY) / 2
     }
 }
 

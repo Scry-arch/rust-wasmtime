@@ -5,7 +5,8 @@ use crate::dominator_tree::DominatorTree;
 use crate::ir::{AbiParam, ArgumentExtension, Signature};
 use crate::ir::{Function, Type};
 use crate::isa::scry::inst::{
-    BinaryAluOp, DoubleAluOp, EmitInfo, MInst, ResizeVariant, UnaryAluOp,
+    BinaryAluOp, DoubleAluOp, EmitInfo, MInst, QUEUE_CAPACITY, ResizeVariant, UnaryAluOp,
+    delivery_group,
 };
 use crate::isa::scry::settings as scry_settings;
 use crate::isa::unwind::systemv;
@@ -631,13 +632,16 @@ fn prepare_block_params(
         // Any echoed parameter without a use left in the block (an unused parameter or
         // an unused parameter order position) must be explicitly discarded so its value
         // does not linger in the operand queue.
+        // For consistency and the ability to easily assert that no instructions get >4
+        // inputs, we only give the discard the same number of values to drop as other
+        // instructions can accept.
         let unused = echo_regs
             .into_iter()
             .filter(|r| bb.reg_uses(*r).next().is_none())
             .collect::<Vec<_>>();
-        if !unused.is_empty() {
+        for chunk in unused.chunks(QUEUE_CAPACITY) {
             // Insert discard directly after the echo, which routes the values to it
-            bb.inst.insert(2, MInst::Discard { rss: unused });
+            bb.inst.insert(2, MInst::Discard { rss: chunk.to_vec() });
         }
     }
 
@@ -785,7 +789,10 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
         'a: loop {
             log::trace!("BB: {bb:?}");
 
-            let mut use_pos = HashMap::<Reg, (usize, u16)>::new(); // reg -> (instruction index, reference distance)
+            // reg -> (instruction index, reference distance, extra delivery distance).
+            // The extra distance is non-zero for branch arguments delivered to a later
+            // instruction of the successor's receiving echo chain (see `delivery_group`).
+            let mut use_pos = HashMap::<Reg, (usize, u16, u16)>::new();
             let mut ref_dist = 0;
             for (inst_idx, inst) in bb.inst.iter_mut().rev().enumerate() {
                 log::trace!("inst: {inst:?}");
@@ -795,7 +802,7 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                 // this pass inserts itself (see the CallArgs arm below).
                 match &inst {
                     MInst::Echo { rds, rss } => {
-                        for i in MInst::echo_chain(
+                        for i in MInst::receive_chain(
                             rds.iter()
                                 .cloned()
                                 .zip(rss.iter().cloned())
@@ -816,9 +823,25 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                 ref_dist += inst.reference_length() as u16;
 
                 // Record all uses, we can do this on-the-fly as we assume no use comes before its def
-                inst.get_uses().for_each(|r| {
-                    use_pos.entry(*r).or_insert((inst_idx, ref_dist));
-                });
+                match inst {
+                    // A jump trigger's reference distance points at the successor's
+                    // first executed instruction, whose queue only has capacity for
+                    // the first arguments; the following arguments are delivered to
+                    // later instructions of the successor's receiving echo chain,
+                    // recorded here as extra delivery distance by wire position.
+                    MInst::JumpTrigger { args, .. } => {
+                        for (wire_idx, r) in args.iter().enumerate() {
+                            use_pos.entry(*r).or_insert((
+                                inst_idx,
+                                ref_dist,
+                                delivery_group(wire_idx) as u16,
+                            ));
+                        }
+                    }
+                    _ => inst.get_uses().for_each(|r| {
+                        use_pos.entry(*r).or_insert((inst_idx, ref_dist, 0));
+                    }),
+                }
 
                 if inst.get_defs().count() >= 1 {
                     // A def without any use would leave its value stranded in
@@ -857,7 +880,11 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                         .enumerate()
                         .map(|(i, def)| {
                             let use_idx = use_pos[&def];
-                            (i, ref_dist - use_idx.1 - (inst.reference_length() as u16))
+                            (
+                                i,
+                                ref_dist - use_idx.1 - (inst.reference_length() as u16)
+                                    + use_idx.2,
+                            )
                         })
                         .collect::<HashMap<_, _>>();
 
@@ -986,6 +1013,59 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
     log::trace!("VCodeCFG: {cfg:?}");
 }
 
+/// Checks that no instruction consumes more operands than its ready queue can
+/// hold ([`QUEUE_CAPACITY`]); the machine silently drops operands delivered
+/// beyond that.
+///
+/// Deliveries are counted at the consuming instruction via the use relation,
+/// so values leaving the block or frame (branch arguments, call arguments,
+/// return values) are not counted at their trigger pseudo-instruction: branch
+/// and call arguments are counted where they arrive, at the receiving block's
+/// parameter echoes (its `Args` defs), and return values at the caller's
+/// `CallArgs` defs' consumers.
+///
+/// Must run after [`insert_ref_distances`], when all pseudo-instructions with
+/// unbounded operand lists have been expanded.
+fn assert_queue_capacities(cfg: &mut VCodeCFG<MInst>) {
+    for (bb_v, bb) in cfg.graph.all_vertices_weighted_mut() {
+        // Consumer instruction (index from block end) of each used reg.
+        let mut use_pos = HashMap::<Reg, usize>::new();
+        // Consumers whose operands physically leave the block or frame.
+        let mut boundary = HashSet::<usize>::new();
+        for (inst_idx, inst) in bb.inst.iter().rev().enumerate() {
+            if matches!(
+                inst,
+                MInst::JumpTrigger { .. } | MInst::CallArgs { .. } | MInst::Rets { .. }
+            ) {
+                boundary.insert(inst_idx);
+            }
+            inst.get_uses().for_each(|r| {
+                use_pos.entry(*r).or_insert(inst_idx);
+            });
+        }
+
+        let mut arrivals = HashMap::<usize, usize>::new();
+        for inst in bb.inst.iter() {
+            for def in inst.get_defs() {
+                if let Some(idx) = use_pos.get(&def) {
+                    if !boundary.contains(idx) {
+                        *arrivals.entry(*idx).or_default() += 1;
+                    }
+                }
+            }
+        }
+
+        for (idx, count) in arrivals {
+            assert!(
+                count <= QUEUE_CAPACITY,
+                "{count} operands delivered to one instruction (capacity \
+                 {QUEUE_CAPACITY}) in block {bb_v}: {:?}",
+                bb.inst[bb.inst.len() - 1 - idx]
+            );
+        }
+    }
+}
+
 /// Expands all Echo pseudo-instructions into EchoChain/EchoSplit/EchoLong sequences.
 ///
 /// This must run before [`fix_orderings`] so that ordering decisions can see the
@@ -996,7 +1076,7 @@ fn expand_echoes(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
         let mut idx = 0;
         while idx < bb.inst.len() {
             if let MInst::Echo { rds, rss } = &bb.inst[idx] {
-                let expansion = MInst::echo_chain(
+                let expansion = MInst::receive_chain(
                     rds.iter()
                         .cloned()
                         .zip(rss.iter().cloned())
@@ -2172,6 +2252,7 @@ impl TargetIsa for ScryBackend {
         fix_orderings(&mut cfg, &mut new_vreg);
         fix_branch_conditions(&mut cfg, &mut new_vreg);
         insert_ref_distances(&mut cfg, &mut new_vreg);
+        assert_queue_capacities(&mut cfg);
         set_trigger_offsets(&mut cfg);
 
         let sigs = SigSet::new::<abi::ScryMachineDeps>(func, &self.flags)?;

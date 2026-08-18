@@ -1,0 +1,52 @@
+test interpret
+test run
+target scry32
+
+; An unconditional jump passing nine block arguments. Arguments 1-4 fill the
+; ready queue of the target block's first instruction, 5-8 the second, and the
+; ninth must reach a THIRD instruction - the delivery scheme must generalize
+; beyond "first and second instruction".
+;
+; Weighted sum with weights 256..1 by position detects any misrouting.
+
+function %jump9(i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v4 = iadd v0, v1
+    v5 = iadd v1, v2
+    v6 = iadd v2, v3
+    v7 = iadd v3, v0
+    v8 = iadd v0, v2
+    jump block1(v0, v1, v2, v3, v4, v5, v6, v7, v8)
+
+block1(v9: i32, v10: i32, v11: i32, v12: i32, v13: i32, v14: i32, v15: i32, v16: i32, v17: i32):
+    ; Horner: 256*v9 + 128*v10 + 64*v11 + 32*v12 + 16*v13 + 8*v14 + 4*v15
+    ;         + 2*v16 + v17
+    v18 = iadd v9, v9
+    v19 = iadd v18, v10
+    v20 = iadd v19, v19
+    v21 = iadd v20, v11
+    v22 = iadd v21, v21
+    v23 = iadd v22, v12
+    v24 = iadd v23, v23
+    v25 = iadd v24, v13
+    v26 = iadd v25, v25
+    v27 = iadd v26, v14
+    v28 = iadd v27, v27
+    v29 = iadd v28, v15
+    v30 = iadd v29, v29
+    v31 = iadd v30, v16
+    v32 = iadd v31, v31
+    v33 = iadd v32, v17
+    return v33
+}
+
+; r = 256*v0 + 128*v1 + 64*v2 + 32*v3
+;   + 16*(v0+v1) + 8*(v1+v2) + 4*(v2+v3) + 2*(v3+v0) + (v0+v2)
+;   = 275*v0 + 152*v1 + 77*v2 + 38*v3
+; run: %jump9(0, 0, 0, 0) == 0
+; run: %jump9(1, 0, 0, 0) == 275
+; run: %jump9(0, 1, 0, 0) == 152
+; run: %jump9(0, 0, 1, 0) == 77
+; run: %jump9(0, 0, 0, 1) == 38
+; run: %jump9(1, 1, 1, 1) == 542
+; run: %jump9(1, -1, 1, -1) == 162

@@ -1,0 +1,58 @@
+test interpret
+test run
+target scry32
+
+; A multi-way branch (`br_table`) whose arms each carry five block arguments.
+; One table arm receives the values REVERSED, and every arm perturbs the
+; lowest-weight position by a distinct constant, so the result identifies both
+; the arm taken and the positional routing of all five arguments.
+
+function %table5(i32 uext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = iadd v1, v2
+    v4 = isub v1, v2
+    v5 = iadd v1, v1
+    br_table v0, block3(v1, v2, v3, v4, v5), [block1(v1, v2, v3, v4, v5), block2(v5, v4, v3, v2, v1)]
+
+block1(v6: i32, v7: i32, v8: i32, v9: i32, v10: i32):
+    v40 = iconst.i32 10000
+    v41 = iadd v10, v40
+    jump block4(v6, v7, v8, v9, v41)
+
+block2(v11: i32, v12: i32, v13: i32, v14: i32, v15: i32):
+    v42 = iconst.i32 20000
+    v43 = iadd v15, v42
+    jump block4(v11, v12, v13, v14, v43)
+
+block3(v16: i32, v17: i32, v18: i32, v19: i32, v20: i32):
+    v21 = iconst.i32 1000
+    v22 = iadd v20, v21
+    jump block4(v16, v17, v18, v19, v22)
+
+block4(v23: i32, v24: i32, v25: i32, v26: i32, v27: i32):
+    ; Horner: 16*v23 + 8*v24 + 4*v25 + 2*v26 + v27
+    v28 = iadd v23, v23
+    v29 = iadd v28, v24
+    v30 = iadd v29, v29
+    v31 = iadd v30, v25
+    v32 = iadd v31, v31
+    v33 = iadd v32, v26
+    v34 = iadd v33, v33
+    v35 = iadd v34, v27
+    return v35
+}
+
+; canonical order:  W  = 16*v1 + 8*v2 + 4*(v1+v2) + 2*(v1-v2) + 2*v1
+;                      = 24*v1 + 10*v2
+; reversed order:   W' = 16*2*v1 + 8*(v1-v2) + 4*(v1+v2) + 2*v2 + v1
+;                      = 45*v1 - 2*v2
+; index 0 -> block1: W + 10000
+; index 1 -> block2: W' + 20000
+; default -> block3: W + 1000
+; run: %table5(0, 5, 3) == 10150
+; run: %table5(1, 5, 3) == 20219
+; run: %table5(2, 5, 3) == 1150
+; run: %table5(9, 1, 1) == 1034
+; run: %table5(0, 0, 0) == 10000
+; run: %table5(1, 2, 0) == 20090
+; run: %table5(0, -1, 2) == 9996

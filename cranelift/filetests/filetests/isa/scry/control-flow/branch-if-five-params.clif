@@ -1,0 +1,47 @@
+test interpret
+test run
+target scry32
+
+; A conditional branch whose two arms each pass five block arguments, in
+; DIFFERENT orders (the false arm receives them reversed and reverses them
+; back before forwarding). Each arm therefore has its own >4-argument
+; delivery, and both forward five arguments again to a shared merge block.
+; Each arm perturbs the lowest-weight position by a distinct constant (+5
+; true, +1000 false) so the taken arm is visible in the result.
+
+function %route5(i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v4 = isub v0, v1
+    brif v0, block1(v0, v1, v2, v3, v4), block2(v4, v3, v2, v1, v0)
+
+block1(v5: i32, v6: i32, v7: i32, v8: i32, v9: i32):
+    v30 = iconst.i32 5
+    v31 = iadd v9, v30
+    jump block3(v5, v6, v7, v8, v31)
+
+block2(v10: i32, v11: i32, v12: i32, v13: i32, v14: i32):
+    v15 = iconst.i32 1000
+    v16 = iadd v10, v15
+    jump block3(v14, v13, v12, v11, v16)
+
+block3(v17: i32, v18: i32, v19: i32, v20: i32, v21: i32):
+    ; Horner: 16*v17 + 8*v18 + 4*v19 + 2*v20 + v21
+    v22 = iadd v17, v17
+    v23 = iadd v22, v18
+    v24 = iadd v23, v23
+    v25 = iadd v24, v19
+    v26 = iadd v25, v25
+    v27 = iadd v26, v20
+    v28 = iadd v27, v27
+    v29 = iadd v28, v21
+    return v29
+}
+
+; W = 16*v0 + 8*v1 + 4*v2 + 2*v3 + (v0-v1) = 17*v0 + 7*v1 + 4*v2 + 2*v3
+; true arm (v0 != 0): W + 5; false arm (v0 == 0): W + 1000
+; run: %route5(1, 0, 0, 0) == 22
+; run: %route5(1, 2, 3, 4) == 56
+; run: %route5(5, 1, 1, 1) == 103
+; run: %route5(0, 0, 0, 0) == 1000
+; run: %route5(0, 1, 2, 3) == 1021
+; run: %route5(0, -4, 10, 2) == 1016

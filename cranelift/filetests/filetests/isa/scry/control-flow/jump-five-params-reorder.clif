@@ -1,0 +1,36 @@
+test interpret
+test run
+target scry32
+
+; Five block arguments where a NON-COMMUTATIVE consumer uses parameters 2 and
+; 4 in wire order. In the receiving echo chain, parameter 4 is terminally
+; output by the second echo while parameter 2 rides the chain and is output by
+; the LAST echo - the physical production order (4 then 2) is the reverse of
+; the consumer's expected order, so the compiler must insert a reorder.
+; The following isubs likewise consume earlier-produced parameters after
+; later-produced intermediate values.
+
+function %cross_echo(i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v4 = iadd v0, v1
+    jump block1(v0, v1, v2, v3, v4)
+
+block1(v5: i32, v6: i32, v7: i32, v8: i32, v9: i32):
+    ; ((v7 - v9 - v5)*2 - v6)*2 - v8
+    v10 = isub v7, v9
+    v11 = isub v10, v5
+    v12 = iadd v11, v11
+    v13 = isub v12, v6
+    v14 = iadd v13, v13
+    v15 = isub v14, v8
+    return v15
+}
+
+; r = 4*v2 - 4*(v0+v1) - 4*v0 - 2*v1 - v3 = -8*v0 - 6*v1 + 4*v2 - v3
+; run: %cross_echo(0, 0, 0, 0) == 0
+; run: %cross_echo(1, 0, 0, 0) == -8
+; run: %cross_echo(0, 1, 0, 0) == -6
+; run: %cross_echo(0, 0, 1, 0) == 4
+; run: %cross_echo(0, 0, 0, 1) == -1
+; run: %cross_echo(1, 2, 3, 4) == -12
+; run: %cross_echo(3, 1, 4, 2) == -16
