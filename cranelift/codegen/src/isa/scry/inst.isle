@@ -208,6 +208,17 @@
       (idx u16) ;; Stack index to store at
     )
 
+    ;; Pseudo-instruction: a store of a stack-passed call argument (the 5th
+    ;; onward, see the ABI's calling convention) into the outgoing argument
+    ;; area, i.e. the shared frame set up for the next call. The offset is
+    ;; relative to that area's base; `lower_stack_args` resolves it against
+    ;; the function's own private frame size into a concrete stack access.
+    (StoreStackArg
+      (rs Reg)          ;; value to store
+      (offset u16)      ;; byte offset within the outgoing argument area
+      (scale_pow2 u16)  ;; power-of-two scale of the stored type
+    )
+
     ;; Load from the stack frame. The load address is scale*idx from the
     ;; frame base, where the scale is the size of the loaded type.
     (LoadStack
@@ -231,6 +242,7 @@
     ;; (freeing the private frame would only merge it into the shared frame).
     (StackAdjust
       (reserve bool)    ;; true = reserve, false = free
+      (private bool)    ;; true = private frame, false = shared frame
       (amount_pow2 u16) ;; 2^amount_pow2 bytes
     )
 

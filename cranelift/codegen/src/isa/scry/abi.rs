@@ -14,8 +14,39 @@ use crate::settings;
 use alloc::vec::Vec;
 use regalloc2::{MachineEnv, PReg, PRegSet};
 
+use crate::isa::scry::inst::QUEUE_CAPACITY;
 use crate::isa::scry::lower::isle::generated_code::MInst;
+use crate::isa::scry::type_to_isatype;
 use smallvec::{SmallVec, smallvec};
+
+/// Byte offsets of the stack-passed arguments (the ones beyond the first
+/// [`QUEUE_CAPACITY`], see the ABI's calling convention) within the argument
+/// area, plus the area's total size. Each argument is placed directly after
+/// the previous one, at the next offset aligned to its scale; the area starts
+/// at offset 0 of the callee's private frame.
+pub(crate) fn stack_args_layout(params: &[ir::AbiParam]) -> (Vec<u32>, u32) {
+    let mut offsets = Vec::new();
+    let mut size = 0u32;
+    for p in params.iter().skip(QUEUE_CAPACITY) {
+        let scale = p.value_type.bytes();
+        size = size.next_multiple_of(scale);
+        offsets.push(size);
+        size += scale;
+    }
+    (offsets, size)
+}
+
+/// The total size of the stack-passed argument area for the given parameters.
+pub(crate) fn stack_args_size(params: &[ir::AbiParam]) -> u32 {
+    stack_args_layout(params).1
+}
+
+/// The frame offset at which a function's own stack slots start: its incoming
+/// stack-argument area (at offset 0) rounded up to the 16-byte frame
+/// alignment, which keeps every slot's natural alignment intact.
+pub(crate) fn stack_locals_base(params: &[ir::AbiParam]) -> u32 {
+    stack_args_size(params).next_multiple_of(16)
+}
 
 /// Scry-specific ABI behavior. This struct just serves as an implementation
 /// point for the trait; it is never actually instantiated.
@@ -44,37 +75,98 @@ impl ABIMachineSpec for ScryMachineDeps {
         _call_conv: isa::CallConv,
         _flags: &settings::Flags,
         params: &[ir::AbiParam],
-        _args_or_rets: ArgsOrRets,
+        args_or_rets: ArgsOrRets,
         _add_ret_area_ptr: bool,
         mut args: ArgsAccumulator,
     ) -> CodegenResult<(u32, Option<usize>)> {
-        // The we use the pregs to encode the parameter's position in the parameter list.
-        // This is needed after instruction selection, where MInst::Args only gets the parameters that are actually used.
-        // The pregs and their positions are therefore used to get the unused parameters to,e.g., discard them correctly.
+        // Return values beyond the queue capacity would need the stack-passing
+        // convention too, which is not implemented yet.
+        if args_or_rets == ArgsOrRets::Rets {
+            assert!(
+                params.len() <= QUEUE_CAPACITY,
+                "more than {QUEUE_CAPACITY} return values (stack-passed returns) not yet supported"
+            );
+        }
+
+        // The first QUEUE_CAPACITY arguments are passed as call operands,
+        // delivered to the callee's first instruction; any further arguments
+        // are passed on the stack per the ABI's calling convention.
+        //
+        // For the operand arguments, we use the pregs to encode the parameter's
+        // position in the parameter list. This is needed after instruction
+        // selection, where MInst::Args only gets the parameters that are
+        // actually used. The pregs and their positions are therefore used to
+        // get the unused parameters to, e.g., discard them correctly.
+        let (stack_offsets, stack_size) = stack_args_layout(params);
         for (i, p) in params.iter().enumerate() {
             assert_eq!(p.purpose, ArgumentPurpose::Normal);
 
-            args.push(ABIArg::Slots {
-                slots: SmallVec::<[ABIArgSlot; 1]>::from_vec(vec![ABIArgSlot::Reg {
+            let slot = if i < QUEUE_CAPACITY {
+                ABIArgSlot::Reg {
                     reg: Reg::from_real_reg(PReg::new(i, RegClass::Int))
                         .to_real_reg()
                         .unwrap(),
                     ty: p.value_type,
                     extension: p.extension,
-                }]),
+                }
+            } else {
+                ABIArgSlot::Stack {
+                    offset: stack_offsets[i - QUEUE_CAPACITY] as i64,
+                    ty: p.value_type,
+                    extension: p.extension,
+                }
+            };
+
+            args.push(ABIArg::Slots {
+                slots: SmallVec::<[ABIArgSlot; 1]>::from_vec(vec![slot]),
                 purpose: p.purpose,
             });
         }
 
-        Ok((0, None))
+        Ok((stack_size, None))
     }
 
-    fn gen_load_stack(_mem: StackAMode, _into_reg: Writable<Reg>, _ty: Type) -> MInst {
-        unimplemented!()
+    fn gen_load_stack(mem: StackAMode, into_reg: Writable<Reg>, ty: Type) -> MInst {
+        // Only used for the callee side of stack-passed arguments: the
+        // incoming argument area sits at the base of the private frame
+        // (offset 0). 
+        match mem {
+            StackAMode::IncomingArg(offset, _) => {
+                let scale = ty.bytes() as i64;
+                assert_eq!(
+                    offset % scale,
+                    0,
+                    "stack argument offset not aligned to its scale"
+                );
+                let idx = offset / scale;
+                assert!(
+                    idx <= 31,
+                    "stack argument at offset {offset} is beyond the stack-load index range"
+                );
+                MInst::LoadStack {
+                    ty: type_to_isatype(ty),
+                    rd: into_reg,
+                    idx: idx as u16,
+                }
+            }
+            mem => unimplemented!("gen_load_stack: {mem:?}"),
+        }
     }
 
-    fn gen_store_stack(_mem: StackAMode, _from_reg: Reg, _ty: Type) -> MInst {
-        unimplemented!()
+    fn gen_store_stack(mem: StackAMode, from_reg: Reg, ty: Type) -> MInst {
+        // Only used for the caller side of stack-passed arguments. The
+        // outgoing argument area lives in the caller's shared frame, whose
+        // frame offset (the caller's own private frame size) is not known
+        // during lowering; `lower_stack_args` later resolves this
+        // pseudo-instruction into a concrete stack access.
+        match mem {
+            StackAMode::OutgoingArg(offset) => MInst::StoreStackArg {
+                rs: from_reg,
+                offset: u16::try_from(offset).expect("outgoing stack argument offset too large"),
+                scale_pow2: ty.bytes().ilog2() as u16,
+            },
+            mem => unimplemented!("gen_store_stack: {mem:?}"),
+        }
     }
 
     fn gen_move(_to_reg: Writable<Reg>, _from_reg: Reg, _ty: Type) -> MInst {
