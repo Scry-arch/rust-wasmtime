@@ -1,0 +1,190 @@
+test interpret
+test run
+target scry32
+
+; Values that must fly FURTHER than an output reference field can express.
+; Most instructions have a 5-bit output reference (reach: 31 executed
+; instructions); a value whose consumer lies beyond that must be bridged by
+; compiler-inserted echoes carrying the remaining distance. Each function
+; produces value(s) early, executes a long dependent chain (each iconst+iadd
+; pair lowers to several machine instructions, putting the consumer far past
+; the 31-instruction reach), and then consumes the early value(s) with
+; non-commutative isubs so misrouting or loss changes the result.
+
+; One far-flying value.
+function %far_flight(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = isub v0, v1
+    v3 = iconst.i32 1
+    v4 = iadd v1, v3
+    v5 = iconst.i32 1
+    v6 = iadd v4, v5
+    v7 = iconst.i32 1
+    v8 = iadd v6, v7
+    v9 = iconst.i32 1
+    v10 = iadd v8, v9
+    v11 = iconst.i32 1
+    v12 = iadd v10, v11
+    v13 = iconst.i32 1
+    v14 = iadd v12, v13
+    v15 = iconst.i32 1
+    v16 = iadd v14, v15
+    v17 = iconst.i32 1
+    v18 = iadd v16, v17
+    v19 = iconst.i32 1
+    v20 = iadd v18, v19
+    v21 = iconst.i32 1
+    v22 = iadd v20, v21
+    v23 = iconst.i32 1
+    v24 = iadd v22, v23
+    v25 = iconst.i32 1
+    v26 = iadd v24, v25
+    v27 = iconst.i32 1
+    v28 = iadd v26, v27
+    v29 = iconst.i32 1
+    v30 = iadd v28, v29
+    v31 = iconst.i32 1
+    v32 = iadd v30, v31
+    v33 = iconst.i32 1
+    v34 = iadd v32, v33
+    v35 = iconst.i32 1
+    v36 = iadd v34, v35
+    v37 = iconst.i32 1
+    v38 = iadd v36, v37
+    v39 = iconst.i32 1
+    v40 = iadd v38, v39
+    v41 = iconst.i32 1
+    v42 = iadd v40, v41
+    v43 = iconst.i32 1
+    v44 = iadd v42, v43
+    v45 = iconst.i32 1
+    v46 = iadd v44, v45
+    v47 = iconst.i32 1
+    v48 = iadd v46, v47
+    v49 = iconst.i32 1
+    v50 = iadd v48, v49
+    v51 = iconst.i32 1
+    v52 = iadd v50, v51
+    v53 = iconst.i32 1
+    v54 = iadd v52, v53
+    v55 = iconst.i32 1
+    v56 = iadd v54, v55
+    v57 = iconst.i32 1
+    v58 = iadd v56, v57
+    v59 = iconst.i32 1
+    v60 = iadd v58, v59
+    v61 = iconst.i32 1
+    v62 = iadd v60, v61
+    v63 = iconst.i32 1
+    v64 = iadd v62, v63
+    v65 = iconst.i32 1
+    v66 = iadd v64, v65
+    v67 = iconst.i32 1
+    v68 = iadd v66, v67
+    v69 = iconst.i32 1
+    v70 = iadd v68, v69
+    v71 = iconst.i32 1
+    v72 = iadd v70, v71
+    v73 = iconst.i32 1
+    v74 = iadd v72, v73
+    v75 = isub v74, v2
+    return v75
+}
+
+; r = (v1 + 36) - (v0 - v1) = 2*v1 - v0 + 36
+; run: %far_flight(0, 0) == 36
+; run: %far_flight(1, 0) == 35
+; run: %far_flight(0, 1) == 38
+; run: %far_flight(10, -5) == 16
+; run: %far_flight(-3, 4) == 47
+
+; Two far-flying values consumed IN ORDER by the same non-commutative
+; instruction: both bridges must deliver to one consumer with the operand
+; order preserved.
+function %far_flight2(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = isub v0, v1
+    v3 = iadd v0, v0
+    v4 = iconst.i32 1
+    v5 = iadd v1, v4
+    v6 = iconst.i32 1
+    v7 = iadd v5, v6
+    v8 = iconst.i32 1
+    v9 = iadd v7, v8
+    v10 = iconst.i32 1
+    v11 = iadd v9, v10
+    v12 = iconst.i32 1
+    v13 = iadd v11, v12
+    v14 = iconst.i32 1
+    v15 = iadd v13, v14
+    v16 = iconst.i32 1
+    v17 = iadd v15, v16
+    v18 = iconst.i32 1
+    v19 = iadd v17, v18
+    v20 = iconst.i32 1
+    v21 = iadd v19, v20
+    v22 = iconst.i32 1
+    v23 = iadd v21, v22
+    v24 = iconst.i32 1
+    v25 = iadd v23, v24
+    v26 = iconst.i32 1
+    v27 = iadd v25, v26
+    v28 = iconst.i32 1
+    v29 = iadd v27, v28
+    v30 = iconst.i32 1
+    v31 = iadd v29, v30
+    v32 = iconst.i32 1
+    v33 = iadd v31, v32
+    v34 = iconst.i32 1
+    v35 = iadd v33, v34
+    v36 = iconst.i32 1
+    v37 = iadd v35, v36
+    v38 = iconst.i32 1
+    v39 = iadd v37, v38
+    v40 = iconst.i32 1
+    v41 = iadd v39, v40
+    v42 = iconst.i32 1
+    v43 = iadd v41, v42
+    v44 = iconst.i32 1
+    v45 = iadd v43, v44
+    v46 = iconst.i32 1
+    v47 = iadd v45, v46
+    v48 = iconst.i32 1
+    v49 = iadd v47, v48
+    v50 = iconst.i32 1
+    v51 = iadd v49, v50
+    v52 = iconst.i32 1
+    v53 = iadd v51, v52
+    v54 = iconst.i32 1
+    v55 = iadd v53, v54
+    v56 = iconst.i32 1
+    v57 = iadd v55, v56
+    v58 = iconst.i32 1
+    v59 = iadd v57, v58
+    v60 = iconst.i32 1
+    v61 = iadd v59, v60
+    v62 = iconst.i32 1
+    v63 = iadd v61, v62
+    v64 = iconst.i32 1
+    v65 = iadd v63, v64
+    v66 = iconst.i32 1
+    v67 = iadd v65, v66
+    v68 = iconst.i32 1
+    v69 = iadd v67, v68
+    v70 = iconst.i32 1
+    v71 = iadd v69, v70
+    v72 = iconst.i32 1
+    v73 = iadd v71, v72
+    v74 = iconst.i32 1
+    v75 = iadd v73, v74
+    v76 = isub v2, v3
+    v77 = isub v75, v76
+    return v77
+}
+
+; r = (v1 + 36) - ((v0 - v1) - 2*v0) = v0 + 2*v1 + 36
+; run: %far_flight2(0, 0) == 36
+; run: %far_flight2(1, 0) == 37
+; run: %far_flight2(0, 1) == 38
+; run: %far_flight2(5, 3) == 47
+; run: %far_flight2(-4, 7) == 46

@@ -57,7 +57,7 @@ impl MachInst for MInst {
         use MInst::*;
         match self {
             Nop | Ret { .. } | ImmJump { .. } | StackAdjust { .. } => (),
-            StoreStack { rs, .. } => {
+            StoreStack { rs, .. } | StoreStackArg { rs, .. } => {
                 collector.reg_use(rs);
             }
             SAddr { rd, .. } | LoadStack { rd, .. } | LoadExtName { rd, .. } => {
@@ -197,6 +197,7 @@ impl MachInst for MInst {
             | Store { .. }
             | Load { .. }
             | StoreStack { .. }
+            | StoreStackArg { .. }
             | LoadStack { .. }
             | SAddr { .. }
             | StackAdjust { .. }
@@ -490,6 +491,20 @@ impl MInst {
                 "StoreStack",
                 ["rs:".into(), reg_name(*rs), format!("idx: {idx}")].into_iter(),
             ),
+            StoreStackArg {
+                rs,
+                offset,
+                scale_pow2,
+            } => join(
+                "StoreStackArg",
+                [
+                    "rs:".into(),
+                    reg_name(*rs),
+                    format!("offset: {offset}"),
+                    format!("scale_pow2: {scale_pow2}"),
+                ]
+                .into_iter(),
+            ),
             LoadStack { ty, rd, idx } => join(
                 "LoadStack",
                 [
@@ -516,11 +531,13 @@ impl MInst {
             ),
             StackAdjust {
                 reserve,
+                private,
                 amount_pow2,
             } => join(
                 "StackAdjust",
                 [
                     format!("reserve: {reserve}"),
+                    format!("private: {private}"),
                     format!("amount_pow2: {amount_pow2}"),
                 ]
                 .into_iter(),
@@ -701,7 +718,7 @@ impl MInst {
             | StackAdjust { .. } => {
                 vec![]
             }
-            StoreStack { rs, .. } => vec![rs],
+            StoreStack { rs, .. } | StoreStackArg { rs, .. } => vec![rs],
             Reorder { rs1, rs2, .. } => {
                 vec![rs1, rs2]
             }
@@ -782,6 +799,7 @@ impl MInst {
             | Ret { .. }
             | Store { .. }
             | StoreStack { .. }
+            | StoreStackArg { .. }
             | StackAdjust { .. }
             | JumpTrigger { .. }
             | ImmJump { .. }
@@ -891,7 +909,7 @@ impl MInst {
             | EchoLong { .. }
             | EchoSplit { .. }
             | EchoChain { .. } => 1,
-            DoubleAlu { .. } | ImmJump { .. } => unreachable!(),
+            DoubleAlu { .. } | ImmJump { .. } | StoreStackArg { .. } => unreachable!(),
         }
     }
 
@@ -947,7 +965,8 @@ impl MInst {
             | IntCmp { .. }
             | BinaryAlu { .. }
             | DoubleAlu { .. }
-            | Resize { .. } => {
+            | Resize { .. }
+            | StoreStackArg { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
         }

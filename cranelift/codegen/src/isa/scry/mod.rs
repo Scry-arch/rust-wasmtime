@@ -36,7 +36,10 @@ use graphene::core::property::Rooted;
 use graphene::core::{Graph, MaybeOwned};
 use regalloc2::{Block, Function as RegFunc};
 use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
-use std::cmp::max;
+use crate::ir::immediates::Imm64;
+use crate::isa::scry::abi::{stack_args_size, stack_locals_base};
+use crate::isa::scry::lower::isle::scaled_index;
+use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::iter::once;
 use target_lexicon::{Architecture, Triple};
@@ -308,8 +311,11 @@ fn prepare_block_params(
             // Unused parameters are not lowered into Args, so reconstruct the full
             // positional list from the signature, using each ArgPair's preg (which
             // encodes the parameter index) and filling gaps with fresh, unused vregs
-            // that will be discarded below.
-            let mut params: Vec<Option<Reg>> = vec![None; func_sig.params.len()];
+            // that will be discarded below. Only the first QUEUE_CAPACITY parameters
+            // are delivered as operands; the rest are passed on the stack (defined
+            // by stack loads, not by Args) and take no wire positions.
+            let mut params: Vec<Option<Reg>> =
+                vec![None; min(QUEUE_CAPACITY, func_sig.params.len())];
             for p in args {
                 params[p.preg.to_real_reg().unwrap().hw_enc() as usize] = Some(p.vreg.to_reg());
             }
@@ -648,6 +654,150 @@ fn prepare_block_params(
     log::trace!("VCodeCFG: {cfg:?}");
 }
 
+/// Resolves the stack-passed arguments of every call site (see the ABI's
+/// calling convention and `MInst::StoreStackArg`).
+///
+/// For each call passing arguments beyond the operand limit, this
+/// 1. reserves the outgoing argument area on the shared frame (which the call
+///    turns into the callee's private frame),
+/// 2. resolves each `StoreStackArg` into a concrete stack access at frame
+///    offset `private_size + offset` (the shared frame starts where the
+///    private frame ends, and stack indexing is not bounded by the private
+///    frame),
+/// 3. inserts the echo receiving the call's return values -- the machine
+///    delivers them to the first instruction executed after the call trigger,
+///    so the instruction there must be their consumer, and
+/// 4. frees the returned shared frame after the call (the callee releases its
+///    own reservations before returning, handing exactly the argument area
+///    back).
+///
+/// Must run before [`resolve_instruction_types`] so the instructions it
+/// inserts get their types resolved, and before [`insert_ref_distances`].
+fn lower_stack_args(
+    cfg: &mut VCodeCFG<MInst>,
+    private_size: u32,
+    mut new_vreg: impl FnMut() -> Reg,
+) {
+    log::debug!("lower_stack_args");
+    for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
+        while let Some(first_store) = bb
+            .inst
+            .iter()
+            .position(|i| matches!(i, MInst::StoreStackArg { .. }))
+        {
+            // The stores of one call site are emitted contiguously, directly
+            // followed by the call issue and its trigger.
+            let call_idx = bb.inst[first_store..]
+                .iter()
+                .position(|i| matches!(i, MInst::Call { .. }))
+                .map(|p| p + first_store)
+                .expect("StoreStackArg without a following Call");
+            assert!(
+                bb.inst[first_store..call_idx]
+                    .iter()
+                    .all(|i| matches!(i, MInst::StoreStackArg { .. })),
+                "stack-argument stores are not contiguous before their call"
+            );
+            let trigger_idx = call_idx + 1;
+            let (rets, stack_args_bytes, num_stack_args) = match &bb.inst[trigger_idx] {
+                MInst::CallArgs { rets, sig, .. } => (
+                    rets.iter().map(|r| r.vreg.to_reg()).collect::<Vec<_>>(),
+                    stack_args_size(&sig.params),
+                    sig.params.len() - min(QUEUE_CAPACITY, sig.params.len()),
+                ),
+                inst => unreachable!("Call not followed by CallArgs: {inst:?}"),
+            };
+            assert_eq!(call_idx - first_store, num_stack_args);
+            assert!(stack_args_bytes > 0);
+
+            // The reserve/free instructions can only encode power-of-two
+            // amounts, so one instruction per set bit is emitted.
+            let adjust_chunks = |reserve: bool| {
+                (0..16u16)
+                    .filter(move |k| stack_args_bytes & (1 << k) != 0)
+                    .map(move |k| MInst::StackAdjust {
+                        reserve,
+                        private: false,
+                        amount_pow2: k,
+                    })
+            };
+
+            let mut resolved: Vec<MInst> = adjust_chunks(true).collect();
+            for inst in &bb.inst[first_store..call_idx] {
+                let MInst::StoreStackArg {
+                    rs,
+                    offset,
+                    scale_pow2,
+                } = inst
+                else {
+                    unreachable!()
+                };
+                let frame_offset = private_size + *offset as u32;
+                let scale = 1u32 << scale_pow2;
+                if frame_offset % scale == 0 && frame_offset / scale <= 31 {
+                    // Reachable as a store-stack index scaled by the value
+                    resolved.push(MInst::StoreStack {
+                        rs: *rs,
+                        idx: (frame_offset / scale) as u16,
+                    });
+                } else if let Some((sp, idx)) = scaled_index(frame_offset as i64) {
+                    // Reachable as a stack address of some other scale
+                    let addr = new_vreg();
+                    resolved.push(MInst::SAddr {
+                        rd: WritableReg::from_reg(addr),
+                        scale_pow2: sp,
+                        idx,
+                    });
+                    resolved.push(MInst::Store { rd: addr, rs: *rs });
+                } else {
+                    // Materialize frame base + offset (cf. `emit_stack_addr`)
+                    let base = new_vreg();
+                    let off = new_vreg();
+                    let addr = new_vreg();
+                    resolved.push(MInst::SAddr {
+                        rd: WritableReg::from_reg(base),
+                        scale_pow2: 0,
+                        idx: 0,
+                    });
+                    resolved.push(MInst::Const {
+                        ty: IsaType::Invalid,
+                        rd: WritableReg::from_reg(off),
+                        imm: Imm64::new(frame_offset as i64),
+                    });
+                    resolved.push(MInst::BinaryAlu {
+                        op: BinaryAluOp::IntAddWrap,
+                        rd: WritableReg::from_reg(addr),
+                        rs1: base,
+                        rs2: off,
+                    });
+                    resolved.push(MInst::Store { rd: addr, rs: *rs });
+                }
+            }
+            resolved.push(bb.inst[call_idx].clone());
+            resolved.push(bb.inst[trigger_idx].clone());
+            // Position for the return-value echo, relative to `first_store`
+            let echo_pos = resolved.len();
+            resolved.extend(adjust_chunks(false));
+
+            bb.inst.splice(first_store..trigger_idx + 1, resolved);
+
+            if !rets.is_empty() {
+                let rds = rets
+                    .iter()
+                    .map(|r| {
+                        let fresh = new_vreg();
+                        replace_all_uses(bb, *r, fresh);
+                        WritableReg::from_reg(fresh)
+                    })
+                    .collect();
+                bb.inst
+                    .insert(first_store + echo_pos, MInst::Echo { rds, rss: rets });
+            }
+        }
+    }
+    log::trace!("VCodeCFG: {cfg:?}");
+}
+
 /// Inserts the stack frame reservation and release instructions.
 ///
 /// The frame (sized by the function's stack slots) is reserved on the private
@@ -689,6 +839,7 @@ fn insert_frame_limits(cfg: &mut VCodeCFG<MInst>, frame_bytes: u32) {
             pos,
             MInst::StackAdjust {
                 reserve: true,
+                private: true,
                 amount_pow2: *k,
             },
         );
@@ -703,6 +854,7 @@ fn insert_frame_limits(cfg: &mut VCodeCFG<MInst>, frame_bytes: u32) {
                     ret_idx + i,
                     MInst::StackAdjust {
                         reserve: false,
+                        private: false,
                         amount_pow2: *k,
                     },
                 );
@@ -918,7 +1070,20 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                             Some(rds[1].to_reg())
                         }
                         _ => None,
-                    };
+                    }
+                    // An output reference beyond its field's range (5 bits,
+                    // except EchoLong's 10) is likewise bridged: the echo's
+                    // longer reference carries the distance, chaining further
+                    // echoes if even that is exceeded.
+                    .or_else(|| {
+                        let max_ref: u16 = match inst {
+                            MInst::EchoLong { .. } => (1 << 10) - 1,
+                            _ => (1 << 5) - 1,
+                        };
+                        inst.get_defs()
+                            .enumerate()
+                            .find_map(|(i, d)| (ref_dists[&i] > max_ref).then_some(d))
+                    });
                     if let Some(rd) = bridge_reg {
                         let fresh = new_vreg();
                         replace_all_uses(bb, rd, fresh);
@@ -1176,7 +1341,7 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
     log::trace!("VCodeCFG: {cfg:?}");
 }
 
-fn type_to_isatype(t: Type) -> IsaType {
+pub(crate) fn type_to_isatype(t: Type) -> IsaType {
     use crate::ir::types::*;
     use IsaType::*;
     match t {
@@ -1239,7 +1404,8 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
 
     let mut type_map = TypeMap::new(vreg_type);
 
-    // Map function parameters to entry block registers
+    // Map function parameters to entry block registers (the zip truncates to
+    // the operand-delivered parameters; stack-passed ones are typed below)
     for (r, p) in cfg
         .graph
         .root_weight()
@@ -1250,6 +1416,31 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
         let ty = abi_param_to_isatype(p);
         let refined = type_map.get(*r).refine(ty).unwrap();
         type_map.update(*r, refined);
+    }
+
+    // Map the stack-passed parameters (see the ABI's calling convention) to
+    // the entry block's argument-area stack loads. A load's index scaled by
+    // its type identifies the argument-area offset and thereby the parameter
+    // (unused stack parameters simply have no load). Only argument loads
+    // carry an `Integer` type from lowering (see `gen_load_stack`); stack
+    // accesses fused from `stack_addr` start as `Invalid` instead.
+    let (stack_offsets, _) = abi::stack_args_layout(&func_sig.params);
+    for inst in cfg.graph.root_weight().inst.iter() {
+        if let MInst::LoadStack {
+            ty: ty @ IsaType::Integer(_),
+            rd,
+            idx,
+        } = inst
+        {
+            let offset = (*idx as u32) << ty.size_pow2();
+            let param_idx = stack_offsets
+                .iter()
+                .position(|off| *off == offset)
+                .expect("entry stack load does not match any stack parameter's offset");
+            let ty = abi_param_to_isatype(&func_sig.params[QUEUE_CAPACITY + param_idx]);
+            let refined = type_map.get(rd.to_reg()).refine(ty).unwrap();
+            type_map.update(rd.to_reg(), refined);
+        }
     }
 
     // For every register that crosses a block boundary, the blocks whose type
@@ -1773,11 +1964,30 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
 
                     // We don't assign the type of the destination since we must get the type requirements from other instructions
                 }
+                SAddr { rd, .. } => {
+                    // The machine types a stack address as a full-width
+                    // unsigned integer of its pointer size, regardless of any
+                    // consumer (the encoding has no type field). This also
+                    // grounds the types of address arithmetic on registers
+                    // created after lowering, which have no CLIF fallback
+                    // type (see `lower_stack_args`).
+                    update_changed(
+                        &rd.to_reg(),
+                        type_map
+                            .get(rd.to_reg())
+                            .refine(IsaType::Known(scry_isa::Type::Uint(2)))
+                            .expect("Stack address refine fail"),
+                        type_map,
+                    );
+                }
                 CallArgs {
                     rets, args, sig, ..
                 } => {
                     assert_eq!(rets.len(), sig.returns.len());
-                    assert_eq!(args.len(), sig.params.len());
+                    // Only the first QUEUE_CAPACITY parameters are passed as
+                    // call operands; the rest go on the stack (the zips below
+                    // truncate to the operand parameters).
+                    assert_eq!(args.len(), min(QUEUE_CAPACITY, sig.params.len()));
 
                     for (r, p) in rets.iter().map(|p| p.vreg).zip(sig.returns.iter()) {
                         let ty = abi_param_to_isatype(p);
@@ -1980,11 +2190,16 @@ fn resolve_instruction_types(
                 MInst::Load { ty, rd, .. } | MInst::LoadStack { ty, rd, .. } => {
                     let rd_t = type_map.get(rd.to_reg());
 
-                    if rd_t.is_known() {
-                        *ty = rd_t;
-                    } else {
-                        panic!("Invalid load type: {rd_t:?}");
-                    }
+                    *ty = match rd_t {
+                        t if t.is_known() => t,
+                        // A load whose destination no consumer constrains
+                        // beyond its scale, e.g. a value that is only stored
+                        // back to memory (a stack-passed call argument).
+                        // Memory is untagged, so the signedness is a
+                        // don't-care; default to unsigned.
+                        IsaType::Integer(k) => IsaType::new_known_int(k, false),
+                        t => panic!("Invalid load type: {t:?}"),
+                    };
                 }
                 _ => (),
             }
@@ -2229,13 +2444,18 @@ impl TargetIsa for ScryBackend {
 
         log::trace!("VCodeCFG: {cfg:?}");
 
-        // The stack frame size: the end of the stack slot region (slot offsets
-        // are assigned by `Callee::new`, which the stack access lowerings also
-        // use), rounded up so the frame stays 16-aligned. The frame base is
-        // 16-aligned by ABI guarantee, and keeping every frame's size aligned
-        // preserves that guarantee for callees (a callee's frame base is this
-        // frame's split point).
-        let frame_bytes = func
+        // The private frame layout: the incoming stack-argument area (if any)
+        // sits at the frame base (offset 0, per the ABI's calling convention),
+        // the function's own stack slots above it starting at the 16-aligned
+        // locals base (slot offsets are assigned by `Callee::new`, which the
+        // stack access lowerings also use, and shifted by the locals base in
+        // `stack_frame_offset`), rounded up so the frame stays 16-aligned.
+        // The frame base is 16-aligned by ABI guarantee, and keeping every
+        // frame's total size aligned preserves that guarantee for callees (a
+        // callee's frame base is this frame's split point).
+        let stack_args_bytes = stack_args_size(&vcode.abi.signature().params);
+        let locals_base = stack_locals_base(&vcode.abi.signature().params);
+        let locals_bytes = func
             .sized_stack_slots
             .iter()
             .zip(vcode.abi.sized_stackslot_offsets().iter())
@@ -2243,8 +2463,15 @@ impl TargetIsa for ScryBackend {
             .max()
             .unwrap_or(0)
             .next_multiple_of(16);
+        let private_bytes = locals_base + locals_bytes;
 
-        insert_frame_limits(&mut cfg, frame_bytes);
+        // Resolve the stack-passed arguments of calls made by this function;
+        // their outgoing argument area starts where the private frame ends.
+        lower_stack_args(&mut cfg, private_bytes, &mut new_vreg);
+
+        // Reserve the part of the private frame the incoming arguments don't
+        // already occupy.
+        insert_frame_limits(&mut cfg, private_bytes - stack_args_bytes);
 
         resolve_instruction_types(&mut cfg, reg_type, vcode.abi.signature(), &mut new_vreg);
         insert_duplicates(&mut cfg, &mut new_vreg);

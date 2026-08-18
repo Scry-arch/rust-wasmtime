@@ -89,7 +89,8 @@ impl MachInstEmit for MInst {
             | BinaryAlu { .. }
             | DoubleAlu { .. }
             | Resize { .. }
-            | Echo { .. } => {
+            | Echo { .. }
+            | StoreStackArg { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
             Args { .. } | CallArgs { .. } | JumpTrigger { .. } => vec![],
@@ -208,18 +209,13 @@ impl MachInstEmit for MInst {
             )],
             StackAdjust {
                 reserve,
+                private,
                 amount_pow2,
-            } => {
-                // Reserves target the private frame (which claims fresh memory);
-                // frees target the shared frame, which releases the memory that
-                // freeing the private frame alone would only merge into the
-                // shared frame.
-                vec![Instruction::StackRes(
-                    *reserve,
-                    Bits::try_from(*amount_pow2 as i32).expect("Stack amount out of bounds"),
-                    *reserve,
-                )]
-            }
+            } => vec![Instruction::StackRes(
+                *reserve,
+                Bits::try_from(*amount_pow2 as i32).expect("Stack amount out of bounds"),
+                *private,
+            )],
             Cast { out, ty, .. } => vec![Instruction::Cast(
                 ty.get_known()
                     .unwrap_or(scry_isa::Type::Uint(ty.size_pow2()))

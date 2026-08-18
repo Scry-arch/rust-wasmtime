@@ -1,0 +1,63 @@
+test interpret
+test run
+target scry32
+
+; A caller whose own private frame is so large that the outgoing stack
+; argument area lies beyond what the stack instructions can encode. The
+; 240-byte slot puts the first stack argument at frame offset 240, which is
+; only reachable as an 8-scaled address index (240 = 8*30), and the second
+; at 244, which no scale can express at all, forcing full address
+; materialization (frame base + offset). The slot's content is written
+; before the call and compared after it, so an argument store that resolves
+; its frame offset wrongly (e.g. clobbering the slot region instead of the
+; argument area) changes the result.
+
+function %callee6(i32 sext, i32 sext, i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32, v3: i32, v4: i32, v5: i32):
+    ; Horner: 32*v0 + 16*v1 + 8*v2 + 4*v3 + 2*v4 + v5
+    v6 = iadd v0, v0
+    v7 = iadd v6, v1
+    v8 = iadd v7, v7
+    v9 = iadd v8, v2
+    v10 = iadd v9, v9
+    v11 = iadd v10, v3
+    v12 = iadd v11, v11
+    v13 = iadd v12, v4
+    v14 = iadd v13, v13
+    v15 = iadd v14, v5
+    return v15
+}
+
+; run: %callee6(0, 0, 0, 0, 0, 0) == 0
+; run: %callee6(1, 0, 0, 0, 0, 0) == 32
+; run: %callee6(0, 1, 0, 0, 0, 0) == 16
+; run: %callee6(0, 0, 1, 0, 0, 0) == 8
+; run: %callee6(0, 0, 0, 1, 0, 0) == 4
+; run: %callee6(0, 0, 0, 0, 1, 0) == 2
+; run: %callee6(0, 0, 0, 0, 0, 1) == 1
+; run: %callee6(1, 2, 3, 4, 5, 6) == 120
+
+function %big_frame_caller(i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+    ss0 = explicit_slot 240
+    fn0 = %callee6(i32 sext, i32 sext, i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v8 = stack_addr.i32 ss0
+    store notrap v0, v8
+    v4 = iadd v0, v1
+    v5 = iadd v2, v3
+    v6 = call fn0(v0, v1, v2, v3, v4, v5)
+    v9 = stack_addr.i32 ss0
+    v7 = load.i32 notrap v9
+    v10 = isub v6, v7
+    return v10
+}
+
+; r = 32*v0 + 16*v1 + 8*v2 + 4*v3 + 2*(v0+v1) + (v2+v3) - v0
+;   = 33*v0 + 18*v1 + 9*v2 + 5*v3
+; run: %big_frame_caller(0, 0, 0, 0) == 0
+; run: %big_frame_caller(1, 0, 0, 0) == 33
+; run: %big_frame_caller(0, 1, 0, 0) == 18
+; run: %big_frame_caller(0, 0, 1, 0) == 9
+; run: %big_frame_caller(0, 0, 0, 1) == 5
+; run: %big_frame_caller(1, 2, 3, 4) == 116
+; run: %big_frame_caller(-2, 1, 5, -3) == -18

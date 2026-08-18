@@ -1,0 +1,63 @@
+test interpret
+test run
+target scry32
+
+; A function call passing eight arguments: four as call-trigger operands,
+; four on the stack (i32 each, at offsets 0, 4, 8, 12 of the callee's
+; private frame). Weights 128..1 by position detect any misrouting between
+; the operand and stack halves as well as within them.
+
+function %callee8(i32 sext, i32 sext, i32 sext, i32 sext, i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32, v3: i32, v4: i32, v5: i32, v6: i32, v7: i32):
+    ; Horner: 128*v0 + 64*v1 + 32*v2 + 16*v3 + 8*v4 + 4*v5 + 2*v6 + v7
+    v8 = iadd v0, v0
+    v9 = iadd v8, v1
+    v10 = iadd v9, v9
+    v11 = iadd v10, v2
+    v12 = iadd v11, v11
+    v13 = iadd v12, v3
+    v14 = iadd v13, v13
+    v15 = iadd v14, v4
+    v16 = iadd v15, v15
+    v17 = iadd v16, v5
+    v18 = iadd v17, v17
+    v19 = iadd v18, v6
+    v20 = iadd v19, v19
+    v21 = iadd v20, v7
+    return v21
+}
+
+; run: %callee8(0, 0, 0, 0, 0, 0, 0, 0) == 0
+; run: %callee8(1, 0, 0, 0, 0, 0, 0, 0) == 128
+; run: %callee8(0, 1, 0, 0, 0, 0, 0, 0) == 64
+; run: %callee8(0, 0, 1, 0, 0, 0, 0, 0) == 32
+; run: %callee8(0, 0, 0, 1, 0, 0, 0, 0) == 16
+; run: %callee8(0, 0, 0, 0, 1, 0, 0, 0) == 8
+; run: %callee8(0, 0, 0, 0, 0, 1, 0, 0) == 4
+; run: %callee8(0, 0, 0, 0, 0, 0, 1, 0) == 2
+; run: %callee8(0, 0, 0, 0, 0, 0, 0, 1) == 1
+; run: %callee8(1, 1, 1, 1, 1, 1, 1, 1) == 255
+; run: %callee8(1, 2, 3, 4, 5, 6, 7, 8) == 502
+
+function %caller8(i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+    fn0 = %callee8(i32 sext, i32 sext, i32 sext, i32 sext, i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v4 = iadd v0, v1
+    v5 = iadd v1, v2
+    v6 = iadd v2, v3
+    v7 = iadd v3, v0
+    v8 = call fn0(v0, v1, v2, v3, v4, v5, v6, v7)
+    v9 = iconst.i32 1
+    v10 = iadd v8, v9
+    return v10
+}
+
+; r = 128*v0 + 64*v1 + 32*v2 + 16*v3
+;   + 8*(v0+v1) + 4*(v1+v2) + 2*(v2+v3) + (v3+v0) + 1
+;   = 137*v0 + 76*v1 + 38*v2 + 19*v3 + 1
+; run: %caller8(0, 0, 0, 0) == 1
+; run: %caller8(1, 0, 0, 0) == 138
+; run: %caller8(0, 1, 0, 0) == 77
+; run: %caller8(0, 0, 1, 0) == 39
+; run: %caller8(0, 0, 0, 1) == 20
+; run: %caller8(1, 2, 3, 4) == 480
