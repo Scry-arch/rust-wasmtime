@@ -658,6 +658,21 @@ impl<'a> Trampoline<'a> {
                 loop {
                     match res {
                         Ok(exec) => {
+                            // Enforce the architectural limit of at most 4
+                            // operands delivered to any one instruction; the
+                            // simulator models unbounded queues and does not
+                            // check this during stepping. (`ExecState::
+                            // validate` would check this too, but its stack
+                            // contiguity check trips on the harness's
+                            // synthetic base frames, so check the queues
+                            // directly.)
+                            let state = exec.state();
+                            if std::iter::once(&state.frame)
+                                .chain(state.frame_stack.iter())
+                                .any(|f| f.op_queue.values().any(|ops| ops.len() > 4))
+                            {
+                                panic!("Invalid simulator state: more than 4 operands delivered to one instruction");
+                            }
                             if exec.state().frame_stack.len() == 0 {
                                 // Done
                                 break;

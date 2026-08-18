@@ -1,0 +1,34 @@
+test interpret
+test run
+target scry32
+
+; A loop carrying five values, so the back edge passes five block arguments.
+; Each iteration ROTATES three of the values (a,b,c -> b,c,a) while
+; accumulating the current first one, so correct positional routing on the
+; back edge is observable in the result: after n iterations the accumulator
+; holds the sum of the first n elements of the cyclic sequence a,b,c,a,b,...
+
+function %loop5(i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v4 = iconst.i32 0
+    jump block1(v0, v1, v2, v3, v4)
+
+block1(v5: i32, v6: i32, v7: i32, v8: i32, v9: i32):
+    ; (count, a, b, c, acc)
+    v10 = iadd v9, v6
+    v11 = iconst.i32 -1
+    v12 = iadd v5, v11
+    brif v12, block1(v12, v7, v8, v6, v10), block2(v10)
+
+block2(v13: i32):
+    v14 = iadd v13, v13
+    return v14
+}
+
+; returns 2 * (sum of the first n elements of the cyclic sequence a,b,c,...)
+; run: %loop5(1, 10, 20, 30) == 20
+; run: %loop5(2, 10, 20, 30) == 60
+; run: %loop5(3, 10, 20, 30) == 120
+; run: %loop5(4, 10, 20, 30) == 140
+; run: %loop5(5, 10, 20, 30) == 180
+; run: %loop5(7, 1, 2, 3) == 26

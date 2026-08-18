@@ -1,0 +1,46 @@
+test interpret
+test run
+target scry32
+
+; A conditional branch where only ONE arm exceeds the four-argument limit:
+; the true arm passes six block arguments, the false arm just one. The
+; >4-argument delivery must be computed per edge, not per branch instruction.
+
+function %uneven(i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v4 = iadd v0, v1
+    v5 = iadd v2, v3
+    brif v0, block1(v0, v1, v2, v3, v4, v5), block2(v5)
+
+block1(v6: i32, v7: i32, v8: i32, v9: i32, v10: i32, v11: i32):
+    ; Horner: 32*v6 + 16*v7 + 8*v8 + 4*v9 + 2*v10 + v11
+    v14 = iadd v6, v6
+    v15 = iadd v14, v7
+    v16 = iadd v15, v15
+    v17 = iadd v16, v8
+    v18 = iadd v17, v17
+    v19 = iadd v18, v9
+    v20 = iadd v19, v19
+    v21 = iadd v20, v10
+    v22 = iadd v21, v21
+    v23 = iadd v22, v11
+    jump block3(v23)
+
+block2(v12: i32):
+    v24 = iadd v12, v12
+    jump block3(v24)
+
+block3(v13: i32):
+    v25 = iconst.i32 1
+    v26 = iadd v13, v25
+    return v26
+}
+
+; true arm:  34*v0 + 18*v1 + 9*v2 + 5*v3 + 1
+;            (Horner: 32*v0 + 16*v1 + 8*v2 + 4*v3 + 2*(v0+v1) + (v2+v3))
+; false arm: 2*(v2 + v3) + 1
+; run: %uneven(1, 0, 0, 0) == 35
+; run: %uneven(1, 1, 1, 1) == 67
+; run: %uneven(2, 1, 3, 4) == 134
+; run: %uneven(0, 0, 0, 0) == 1
+; run: %uneven(0, 3, 4, 5) == 19

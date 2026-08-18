@@ -1,0 +1,39 @@
+test interpret
+test run
+target scry32
+
+; An unconditional jump passing five block arguments. The fifth argument
+; exceeds the four-operand ready-queue capacity of a single Scry instruction,
+; so it cannot be delivered to the first instruction in the target branch.
+;
+; The block computes a weighted sum (weights 16,8,4,2,1 by position), so any
+; dropped, duplicated, or permuted argument changes the result. The unit-vector
+; run cases identify exactly which position was misrouted.
+
+function %jump5(i32 sext, i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v4 = iadd v0, v3
+    jump block1(v0, v1, v2, v3, v4)
+
+block1(v5: i32, v6: i32, v7: i32, v8: i32, v9: i32):
+    ; Horner: ((((v5*2 + v6)*2 + v7)*2 + v8)*2 + v9
+    ; = 16*v5 + 8*v6 + 4*v7 + 2*v8 + v9
+    v10 = iadd v5, v5
+    v11 = iadd v10, v6
+    v12 = iadd v11, v11
+    v13 = iadd v12, v7
+    v14 = iadd v13, v13
+    v15 = iadd v14, v8
+    v16 = iadd v15, v15
+    v17 = iadd v16, v9
+    return v17
+}
+
+; r = 16*v0 + 8*v1 + 4*v2 + 2*v3 + (v0+v3) = 17*v0 + 8*v1 + 4*v2 + 3*v3
+; run: %jump5(0, 0, 0, 0) == 0
+; run: %jump5(1, 0, 0, 0) == 17
+; run: %jump5(0, 1, 0, 0) == 8
+; run: %jump5(0, 0, 1, 0) == 4
+; run: %jump5(0, 0, 0, 1) == 3
+; run: %jump5(1, 2, 3, 4) == 57
+; run: %jump5(-1, 1, -1, 1) == -10
