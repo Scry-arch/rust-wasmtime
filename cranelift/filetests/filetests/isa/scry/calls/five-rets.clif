@@ -1,0 +1,57 @@
+test interpret
+test run
+target scry32
+
+; Functions returning five values. All return-trigger operands are delivered
+; to the first caller instruction after the return, whose ready queue holds at
+; most four - so per the ABI the fifth return value is passed on the stack
+; (the callee's private frame at offset 0, which the return turns into the
+; caller's shared frame).
+
+function %spread5(i32 sext, i32 sext) -> i32 sext, i32 sext, i32 sext, i32 sext, i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = iadd v0, v1
+    v3 = isub v0, v1
+    v4 = iadd v0, v0
+    return v0, v2, v3, v4, v1
+}
+; run: %spread5(7, 3) == [7, 10, 4, 14, 3]
+; run: %spread5(0, 0) == [0, 0, 0, 0, 0]
+; run: %spread5(-2, 5) == [-2, 3, -7, -4, 5]
+
+; A caller consuming all five results, weighted (16,8,4,2,1) so a dropped,
+; duplicated, or permuted return value changes the result.
+function %combine5(i32 sext, i32 sext) -> i32 sext {
+    fn0 = %spread5(i32 sext, i32 sext) -> i32 sext, i32 sext, i32 sext, i32 sext, i32 sext
+block0(v0: i32, v1: i32):
+    v2, v3, v4, v5, v6 = call fn0(v0, v1)
+    v7 = iadd v2, v2
+    v8 = iadd v7, v3
+    v9 = iadd v8, v8
+    v10 = iadd v9, v4
+    v11 = iadd v10, v10
+    v12 = iadd v11, v5
+    v13 = iadd v12, v12
+    v14 = iadd v13, v6
+    return v14
+}
+; r = 16*v0 + 8*(v0+v1) + 4*(v0-v1) + 2*(2*v0) + v1 = 32*v0 + 5*v1
+; run: %combine5(0, 0) == 0
+; run: %combine5(1, 0) == 32
+; run: %combine5(0, 1) == 5
+; run: %combine5(7, 3) == 239
+; run: %combine5(-2, 5) == -39
+
+; A caller using only the first and the last (stack-passed) result; the
+; unused middle results must be correctly ignored.
+function %last_only(i32 sext, i32 sext) -> i32 sext {
+    fn0 = %spread5(i32 sext, i32 sext) -> i32 sext, i32 sext, i32 sext, i32 sext, i32 sext
+block0(v0: i32, v1: i32):
+    v2, v3, v4, v5, v6 = call fn0(v0, v1)
+    v7 = isub v6, v2
+    return v7
+}
+; r = v1 - v0
+; run: %last_only(7, 3) == -4
+; run: %last_only(0, 9) == 9
+; run: %last_only(-5, -5) == 0
