@@ -58,7 +58,7 @@ impl<'a, 'b> ScryIsleContext<'a, 'b, MInst, ScryBackend> {
     /// occupies the base of the private frame per the ABI's calling
     /// convention), so all slot offsets are shifted by the locals base.
     fn stack_frame_offset(&self, ss: StackSlot, slot_off: Offset32, off: Offset32) -> i64 {
-        stack_locals_base(&self.lower_ctx.abi().signature().params) as i64
+        stack_locals_base(self.lower_ctx.abi().signature()) as i64
             + self.lower_ctx.abi().sized_stackslot_offset(ss) as i64
             + i32::from(slot_off) as i64
             + i32::from(off) as i64

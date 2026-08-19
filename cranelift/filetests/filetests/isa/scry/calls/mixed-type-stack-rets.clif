@@ -1,0 +1,54 @@
+test interpret
+test run
+target scry32
+
+; Stack-passed return values of mixed types. Like stack arguments, each is
+; placed at the next offset aligned to its scale, directly after the previous
+; one.
+
+; Stack rets: 5th (i32, offset 0..4) then 6th (i16, offset 4..6) - no padding.
+function %mixed6(i32 sext, i16 sext) -> i32 sext, i16 sext, i32 sext, i16 sext, i32 sext, i16 sext {
+block0(v0: i32, v1: i16):
+    v2 = sextend.i32 v1
+    v3 = iadd v0, v2
+    v4 = ireduce.i16 v0
+    v5 = isub v0, v2
+    v6 = iconst.i16 3
+    v7 = iadd v1, v6
+    return v0, v1, v3, v4, v5, v7
+}
+; run: %mixed6(100, 7) == [100, 7, 107, 100, 93, 10]
+; run: %mixed6(70000, 1) == [70000, 1, 70001, 4464, 69999, 4]
+; run: %mixed6(-5, -2) == [-5, -2, -7, -5, -3, 1]
+
+; Stack rets: 5th (i16, offset 0..2) then 6th (i32, aligned up to offset
+; 4..8) - the i32 must skip the 2 padding bytes after the i16.
+function %mixed6b(i32 sext, i16 sext) -> i32 sext, i32 sext, i32 sext, i16 sext, i16 sext, i32 sext {
+block0(v0: i32, v1: i16):
+    v2 = sextend.i32 v1
+    v3 = iadd v0, v2
+    v4 = isub v0, v2
+    v5 = iconst.i16 1
+    v6 = iadd v1, v5
+    v7 = iadd v0, v0
+    return v0, v3, v4, v1, v6, v7
+}
+; run: %mixed6b(10, 3) == [10, 13, 7, 3, 4, 20]
+; run: %mixed6b(-6, 2) == [-6, -4, -8, 2, 3, -12]
+; run: %mixed6b(0, 0) == [0, 0, 0, 0, 1, 0]
+
+; A caller consuming both stack-passed results (in reverse order via
+; non-commutative isubs) together with an operand result.
+function %use6b(i32 sext, i16 sext) -> i32 sext {
+    fn0 = %mixed6b(i32 sext, i16 sext) -> i32 sext, i32 sext, i32 sext, i16 sext, i16 sext, i32 sext
+block0(v0: i32, v1: i16):
+    v2, v3, v4, v5, v6, v7 = call fn0(v0, v1)
+    v8 = sextend.i32 v6
+    v9 = isub v7, v8
+    v10 = isub v9, v2
+    return v10
+}
+; r = 2*v0 - (v1+1) - v0 = v0 - v1 - 1
+; run: %use6b(10, 3) == 6
+; run: %use6b(0, 0) == -1
+; run: %use6b(-6, 2) == -9

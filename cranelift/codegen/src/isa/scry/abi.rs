@@ -19,15 +19,14 @@ use crate::isa::scry::lower::isle::generated_code::MInst;
 use crate::isa::scry::type_to_isatype;
 use smallvec::{SmallVec, smallvec};
 
-/// Byte offsets of the stack-passed arguments (the ones beyond the first
-/// [`QUEUE_CAPACITY`], see the ABI's calling convention) within the argument
-/// area, plus the area's total size. Each argument is placed directly after
-/// the previous one, at the next offset aligned to its scale; the area starts
-/// at offset 0 of the callee's private frame.
-pub(crate) fn stack_args_layout(params: &[ir::AbiParam]) -> (Vec<u32>, u32) {
+/// Byte offsets of the stack-passed values (the ones beyond the first
+/// [`QUEUE_CAPACITY`], see the ABI's calling convention) within their area,
+/// plus the area's total size. Each value is placed directly after the
+/// previous one, at the next offset aligned to its scale.
+pub(crate) fn stack_values_layout(values: &[ir::AbiParam]) -> (Vec<u32>, u32) {
     let mut offsets = Vec::new();
     let mut size = 0u32;
-    for p in params.iter().skip(QUEUE_CAPACITY) {
+    for p in values.iter().skip(QUEUE_CAPACITY) {
         let scale = p.value_type.bytes();
         size = size.next_multiple_of(scale);
         offsets.push(size);
@@ -36,16 +35,28 @@ pub(crate) fn stack_args_layout(params: &[ir::AbiParam]) -> (Vec<u32>, u32) {
     (offsets, size)
 }
 
-/// The total size of the stack-passed argument area for the given parameters.
-pub(crate) fn stack_args_size(params: &[ir::AbiParam]) -> u32 {
-    stack_args_layout(params).1
+/// The frame offset of a function's stack-argument area: the return area
+/// (which sits at offset 0 of the private frame) rounded up to the 16-byte
+/// frame alignment, which keeps every argument's natural alignment intact.
+pub(crate) fn arg_area_base(sig: &Signature) -> u32 {
+    stack_values_layout(&sig.returns)
+        .1
+        .next_multiple_of(16)
+}
+
+/// The total size of the caller-reserved stack area for calling a function of
+/// the given signature: the return area at offset 0, then the argument area
+/// at [`arg_area_base`].
+pub(crate) fn stack_area_size(sig: &Signature) -> u32 {
+    arg_area_base(sig) + stack_values_layout(&sig.params).1
 }
 
 /// The frame offset at which a function's own stack slots start: its incoming
-/// stack-argument area (at offset 0) rounded up to the 16-byte frame
-/// alignment, which keeps every slot's natural alignment intact.
-pub(crate) fn stack_locals_base(params: &[ir::AbiParam]) -> u32 {
-    stack_args_size(params).next_multiple_of(16)
+/// caller-reserved area (return area + argument area, at offset 0) rounded up
+/// to the 16-byte frame alignment, which keeps every slot's natural alignment
+/// intact.
+pub(crate) fn stack_locals_base(sig: &Signature) -> u32 {
+    stack_area_size(sig).next_multiple_of(16)
 }
 
 /// Scry-specific ABI behavior. This struct just serves as an implementation
@@ -79,15 +90,6 @@ impl ABIMachineSpec for ScryMachineDeps {
         _add_ret_area_ptr: bool,
         mut args: ArgsAccumulator,
     ) -> CodegenResult<(u32, Option<usize>)> {
-        // Return values beyond the queue capacity would need the stack-passing
-        // convention too, which is not implemented yet.
-        if args_or_rets == ArgsOrRets::Rets {
-            assert!(
-                params.len() <= QUEUE_CAPACITY,
-                "more than {QUEUE_CAPACITY} return values (stack-passed returns) not yet supported"
-            );
-        }
-
         // The first QUEUE_CAPACITY arguments are passed as call operands,
         // delivered to the callee's first instruction; any further arguments
         // are passed on the stack per the ABI's calling convention.
@@ -97,11 +99,18 @@ impl ABIMachineSpec for ScryMachineDeps {
         // selection, where MInst::Args only gets the parameters that are
         // actually used. The pregs and their positions are therefore used to
         // get the unused parameters to, e.g., discard them correctly.
-        let (stack_offsets, stack_size) = stack_args_layout(params);
+        //
+        // Return values beyond the QUEUE_CAPACITY-th are stack-passed too, but
+        // are deliberately given Reg slots here anyway: the common machinery
+        // would route Stack return slots through a hidden return-area pointer,
+        // which the ABI does not use (the area's location is implied by the
+        // frame handoff). `lower_stack_args` splits the excess return values
+        // off the `Rets`/`CallArgs` pseudo-instructions into stack accesses.
+        let (stack_offsets, stack_size) = stack_values_layout(params);
         for (i, p) in params.iter().enumerate() {
             assert_eq!(p.purpose, ArgumentPurpose::Normal);
 
-            let slot = if i < QUEUE_CAPACITY {
+            let slot = if i < QUEUE_CAPACITY || args_or_rets == ArgsOrRets::Rets {
                 ABIArgSlot::Reg {
                     reg: Reg::from_real_reg(PReg::new(i, RegClass::Int))
                         .to_real_reg()
@@ -122,6 +131,14 @@ impl ABIMachineSpec for ScryMachineDeps {
                 purpose: p.purpose,
             });
         }
+
+        // The return area is managed entirely by `lower_stack_args` (no
+        // common-machinery return-area pointer), so no ret space is reported.
+        let stack_size = if args_or_rets == ArgsOrRets::Rets {
+            0
+        } else {
+            stack_size
+        };
 
         Ok((stack_size, None))
     }
