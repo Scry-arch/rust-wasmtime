@@ -1,0 +1,75 @@
+test interpret
+test run
+target scry32
+
+; Shifts (the ISA's unified two-output `shift` ALU instruction: a positive
+; amount shifts left, a negative amount right; the carry-out high output is
+; discarded here). Right shifts must therefore mask the CLIF amount and then
+; negate it, and the machine picks arithmetic vs logical right-shift from the
+; first operand's runtime tag, so the lowering must pin it signed for `sshr`
+; and unsigned for `ushr`. All shift amounts here are smaller than the
+; operand width; see shift-amount-masking.clif for larger amounts.
+
+function %ishl32(i32 sext, i32 uext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = ishl v0, v1
+    return v2
+}
+; run: %ishl32(1, 4) == 16
+; run: %ishl32(-1, 8) == -256
+; run: %ishl32(305419896, 8) == 878082048
+; run: %ishl32(123, 0) == 123
+
+function %ushr32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = ushr v0, v1
+    return v2
+}
+; run: %ushr32(256, 4) == 16
+; run: %ushr32(4294967295, 28) == 15
+; run: %ushr32(1, 1) == 0
+; run: %ushr32(2147483648, 31) == 1
+; run: %ushr32(77, 0) == 77
+
+function %sshr32(i32 sext, i32 uext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = sshr v0, v1
+    return v2
+}
+; run: %sshr32(-256, 4) == -16
+; run: %sshr32(-1, 31) == -1
+; run: %sshr32(1024, 3) == 128
+; run: %sshr32(-2147483648, 31) == -1
+; run: %sshr32(-77, 0) == -77
+
+function %ishl8(i8 sext, i32 uext) -> i8 sext {
+block0(v0: i8, v1: i32):
+    v2 = ishl v0, v1
+    return v2
+}
+; run: %ishl8(1, 7) == -128
+; run: %ishl8(3, 2) == 12
+
+function %ushr8(i8 uext, i32 uext) -> i8 uext {
+block0(v0: i8, v1: i32):
+    v2 = ushr v0, v1
+    return v2
+}
+; run: %ushr8(128, 7) == 1
+; run: %ushr8(255, 4) == 15
+
+function %sshr8(i8 sext, i32 uext) -> i8 sext {
+block0(v0: i8, v1: i32):
+    v2 = sshr v0, v1
+    return v2
+}
+; run: %sshr8(-128, 7) == -1
+; run: %sshr8(-4, 1) == -2
+
+function %sshr16(i16 sext, i32 uext) -> i16 sext {
+block0(v0: i16, v1: i32):
+    v2 = sshr v0, v1
+    return v2
+}
+; run: %sshr16(-32768, 15) == -1
+; run: %sshr16(16384, 7) == 128

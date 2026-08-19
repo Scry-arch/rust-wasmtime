@@ -1,0 +1,56 @@
+test interpret
+test run
+target scry32
+
+; Full multiplication (the ISA's two-output `mul` ALU instruction): `imul` is
+; the low half, `umulhi`/`smulhi` the high half with the operands' effective
+; input type pinned unsigned/signed respectively.
+
+function %mul32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = imul v0, v1
+    return v2
+}
+; run: %mul32(7, 6) == 42
+; run: %mul32(-5, 3) == -15
+; run: %mul32(100000, 100000) == 1410065408
+; run: %mul32(0, 12345) == 0
+
+function %umulhi32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = umulhi v0, v1
+    return v2
+}
+; run: %umulhi32(2147483648, 2) == 1
+; run: %umulhi32(4294967295, 4294967295) == 4294967294
+; run: %umulhi32(65536, 65536) == 1
+; run: %umulhi32(7, 9) == 0
+
+function %smulhi32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = smulhi v0, v1
+    return v2
+}
+; run: %smulhi32(-2, 1073741824) == -1
+; run: %smulhi32(2147483647, 2147483647) == 1073741823
+; run: %smulhi32(-1, -1) == 0
+; run: %smulhi32(5, -3) == -1
+
+function %mul16(i16 sext, i16 sext) -> i16 sext {
+block0(v0: i16, v1: i16):
+    v2 = imul v0, v1
+    return v2
+}
+; run: %mul16(300, 200) == -5536
+; run: %mul16(-30, 4) == -120
+
+; Both halves of one multiplication.
+function %mul_both(i32 uext, i32 uext) -> i32 uext, i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = imul v0, v1
+    v3 = umulhi v0, v1
+    return v2, v3
+}
+; run: %mul_both(2147483648, 6) == [0, 3]
+; run: %mul_both(100000, 100000) == [1410065408, 2]
+; run: %mul_both(3, 4) == [12, 0]

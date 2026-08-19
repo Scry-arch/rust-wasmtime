@@ -1,0 +1,84 @@
+test interpret
+test run
+target scry32
+
+; Division and remainder (the ISA's two-output `div` ALU instruction: quotient
+; low, remainder high).
+;
+; NOTE: CLIF `sdiv`/`srem` truncate toward zero (the remainder takes the
+; dividend's sign). The negative-operand run cases below pin that behavior
+; down. Division by zero and INT_MIN / -1 trap in CLIF and are not exercised.
+
+function %udiv32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = udiv v0, v1
+    return v2
+}
+; run: %udiv32(100, 7) == 14
+; run: %udiv32(7, 100) == 0
+; run: %udiv32(4294967295, 2) == 2147483647
+; run: %udiv32(42, 42) == 1
+
+function %urem32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = urem v0, v1
+    return v2
+}
+; run: %urem32(100, 7) == 2
+; run: %urem32(7, 100) == 7
+; run: %urem32(4294967295, 2) == 1
+; run: %urem32(42, 42) == 0
+
+function %sdiv32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = sdiv v0, v1
+    return v2
+}
+; run: %sdiv32(100, 7) == 14
+; run: %sdiv32(100, -7) == -14
+; run: %sdiv32(6, 7) == 0
+;
+; The machine's `div` is Euclidean; CLIF requires truncation toward zero.
+; The two differ exactly when the dividend is negative and the division
+; inexact, so the following cases prove the lowering's Euclidean-to-
+; truncating fix-up: Euclidean quotients would be -15, 15, -1, -1
+; respectively.
+; run: %sdiv32(-100, 7) == -14
+; run: %sdiv32(-100, -7) == 14
+; run: %sdiv32(-6, 7) == 0
+; run: %sdiv32(-1, 2) == 0
+
+function %srem32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = srem v0, v1
+    return v2
+}
+; run: %srem32(100, 7) == 2
+; run: %srem32(100, -7) == 2
+;
+; Negative dividends with inexact division prove the truncating fix-up (the
+; remainder must take the dividend's sign): the machine's Euclidean
+; remainders are always non-negative and would be 5, 5, 1, 1 respectively.
+; run: %srem32(-100, 7) == -2
+; run: %srem32(-100, -7) == -2
+; run: %srem32(-6, 7) == -6
+; run: %srem32(-1, 2) == -1
+
+; Quotient and remainder of one division.
+function %divrem(i32 uext, i32 uext) -> i32 uext, i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = udiv v0, v1
+    v3 = urem v0, v1
+    return v2, v3
+}
+; run: %divrem(100, 7) == [14, 2]
+; run: %divrem(0, 5) == [0, 0]
+; run: %divrem(65535, 256) == [255, 255]
+
+function %udiv8(i8 uext, i8 uext) -> i8 uext {
+block0(v0: i8, v1: i8):
+    v2 = udiv v0, v1
+    return v2
+}
+; run: %udiv8(255, 16) == 15
+; run: %udiv8(200, 3) == 66

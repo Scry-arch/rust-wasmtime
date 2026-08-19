@@ -1,0 +1,50 @@
+test interpret
+test run
+target scry32
+
+; The remaining two-output add/sub carry variants (sadd_overflow already has
+; its own file): the carry/borrow flag is the high output of the ISA's `add`/
+; `sub` ALU instructions, whose meaning follows the operands' effective input
+; type - so the lowering must pin the operands' signedness to the CLIF opcode.
+
+function %uaddof(i32 uext, i32 uext) -> i32 uext, i8 uext {
+block0(v0: i32, v1: i32):
+    v2, v3 = uadd_overflow v0, v1
+    return v2, v3
+}
+; run: %uaddof(0, 0) == [0, 0]
+; run: %uaddof(1, 2) == [3, 0]
+; run: %uaddof(4294967295, 1) == [0, 1]
+; run: %uaddof(4294967295, 4294967295) == [4294967294, 1]
+; run: %uaddof(2147483648, 2147483648) == [0, 1]
+; run: %uaddof(2147483647, 1) == [2147483648, 0]
+
+function %usubof(i32 uext, i32 uext) -> i32 uext, i8 uext {
+block0(v0: i32, v1: i32):
+    v2, v3 = usub_overflow v0, v1
+    return v2, v3
+}
+; run: %usubof(5, 3) == [2, 0]
+; run: %usubof(3, 5) == [4294967294, 1]
+; run: %usubof(0, 1) == [4294967295, 1]
+; run: %usubof(7, 7) == [0, 0]
+
+function %ssubof(i32 sext, i32 sext) -> i32 sext, i8 uext {
+block0(v0: i32, v1: i32):
+    v2, v3 = ssub_overflow v0, v1
+    return v2, v3
+}
+; run: %ssubof(5, 3) == [2, 0]
+; run: %ssubof(3, 5) == [-2, 0]
+; run: %ssubof(-2147483648, 1) == [2147483647, 1]
+; run: %ssubof(2147483647, -1) == [-2147483648, 1]
+; run: %ssubof(-1, 2147483647) == [-2147483648, 0]
+
+; Only the flag of an unsigned add is used (a pure carry computation).
+function %carry_only(i32 uext, i32 uext) -> i8 uext {
+block0(v0: i32, v1: i32):
+    v2, v3 = uadd_overflow v0, v1
+    return v3
+}
+; run: %carry_only(4294967295, 1) == 1
+; run: %carry_only(4294967294, 1) == 0

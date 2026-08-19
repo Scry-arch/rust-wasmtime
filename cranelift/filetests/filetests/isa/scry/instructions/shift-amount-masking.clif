@@ -1,0 +1,53 @@
+test interpret
+test run
+target scry32
+
+; CLIF masks the shift amount by the operand's bit width (shifting an i32 by
+; 33 shifts by 1); the machine's unified `sh` does not - it shifts
+; everything out. The lowering must therefore mask the amount to be
+; CLIF-conformant, and for right shifts it must mask BEFORE negating the
+; amount: the huge-bit-pattern run cases below give a different (wrong)
+; result if the amount is negated first and masked second.
+
+function %ishl32_mask(i32 sext, i32 uext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = ishl v0, v1
+    return v2
+}
+; run: %ishl32_mask(5, 32) == 5
+; run: %ishl32_mask(5, 33) == 10
+; run: %ishl32_mask(1, 100) == 16
+
+function %ushr32_mask(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = ushr v0, v1
+    return v2
+}
+; run: %ushr32_mask(1024, 32) == 1024
+; run: %ushr32_mask(1024, 34) == 256
+; run: %ushr32_mask(2147483648, 4294967295) == 1
+
+function %sshr32_mask(i32 sext, i32 uext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = sshr v0, v1
+    return v2
+}
+; run: %sshr32_mask(-256, 36) == -16
+; run: %sshr32_mask(-1, 64) == -1
+; run: %sshr32_mask(-2, 4294967295) == -1
+
+function %ushr8_mask(i8 uext, i32 uext) -> i8 uext {
+block0(v0: i8, v1: i32):
+    v2 = ushr v0, v1
+    return v2
+}
+; run: %ushr8_mask(64, 8) == 64
+; run: %ushr8_mask(64, 9) == 32
+
+function %sshr8_mask(i8 sext, i32 uext) -> i8 sext {
+block0(v0: i8, v1: i32):
+    v2 = sshr v0, v1
+    return v2
+}
+; run: %sshr8_mask(-4, 200) == -4
+; run: %sshr8_mask(-4, 201) == -2

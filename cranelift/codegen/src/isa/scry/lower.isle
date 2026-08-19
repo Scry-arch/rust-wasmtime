@@ -29,6 +29,72 @@
 )
 
 (rule
+    (lower (uadd_overflow ty lhs rhs))
+    (dalu_overflow_otrr (DoubleAluOp.UaddOverflow) ty lhs rhs)
+)
+
+(rule
+    (lower (usub_overflow ty lhs rhs))
+    (dalu_overflow_otrr (DoubleAluOp.UsubOverflow) ty lhs rhs)
+)
+
+(rule
+    (lower (ssub_overflow ty lhs rhs))
+    (dalu_overflow_otrr (DoubleAluOp.SsubOverflow) ty lhs rhs)
+)
+
+(rule
+    (lower (band ty lhs rhs))
+    (balu_otrr (BinaryAluOp.BitAnd) ty lhs rhs)
+)
+
+(rule
+    (lower (bor ty lhs rhs))
+    (balu_otrr (BinaryAluOp.BitOr) ty lhs rhs)
+)
+
+(rule
+    (lower (bxor ty lhs rhs))
+    (balu_otrr (BinaryAluOp.BitXor) ty lhs rhs)
+)
+
+;; The low product half is signedness-agnostic, like wrapping add/sub.
+(rule
+    (lower (imul ty lhs rhs))
+    (balu_otrr (BinaryAluOp.IntMulWrap) ty lhs rhs)
+)
+
+(rule
+    (lower (umulhi ty lhs rhs))
+    (dalu_high_otrr (DoubleAluOp.UmulHi) ty lhs rhs)
+)
+
+(rule
+    (lower (smulhi ty lhs rhs))
+    (dalu_high_otrr (DoubleAluOp.SmulHi) ty lhs rhs)
+)
+
+(rule
+    (lower (udiv ty lhs rhs))
+    (dalu_low_otrr (DoubleAluOp.UdivRem) ty lhs rhs)
+)
+
+(rule
+    (lower (urem ty lhs rhs))
+    (dalu_high_otrr (DoubleAluOp.UdivRem) ty lhs rhs)
+)
+
+(rule
+    (lower (sdiv ty lhs rhs))
+    (lower_sdiv ty lhs rhs)
+)
+
+(rule
+    (lower (srem ty lhs rhs))
+    (lower_srem ty lhs rhs)
+)
+
+(rule
     (lower (icmp ty cc lhs rhs))
     (icmp_tcrrr ty cc lhs rhs)
 )

@@ -13,7 +13,7 @@ pub use crate::ir::condcodes::FloatCC;
 use alloc::string::String;
 use alloc::vec::Vec;
 use regalloc2::{RegClass, VReg};
-use scry_isa::{Alu2Variant, Instruction};
+use scry_isa::{Alu2Variant, AluVariant, Instruction};
 use std::cmp::min;
 use std::iter::once;
 
@@ -766,8 +766,43 @@ impl MInst {
     pub(crate) fn use_order_meaningful(&self) -> bool {
         use MInst::*;
         match self {
-            BinaryAlu { op, .. } if *op == BinaryAluOp::IntAddWrap => false,
-            Alu2 { var, .. } if *var == Alu2Variant::Add => false,
+            // Commutative operations
+            BinaryAlu { op, .. }
+                if matches!(
+                    op,
+                    BinaryAluOp::IntAddWrap
+                        | BinaryAluOp::IntMulWrap
+                        | BinaryAluOp::BitAnd
+                        | BinaryAluOp::BitOr
+                        | BinaryAluOp::BitXor
+                ) =>
+            {
+                false
+            }
+            DoubleAlu { op, .. }
+                if matches!(
+                    op,
+                    DoubleAluOp::SaddOverflow
+                        | DoubleAluOp::UaddOverflow
+                        | DoubleAluOp::UmulHi
+                        | DoubleAluOp::SmulHi
+                ) =>
+            {
+                false
+            }
+            Alu2 { var, .. }
+                if matches!(var, Alu2Variant::Add | Alu2Variant::Multiply) =>
+            {
+                false
+            }
+            Alu1 { var, .. }
+                if matches!(
+                    var,
+                    AluVariant::BitAnd | AluVariant::BitOr | AluVariant::BitXor
+                ) =>
+            {
+                false
+            }
             _ => true,
         }
     }
