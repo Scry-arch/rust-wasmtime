@@ -1,0 +1,73 @@
+test interpret
+test run
+target scry32
+
+; Bitwise AND/OR (the ISA's single-output `and` and `or` ALU instructions),
+; across widths. XOR lives in bitwise-xor.clif, as the simulator does not
+; implement it yet.
+
+function %band32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = band v0, v1
+    return v2
+}
+; run: %band32(12, 10) == 8
+; run: %band32(-1, 77) == 77
+; run: %band32(0, -5) == 0
+; run: %band32(-16, -3) == -16
+
+function %bor32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = bor v0, v1
+    return v2
+}
+; run: %bor32(12, 10) == 14
+; run: %bor32(-16, 7) == -9
+; run: %bor32(0, 0) == 0
+
+function %band16(i16 sext, i16 sext) -> i16 sext {
+block0(v0: i16, v1: i16):
+    v2 = band v0, v1
+    return v2
+}
+; run: %band16(-256, 511) == 256
+; run: %band16(-1, -1) == -1
+
+function %bor16(i16 sext, i16 sext) -> i16 sext {
+block0(v0: i16, v1: i16):
+    v2 = bor v0, v1
+    return v2
+}
+; run: %bor16(256, 255) == 511
+; run: %bor16(-32768, 1) == -32767
+
+function %band8(i8 sext, i8 sext) -> i8 sext {
+block0(v0: i8, v1: i8):
+    v2 = band v0, v1
+    return v2
+}
+; run: %band8(127, -16) == 112
+; run: %band8(-1, 66) == 66
+
+function %bor8(i8 sext, i8 sext) -> i8 sext {
+block0(v0: i8, v1: i8):
+    v2 = bor v0, v1
+    return v2
+}
+; run: %bor8(16, 5) == 21
+; run: %bor8(-128, 127) == -1
+
+; The results feed further arithmetic, so the outputs' types must interact
+; correctly with the effective-input-type machinery.
+function %andor_combine(i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = band v0, v1
+    v4 = bor v1, v2
+    v5 = isub v3, v4
+    v6 = isub v5, v0
+    return v6
+}
+; r = ((v0 & v1) - (v1 | v2)) - v0
+; run: %andor_combine(0, 0, 0) == 0
+; run: %andor_combine(12, 10, 3) == -15
+; run: %andor_combine(-1, 5, 9) == -7

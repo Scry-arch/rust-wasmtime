@@ -104,6 +104,89 @@ impl<'a, 'b> ScryIsleContext<'a, 'b, MInst, ScryBackend> {
             sum_rd.to_reg()
         }
     }
+
+    /// Materializes an integer constant of the given type.
+    fn emit_const(&mut self, ty: Type, imm: i64) -> Reg {
+        let rd = self.lower_ctx.alloc_tmp(ty).only_reg().unwrap();
+        self.lower_ctx.emit(MInst::Const {
+            ty: IsaType::Invalid,
+            rd,
+            imm: Imm64::new(imm),
+        });
+        rd.to_reg()
+    }
+
+    /// Emits an integer comparison, producing a u8 boolean.
+    fn emit_icmp(&mut self, cc: IntCC, rs1: Reg, rs2: Reg) -> Reg {
+        let rd = self.lower_ctx.alloc_tmp(I8).only_reg().unwrap();
+        self.lower_ctx.emit(MInst::IntCmp { cc, rd, rs1, rs2 });
+        rd.to_reg()
+    }
+
+    /// Emits a single-output binary ALU operation.
+    fn emit_balu(&mut self, op: BinaryAluOp, ty: Type, rs1: Reg, rs2: Reg) -> Reg {
+        let rd = self.lower_ctx.alloc_tmp(ty).only_reg().unwrap();
+        self.lower_ctx.emit(MInst::BinaryAlu { op, rd, rs1, rs2 });
+        rd.to_reg()
+    }
+
+    /// Zero-extends a u8 boolean to the given type (a no-op for I8).
+    fn emit_flag_extend(&mut self, ty: Type, rs: Reg) -> Reg {
+        if ty == I8 {
+            return rs;
+        }
+        let rd = self.lower_ctx.alloc_tmp(ty).only_reg().unwrap();
+        self.lower_ctx.emit(MInst::Resize {
+            var: ResizeVariant::Uextend,
+            rd,
+            rs,
+        });
+        rd.to_reg()
+    }
+
+    /// Emits the machine's (Euclidean) signed division of `n` by `d` together
+    /// with the truncation correction term `a`, such that CLIF's truncating
+    /// quotient and remainder are `q_euclid + a` and `r_euclid - a*d`.
+    ///
+    /// Euclidean and truncating division differ exactly when the dividend is
+    /// negative and the division inexact, where the Euclidean quotient is one
+    /// step further from zero: `a = sign(d)` in that case and `0` otherwise
+    /// (computed branchlessly from u8 comparison results).
+    fn euclid_divrem_correction(&mut self, ty: Type, n: Reg, d: Reg) -> (Reg, Reg, Reg) {
+        let q_e = self.lower_ctx.alloc_tmp(ty).only_reg().unwrap();
+        let r_e = self.lower_ctx.alloc_tmp(ty).only_reg().unwrap();
+        self.lower_ctx.emit(MInst::DoubleAlu {
+            op: DoubleAluOp::SdivRem,
+            rdl: q_e,
+            rdh: r_e,
+            rs1: n,
+            rs2: d,
+        });
+
+        // c = (n < 0) & (r_euclid != 0): whether correction is needed
+        let z = self.emit_const(ty, 0);
+        let neg = self.emit_icmp(IntCC::SignedLessThan, n, z);
+        let z = self.emit_const(ty, 0);
+        let exact = self.emit_icmp(IntCC::Equal, r_e.to_reg(), z);
+        let one = self.emit_const(I8, 1);
+        let inexact = self.emit_balu(BinaryAluOp::IntSubWrap, I8, one, exact);
+        let c = self.emit_balu(BinaryAluOp::BitAnd, I8, neg, inexact);
+
+        // s = sign(d) = (d > 0) - (d < 0)
+        let z1 = self.emit_const(ty, 0);
+        let gt0 = self.emit_icmp(IntCC::SignedGreaterThan, d, z1);
+        let z2 = self.emit_const(ty, 0);
+        let lt0 = self.emit_icmp(IntCC::SignedLessThan, d, z2);
+        let gt0w = self.emit_flag_extend(ty, gt0);
+        let lt0w = self.emit_flag_extend(ty, lt0);
+        let s = self.emit_balu(BinaryAluOp::IntSubWrap, ty, gt0w, lt0w);
+
+        // a = c * s
+        let cw = self.emit_flag_extend(ty, c);
+        let a = self.emit_balu(BinaryAluOp::IntMulWrap, ty, cw, s);
+
+        (q_e.to_reg(), r_e.to_reg(), a)
+    }
 }
 
 /// Expresses the given frame offset as a (power-of-two scale, index) pair
@@ -134,6 +217,22 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
 
     fn emit(&mut self, arg0: &MInst) -> Unit {
         self.lower_ctx.emit(arg0.clone());
+    }
+
+    /// Signed division with CLIF's truncating semantics: the machine's
+    /// Euclidean quotient plus the correction term.
+    fn lower_sdiv(&mut self, ty: Type, n: Reg, d: Reg) -> Reg {
+        let (q_e, _r_e, a) = self.euclid_divrem_correction(ty, n, d);
+        self.emit_balu(BinaryAluOp::IntAddWrap, ty, q_e, a)
+    }
+
+    /// Signed remainder with CLIF's truncating semantics (the remainder takes
+    /// the dividend's sign): the machine's Euclidean remainder minus
+    /// `a * divisor`.
+    fn lower_srem(&mut self, ty: Type, n: Reg, d: Reg) -> Reg {
+        let (_q_e, r_e, a) = self.euclid_divrem_correction(ty, n, d);
+        let m = self.emit_balu(BinaryAluOp::IntMulWrap, ty, a, d);
+        self.emit_balu(BinaryAluOp::IntSubWrap, ty, r_e, m)
     }
 
     fn emit_ret(&mut self, _arg0: ValueSlice) -> InstOutput {

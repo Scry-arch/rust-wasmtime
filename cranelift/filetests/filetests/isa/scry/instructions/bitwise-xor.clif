@@ -1,0 +1,47 @@
+test interpret
+test run
+target scry32
+
+; Bitwise XOR (the ISA's single-output `xor` ALU instruction). Split from
+; bitwise.clif: the lowering is implemented, but the SIMULATOR does not
+; implement the xor operation yet (its single-output ALU dispatch is missing
+; BitXor), so this file stays red until scry_sim catches up.
+
+function %bxor32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = bxor v0, v1
+    return v2
+}
+; run: %bxor32(12, 10) == 6
+; run: %bxor32(-1, 5) == -6
+; run: %bxor32(123, 123) == 0
+
+function %bxor16(i16 sext, i16 sext) -> i16 sext {
+block0(v0: i16, v1: i16):
+    v2 = bxor v0, v1
+    return v2
+}
+; run: %bxor16(-32768, -1) == 32767
+; run: %bxor16(21845, -21846) == -1
+
+function %bxor8(i8 sext, i8 sext) -> i8 sext {
+block0(v0: i8, v1: i8):
+    v2 = bxor v0, v1
+    return v2
+}
+; run: %bxor8(85, -86) == -1
+; run: %bxor8(-1, -1) == 0
+
+; All three bitwise results feeding further arithmetic.
+function %combine(i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = band v0, v1
+    v4 = bor v1, v2
+    v5 = bxor v3, v4
+    v6 = isub v5, v0
+    return v6
+}
+; r = ((v0 & v1) ^ (v1 | v2)) - v0
+; run: %combine(0, 0, 0) == 0
+; run: %combine(12, 10, 3) == -9
+; run: %combine(-1, 5, 9) == 9

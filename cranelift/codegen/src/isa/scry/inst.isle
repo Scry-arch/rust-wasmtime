@@ -29,12 +29,25 @@
   (enum
     (IntAddWrap)    ;; Integer wrapping addition
     (IntSubWrap)    ;; Integer wrapping subtraction
+    (IntMulWrap)    ;; Integer wrapping multiplication (the low product half)
+    (BitAnd)        ;; Bitwise AND
+    (BitOr)         ;; Bitwise OR
+    (BitXor)        ;; Bitwise XOR
   )
 )
 
 (type DoubleAluOp
   (enum
     (SaddOverflow)  ;; Signed wrapping addition + signed-overflow flag
+    (UaddOverflow)  ;; Unsigned wrapping addition + carry flag
+    (UsubOverflow)  ;; Unsigned wrapping subtraction + borrow flag
+    (SsubOverflow)  ;; Signed wrapping subtraction + signed-overflow flag
+    (UmulHi)        ;; Unsigned full multiplication (the high half is used)
+    (SmulHi)        ;; Signed full multiplication (the high half is used)
+    (UdivRem)       ;; Unsigned division: quotient (low) + remainder (high)
+    (SdivRem)       ;; Signed Euclidean division: quotient (low) + remainder
+                    ;; (high); CLIF's truncating semantics are recovered by
+                    ;; the fix-up in `lower_sdiv`/`lower_srem`
   )
 )
 
@@ -354,6 +367,67 @@
     dst
   )
 )
+
+;; Generic single-output binary ALU operation.
+(decl balu_otrr (BinaryAluOp Type Reg Reg) Reg)
+(rule
+  (balu_otrr op ty lhs rhs)
+  (let
+    ( (dst WritableReg (temp_writable_reg ty))
+      (_ Unit (emit (MInst.BinaryAlu op dst lhs rhs)))
+    )
+    dst
+  )
+)
+
+;; Generic two-output ALU operation returning the value + flag pair
+;; (the overflow family; the flag is the machine's high output).
+(decl dalu_overflow_otrr (DoubleAluOp Type Reg Reg) InstOutput)
+(rule
+  (dalu_overflow_otrr op ty x y)
+  (let
+    ( (rdl WritableReg (temp_writable_reg ty))
+      (rdh WritableReg (temp_writable_reg $I8))
+      (_ Unit (emit (MInst.DoubleAlu op rdl rdh x y)))
+    )
+    (output_pair (value_reg rdl) (value_reg rdh))
+  )
+)
+
+;; Generic two-output ALU operation of which only the LOW output is used;
+;; the dead high output is dropped by the dead-output handling later.
+(decl dalu_low_otrr (DoubleAluOp Type Reg Reg) Reg)
+(rule
+  (dalu_low_otrr op ty x y)
+  (let
+    ( (rdl WritableReg (temp_writable_reg ty))
+      (rdh WritableReg (temp_writable_reg ty))
+      (_ Unit (emit (MInst.DoubleAlu op rdl rdh x y)))
+    )
+    rdl
+  )
+)
+
+;; Generic two-output ALU operation of which only the HIGH output is used;
+;; the dead low output is dropped by the dead-output handling later.
+(decl dalu_high_otrr (DoubleAluOp Type Reg Reg) Reg)
+(rule
+  (dalu_high_otrr op ty x y)
+  (let
+    ( (rdl WritableReg (temp_writable_reg ty))
+      (rdh WritableReg (temp_writable_reg ty))
+      (_ Unit (emit (MInst.DoubleAlu op rdl rdh x y)))
+    )
+    rdh
+  )
+)
+
+;; Signed division/remainder with CLIF's truncating semantics, built from the
+;; machine's Euclidean division plus a fix-up (implemented in Rust).
+(decl lower_sdiv (Type Reg Reg) Reg)
+(extern constructor lower_sdiv lower_sdiv)
+(decl lower_srem (Type Reg Reg) Reg)
+(extern constructor lower_srem lower_srem)
 
 (decl icmp_tcrrr (Type IntCC Reg Reg) Reg)
 (rule

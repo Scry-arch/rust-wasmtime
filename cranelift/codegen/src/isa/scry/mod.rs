@@ -1876,19 +1876,26 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     }
                 }
                 DoubleAlu {
-                    op: DoubleAluOp::SaddOverflow,
+                    op,
                     rdl,
                     rdh,
                     rs1,
                     rs2,
                 } => {
-                    // The machine's Add produces the signed-overflow flag only
-                    // for signed operands, so the operands' signedness is
-                    // hard: a conflicting operand must be re-tagged.
+                    use crate::isa::scry::inst::DoubleAluOp::*;
+                    // Each of these operations is signedness-steered: the
+                    // machine picks the operation (and flag meaning) from the
+                    // operands' effective input type, so the operands'
+                    // signedness is hard: a conflicting operand must be
+                    // re-tagged.
+                    let signed = match op {
+                        SaddOverflow | SsubOverflow | SmulHi | SdivRem => true,
+                        UaddOverflow | UsubOverflow | UmulHi | UdivRem => false,
+                    };
                     for (slot, r) in [rs1, rs2].into_iter().enumerate() {
                         let t = type_map.get(*r);
                         if t.is_int() {
-                            let target = IsaType::new_known_int(t.size_pow2(), true);
+                            let target = IsaType::new_known_int(t.size_pow2(), signed);
                             match t.refine(target) {
                                 Some(refined) => update_changed(r, refined, type_map),
                                 None => push_demand(
@@ -1903,23 +1910,45 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         }
                     }
 
-                    // The value result carries the (signed) effective type.
-                    let td = type_map.get(rdl.to_reg());
-                    if td.is_int() {
-                        update_changed(
-                            &rdl.to_reg(),
-                            td.refine(IsaType::new_known_int(td.size_pow2(), true))
-                                .unwrap(),
-                            type_map,
-                        );
-                    }
+                    // A helper pinning an output to a known signedness.
+                    let mut pin_output = |rd: &WritableReg, sign: bool, type_map: &mut TypeMap<F>| {
+                        let td = type_map.get(rd.to_reg());
+                        if td.is_int() {
+                            update_changed(
+                                &rd.to_reg(),
+                                td.refine(IsaType::new_known_int(td.size_pow2(), sign))
+                                    .unwrap(),
+                                type_map,
+                            );
+                        }
+                    };
 
-                    // The flag (the machine's high output) is a u8 at runtime,
-                    // but its signedness is left to its consumers: nothing
-                    // emits the flag's compile-time type, and forcing it
-                    // unsigned would conflict with signed consumers (the
-                    // 0/1 value widens identically either way).
-                    let _ = rdh;
+                    match op {
+                        // The value result carries the effective type; the
+                        // flag (the machine's high output) is a u8 at
+                        // runtime, but its signedness is left to its
+                        // consumers: nothing emits the flag's compile-time
+                        // type, and forcing it unsigned would conflict with
+                        // signed consumers (the 0/1 value widens identically
+                        // either way).
+                        SaddOverflow | UaddOverflow | UsubOverflow | SsubOverflow => {
+                            pin_output(rdl, signed, type_map);
+                            let _ = rdh;
+                        }
+                        // The used high half carries the effective type; the
+                        // low output is dead (dropped later) and needs no
+                        // type.
+                        UmulHi | SmulHi => {
+                            pin_output(rdh, signed, type_map);
+                        }
+                        // The quotient carries the effective type; the
+                        // machine types the remainder unsigned (Euclidean
+                        // remainders are non-negative).
+                        UdivRem | SdivRem => {
+                            pin_output(rdl, signed, type_map);
+                            pin_output(rdh, false, type_map);
+                        }
+                    }
                 }
                 IntCmp { rd, rs1, rs2, cc } => {
                     // The comparison result is a u8 boolean.
@@ -2275,17 +2304,35 @@ fn resolve_instruction_types(
                 // type and its established type was already reconciled by a
                 // cast demand during type analysis.
                 MInst::BinaryAlu { op, rd, rs1, rs2 } => {
-                    let binary_alu_to_alu2 = |b| match b {
-                        BinaryAluOp::IntAddWrap => Alu2Variant::Add,
-                        BinaryAluOp::IntSubWrap => Alu2Variant::Sub,
+                    // Wrapping add/sub/mul are the low output of the
+                    // two-output machine operations; the bitwise operations
+                    // are single-output.
+                    let alu2_var = match op {
+                        BinaryAluOp::IntAddWrap => Some(Alu2Variant::Add),
+                        BinaryAluOp::IntSubWrap => Some(Alu2Variant::Sub),
+                        BinaryAluOp::IntMulWrap => Some(Alu2Variant::Multiply),
+                        BinaryAluOp::BitAnd | BinaryAluOp::BitOr | BinaryAluOp::BitXor => None,
                     };
 
-                    *inst = MInst::Alu2 {
-                        var: binary_alu_to_alu2(*op),
-                        out_var: Alu2OutputVariant::Low,
-                        rds: vec![*rd],
-                        rss: vec![*rs1, *rs2],
-                        outs: vec![0],
+                    *inst = match alu2_var {
+                        Some(var) => MInst::Alu2 {
+                            var,
+                            out_var: Alu2OutputVariant::Low,
+                            rds: vec![*rd],
+                            rss: vec![*rs1, *rs2],
+                            outs: vec![0],
+                        },
+                        None => MInst::Alu1 {
+                            var: match op {
+                                BinaryAluOp::BitAnd => AluVariant::BitAnd,
+                                BinaryAluOp::BitOr => AluVariant::BitOr,
+                                BinaryAluOp::BitXor => AluVariant::BitXor,
+                                _ => unreachable!(),
+                            },
+                            rd: *rd,
+                            rss: vec![*rs1, *rs2],
+                            out: 0,
+                        },
                     };
                 }
                 MInst::DoubleAlu {
@@ -2296,7 +2343,10 @@ fn resolve_instruction_types(
                     rs2,
                 } => {
                     let var = match op {
-                        DoubleAluOp::SaddOverflow => Alu2Variant::Add,
+                        DoubleAluOp::SaddOverflow | DoubleAluOp::UaddOverflow => Alu2Variant::Add,
+                        DoubleAluOp::UsubOverflow | DoubleAluOp::SsubOverflow => Alu2Variant::Sub,
+                        DoubleAluOp::UmulHi | DoubleAluOp::SmulHi => Alu2Variant::Multiply,
+                        DoubleAluOp::UdivRem | DoubleAluOp::SdivRem => Alu2Variant::Division,
                     };
 
                     *inst = MInst::Alu2 {
