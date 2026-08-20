@@ -1,0 +1,67 @@
+test interpret
+test run
+target scry32
+
+; Whole-value conditional select: a non-zero condition picks the first value,
+; zero picks the second. 
+
+function %sel32(i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = select v0, v1, v2
+    return v3
+}
+; run: %sel32(1, 10, 20) == 10
+; run: %sel32(0, 10, 20) == 20
+; run: %sel32(-1, 10, 20) == 10
+; run: %sel32(2147483647, 7, 8) == 7
+
+; The condition may be a different (narrower) type than the values.
+function %sel_cond8(i8 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i8, v1: i32, v2: i32):
+    v3 = select v0, v1, v2
+    return v3
+}
+; run: %sel_cond8(0, 1, 2) == 2
+; run: %sel_cond8(-128, 1, 2) == 1
+; run: %sel_cond8(1, -7, 7) == -7
+
+function %sel8(i8 sext, i8 sext, i8 sext) -> i8 sext {
+block0(v0: i8, v1: i8, v2: i8):
+    v3 = select v0, v1, v2
+    return v3
+}
+; run: %sel8(1, -5, 5) == -5
+; run: %sel8(0, -5, 5) == 5
+
+; The classic pattern: an icmp condition feeding a select (min/max).
+function %smin32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = icmp slt v0, v1
+    v3 = select v2, v0, v1
+    return v3
+}
+; run: %smin32(1, 2) == 1
+; run: %smin32(2, 1) == 1
+; run: %smin32(-5, 3) == -5
+; run: %smin32(7, 7) == 7
+
+function %umax32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp ugt v0, v1
+    v3 = select v2, v0, v1
+    return v3
+}
+; run: %umax32(1, 2) == 2
+; run: %umax32(4294967295, 1) == 4294967295
+; run: %umax32(9, 9) == 9
+
+; The select result feeding a non-commutative consumer.
+function %sel_combine(i32 sext, i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = select v0, v1, v2
+    v4 = isub v3, v0
+    return v4
+}
+; run: %sel_combine(0, 10, 20) == 20
+; run: %sel_combine(3, 10, 20) == 7
+; run: %sel_combine(-2, 10, 20) == 12

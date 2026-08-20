@@ -21,7 +21,10 @@
 
 (type UnaryAluOp
   (enum
-    (LogNeg)    ;; Logical negation
+    (LogNeg)    ;; Logical negation: rd = (rs == 0) as u8. The machine's
+                ;; single-operand `eq`, whose implicit second operand is 0.
+    (BitNeg)    ;; Bitwise negation: rd = ~rs. The machine's single-operand
+                ;; `xor`, whose implicit second operand is all bits set.
   )
 )
 
@@ -76,6 +79,7 @@
       (op UnaryAluOp)
       (rd WritableReg)
       (rs Reg)
+      (out u16)         ;; Output reference
     )
 
     (BinaryAlu          ; 2 input, 1 output ALU instruction using effective input types
@@ -102,13 +106,16 @@
       (rs2 Reg)
     )
 
-    ;; Logical negation pseudo-instruction: rd = (rs == 0) as u8. Resolved to
-    ;; the machine's single-operand `eq`, whose implicit second operand is 0.
-    ;; Used to synthesize the comparisons the machine lacks (ne, le, ge) as
-    ;; the negation of the opposite comparison.
-    (LogicalNot
+    ;; The machine's pick: consumes (condition, zero-case, nonzero-case) and
+    ;; outputs the zero-case if the condition's logical value is zero, the
+    ;; nonzero-case otherwise, to the output reference. The chosen value is
+    ;; forwarded with its own tag.
+    (Pick
       (rd WritableReg)
-      (rs Reg)
+      (cond Reg)
+      (if_zero Reg)
+      (if_nonzero Reg)
+      (out u16)    ;; Output reference
     )
 
     (Resize
@@ -457,7 +464,33 @@
   (let
     ( (flag Reg (icmp_tcrrr ty cc lhs rhs))
       (dst WritableReg (temp_writable_reg $I8))
-      (_ Unit (emit (MInst.LogicalNot dst flag)))
+      (_ Unit (emit (MInst.UnaryAlu (UnaryAluOp.LogNeg) dst flag 0)))
+    )
+    dst
+  )
+)
+
+;; Bitwise negation.
+(decl bitnot_tr (Type Reg) Reg)
+(rule
+  (bitnot_tr ty rs)
+  (let
+    ( (dst WritableReg (temp_writable_reg ty))
+      (_ Unit (emit (MInst.UnaryAlu (UnaryAluOp.BitNeg) dst rs 0)))
+    )
+    dst
+  )
+)
+
+;; Whole-value select: a non-zero condition picks `x`, zero picks `y`. The
+;; machine's pick takes the zero-case FIRST, so the value operands are
+;; swapped here.
+(decl select_trrr (Type Reg Reg Reg) Reg)
+(rule
+  (select_trrr ty c x y)
+  (let
+    ( (dst WritableReg (temp_writable_reg ty))
+      (_ Unit (emit (MInst.Pick dst c y x 0)))
     )
     dst
   )
