@@ -102,6 +102,15 @@
       (rs2 Reg)
     )
 
+    ;; Logical negation pseudo-instruction: rd = (rs == 0) as u8. Resolved to
+    ;; the machine's single-operand `eq`, whose implicit second operand is 0.
+    ;; Used to synthesize the comparisons the machine lacks (ne, le, ge) as
+    ;; the negation of the opposite comparison.
+    (LogicalNot
+      (rd WritableReg)
+      (rs Reg)
+    )
+
     (Resize
       (var ResizeVariant)
       (rd WritableReg)
@@ -435,6 +444,20 @@
   (let
     ( (dst WritableReg (temp_writable_reg ty))
       (_ Unit (emit (MInst.IntCmp cc dst lhs rhs)))
+    )
+    dst
+  )
+)
+
+;; The negation of a comparison: used for the condition codes the machine has
+;; no direct operation for.
+(decl icmp_not_tcrrr (Type IntCC Reg Reg) Reg)
+(rule
+  (icmp_not_tcrrr ty cc lhs rhs)
+  (let
+    ( (flag Reg (icmp_tcrrr ty cc lhs rhs))
+      (dst WritableReg (temp_writable_reg $I8))
+      (_ Unit (emit (MInst.LogicalNot dst flag)))
     )
     dst
   )

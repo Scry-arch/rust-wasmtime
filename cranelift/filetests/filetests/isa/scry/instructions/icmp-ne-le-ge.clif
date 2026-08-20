@@ -1,0 +1,145 @@
+test interpret
+test run
+target scry32
+
+; The remaining comparison condition codes: ne, sle, ule, sge, uge. The
+; machine only has eq, lt, and gt, so these must be synthesized (negation of
+; the opposite comparison, or a swapped-operand form). Equal-operand run
+; cases distinguish le/ge from lt/gt; mixed-sign operand pairs distinguish
+; the signed and unsigned forms; asymmetric pairs pin the operand order.
+
+function %ne32(i32 sext, i32 sext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp ne v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %ne32(1, 2) == 1
+; run: %ne32(2, 2) == 0
+; run: %ne32(-5, -5) == 0
+; run: %ne32(0, -1) == 1
+
+function %sle32(i32 sext, i32 sext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp sle v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %sle32(1, 2) == 1
+; run: %sle32(2, 1) == 0
+; run: %sle32(2, 2) == 1
+; run: %sle32(-1, 1) == 1
+; run: %sle32(1, -1) == 0
+; run: %sle32(-2147483648, 2147483647) == 1
+; run: %sle32(2147483647, -2147483648) == 0
+
+function %ule32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp ule v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %ule32(1, 2) == 1
+; run: %ule32(2, 1) == 0
+; run: %ule32(7, 7) == 1
+; run: %ule32(4294967295, 1) == 0
+; run: %ule32(1, 4294967295) == 1
+; run: %ule32(2147483648, 2147483647) == 0
+
+function %sge32(i32 sext, i32 sext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp sge v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %sge32(2, 1) == 1
+; run: %sge32(1, 2) == 0
+; run: %sge32(5, 5) == 1
+; run: %sge32(1, -1) == 1
+; run: %sge32(-1, 1) == 0
+; run: %sge32(-2147483648, -2147483648) == 1
+
+function %uge32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp uge v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %uge32(2, 1) == 1
+; run: %uge32(1, 2) == 0
+; run: %uge32(9, 9) == 1
+; run: %uge32(4294967295, 0) == 1
+; run: %uge32(0, 4294967295) == 0
+
+function %ne8(i8 sext, i8 sext) -> i32 uext {
+block0(v0: i8, v1: i8):
+    v2 = icmp ne v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %ne8(-1, -1) == 0
+; run: %ne8(-1, 1) == 1
+; run: %ne8(127, -128) == 1
+
+function %sle8(i8 sext, i8 sext) -> i32 uext {
+block0(v0: i8, v1: i8):
+    v2 = icmp sle v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %sle8(-128, 127) == 1
+; run: %sle8(127, -128) == 0
+; run: %sle8(-5, -5) == 1
+
+function %uge8(i8 uext, i8 uext) -> i32 uext {
+block0(v0: i8, v1: i8):
+    v2 = icmp uge v0, v1
+    v3 = uextend.i32 v2
+    return v3
+}
+; run: %uge8(255, 0) == 1
+; run: %uge8(0, 255) == 0
+; run: %uge8(128, 127) == 1
+; run: %uge8(7, 7) == 1
+
+; The synthesized conditions must also work as branch conditions.
+function %branch_ne(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = icmp ne v0, v1
+    brif v2, block1, block2
+
+block1:
+    v3 = iconst.i32 10
+    jump block3(v3)
+
+block2:
+    v4 = iconst.i32 20
+    jump block3(v4)
+
+block3(v5: i32):
+    v6 = iadd v5, v5
+    return v6
+}
+; run: %branch_ne(1, 2) == 20
+; run: %branch_ne(3, 3) == 40
+
+function %branch_ule(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = icmp ule v0, v1
+    brif v2, block1, block2
+
+block1:
+    v3 = iconst.i32 1
+    jump block3(v3)
+
+block2:
+    v4 = iconst.i32 3
+    jump block3(v4)
+
+block3(v5: i32):
+    v6 = iadd v5, v5
+    return v6
+}
+; run: %branch_ule(2, 5) == 2
+; run: %branch_ule(5, 5) == 2
+; run: %branch_ule(4294967295, 1) == 6
