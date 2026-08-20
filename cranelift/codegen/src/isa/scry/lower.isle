@@ -65,6 +65,28 @@
 )
 
 (rule
+    (lower (bnot ty x))
+    (bitnot_tr ty x)
+)
+
+(rule
+    (lower (select ty c x y))
+    (select_trrr ty c x y)
+)
+
+;; Bitwise select has no machine operation; expand to (x & c) | (y & ~c).
+(rule
+    (lower (bitselect ty c x y))
+    (let
+      ( (t1 Reg (balu_otrr (BinaryAluOp.BitAnd) ty x c))
+        (nc Reg (bitnot_tr ty c))
+        (t2 Reg (balu_otrr (BinaryAluOp.BitAnd) ty y nc))
+      )
+      (balu_otrr (BinaryAluOp.BitOr) ty t1 t2)
+    )
+)
+
+(rule
     (lower (umulhi ty lhs rhs))
     (dalu_high_otrr (DoubleAluOp.UmulHi) ty lhs rhs)
 )

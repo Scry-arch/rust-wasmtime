@@ -1265,6 +1265,8 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
 
                     match inst {
                         MInst::Alu1 { out, .. }
+                        | MInst::UnaryAlu { out, .. }
+                        | MInst::Pick { out, .. }
                         | MInst::Load { out, .. }
                         | MInst::Cast { out, .. }
                         | MInst::EchoLong { out, .. } => {
@@ -1950,7 +1952,11 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         }
                     }
                 }
-                LogicalNot { rd, .. } => {
+                UnaryAlu {
+                    op: UnaryAluOp::LogNeg,
+                    rd,
+                    ..
+                } => {
                     // The negation result is a u8 boolean; the input is
                     // compared against 0 by bits, so its type is
                     // unconstrained.
@@ -1959,6 +1965,47 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         .refine(IsaType::Known(scry_isa::Type::Uint(0)))
                         .unwrap();
                     update_changed(&rd.to_reg(), td, type_map);
+                }
+                UnaryAlu {
+                    op: UnaryAluOp::BitNeg,
+                    rd,
+                    rs,
+                    ..
+                } => {
+                    // The result has the input's type (the machine's xor
+                    // computes with the effective input type, which for the
+                    // single-operand form is simply the input's). Unifying is
+                    // only a preference: soft phase, skipped on conflict.
+                    if enable_soft {
+                        let t = type_map.get(*rs);
+                        let td = type_map.get(rd.to_reg());
+                        if let Some(refined) = t.refine(td) {
+                            update_changed(rs, refined, type_map);
+                            update_changed(&rd.to_reg(), refined, type_map);
+                        }
+                    }
+                }
+                Pick {
+                    rd,
+                    if_zero,
+                    if_nonzero,
+                    ..
+                } => {
+                    // The machine forwards the chosen value with its own tag,
+                    // so the two values and the result should agree; the
+                    // condition is tested against 0 by logical value and is
+                    // unconstrained. Unifying is only a preference: soft
+                    // phase, skipped on conflict.
+                    if enable_soft {
+                        let t1 = type_map.get(*if_zero);
+                        let t2 = type_map.get(*if_nonzero);
+                        let td = type_map.get(rd.to_reg());
+                        if let Some(refined) = t1.refine(t2).and_then(|t12| t12.refine(td)) {
+                            update_changed(if_zero, refined, type_map);
+                            update_changed(if_nonzero, refined, type_map);
+                            update_changed(&rd.to_reg(), refined, type_map);
+                        }
+                    }
                 }
                 IntCmp { rd, rs1, rs2, cc } => {
                     // The comparison result is a u8 boolean.
@@ -2388,16 +2435,6 @@ fn resolve_instruction_types(
                         out: 0,
                     };
                 }
-                MInst::LogicalNot { rd, rs } => {
-                    // The machine's single-operand `eq`: compares against its
-                    // implicit second operand, 0.
-                    *inst = MInst::Alu1 {
-                        var: AluVariant::Equal,
-                        rd: *rd,
-                        rss: vec![*rs],
-                        out: 0,
-                    };
-                }
                 MInst::Resize { rd, rs, var } => {
                     let rd_t = type_map.get(rd.to_reg());
                     let rs_t = type_map.get(*rs);
@@ -2572,6 +2609,7 @@ fn fix_branch_conditions(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -
                         op: UnaryAluOp::LogNeg,
                         rd: WritableReg::from_reg(neg_cond_r),
                         rs: cond,
+                        out: 0,
                     };
                     bb_mut.inst[issue] = MInst::BranchIssue {
                         dir: true,

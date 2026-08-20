@@ -90,10 +90,10 @@ impl MachInstEmit for MInst {
             | DoubleAlu { .. }
             | Resize { .. }
             | Echo { .. }
-            | LogicalNot { .. }
             | StoreStackArg { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
+            Pick { out, .. } => vec![Instruction::Pick(out_ref(*out))],
             Args { .. } | CallArgs { .. } | JumpTrigger { .. } => vec![],
             Nop | Discard { .. } => vec![Instruction::NoOp],
             Ret { trig } => {
@@ -128,11 +128,17 @@ impl MachInstEmit for MInst {
                     Bits::try_from(offset as i32).unwrap(),
                 )]
             }
-            UnaryAlu { .. } => {
+            // The single-operand ALU forms: the machine combines the one
+            // operand with the operation's implicit default (0 for eq, all
+            // bits set for xor).
+            UnaryAlu { op, out, .. } => {
                 vec![Instruction::Alu(
-                    AluVariant::Equal,
-                    Bits::try_from(0i32).unwrap(),
-                )] // Logical negation just uses "x == 0", where 0 is implicit
+                    match op {
+                        UnaryAluOp::LogNeg => AluVariant::Equal,
+                        UnaryAluOp::BitNeg => AluVariant::BitXor,
+                    },
+                    out_ref(*out),
+                )]
             }
             Const { ty, imm, .. } => {
                 let t = ty

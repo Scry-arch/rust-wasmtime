@@ -147,12 +147,23 @@ impl MachInst for MInst {
                 collector.reg_use(rs);
             }
             UnaryAlu { rd, rs, .. }
-            | LogicalNot { rd, rs }
             | Load { rd, rs, .. }
             | Resize { rd, rs, .. }
             | Cast { rd, rs, .. } => {
                 collector.reg_def(rd);
                 collector.reg_use(rs);
+            }
+            Pick {
+                rd,
+                cond,
+                if_zero,
+                if_nonzero,
+                ..
+            } => {
+                collector.reg_use(cond);
+                collector.reg_use(if_zero);
+                collector.reg_use(if_nonzero);
+                collector.reg_def(rd);
             }
             Call { link, fun, .. } => {
                 collector.reg_def(link);
@@ -215,7 +226,7 @@ impl MachInst for MInst {
             | BinaryAlu { .. }
             | DoubleAlu { .. }
             | UnaryAlu { .. }
-            | LogicalNot { .. }
+            | Pick { .. }
             | IntCmp { .. }
             | Resize { .. }
             | Cast { .. }
@@ -613,11 +624,28 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
-            LogicalNot { rd, rs } => join(
-                "LogicalNot",
-                ["rd:".into(), reg_name(rd.to_reg()), "rs:".into(), reg_name(*rs)].into_iter(),
+            Pick {
+                rd,
+                cond,
+                if_zero,
+                if_nonzero,
+                out,
+            } => join(
+                "Pick",
+                [
+                    "rd:".into(),
+                    reg_name(rd.to_reg()),
+                    "cond:".into(),
+                    reg_name(*cond),
+                    "if_zero:".into(),
+                    reg_name(*if_zero),
+                    "if_nonzero:".into(),
+                    reg_name(*if_nonzero),
+                    format!("out: {out}"),
+                ]
+                .into_iter(),
             ),
-            UnaryAlu { op, rd, rs } => join(
+            UnaryAlu { op, rd, rs, .. } => join(
                 "UnaryAlu",
                 [
                     format!("op: {op:?}"),
@@ -750,13 +778,18 @@ impl MInst {
             }
 
             UnaryAlu { rs, .. }
-            | LogicalNot { rs, .. }
             | Duplicate { rs, .. }
             | Load { rs, .. }
             | Resize { rs, .. }
             | Cast { rs, .. } => {
                 vec![rs]
             }
+            Pick {
+                cond,
+                if_zero,
+                if_nonzero,
+                ..
+            } => vec![cond, if_zero, if_nonzero],
             Store { rd, rs } => vec![rs, rd],
             Call { fun, .. } => vec![fun],
             CallArgs { args, .. } => {
@@ -881,7 +914,7 @@ impl MInst {
                 .collect::<Vec<_>>(),
             Alu1 { rd, .. }
             | UnaryAlu { rd, .. }
-            | LogicalNot { rd, .. }
+            | Pick { rd, .. }
             | Load { rd, .. }
             | LoadStack { rd, .. }
             | SAddr { rd, .. }
@@ -929,7 +962,7 @@ impl MInst {
             | Rets { .. }
             | JumpTrigger { .. }
             | UnaryAlu { .. }
-            | LogicalNot { .. }
+            | Pick { .. }
             | BinaryAlu { .. }
             | IntCmp { .. }
             | Resize { .. }
@@ -984,6 +1017,7 @@ impl MInst {
             .len(),
             Nop
             | UnaryAlu { .. }
+            | Pick { .. }
             | Ret { .. }
             | Call { .. }
             | Reorder { .. }
@@ -1010,7 +1044,6 @@ impl MInst {
             | BinaryAlu { .. }
             | DoubleAlu { .. }
             | Resize { .. }
-            | LogicalNot { .. }
             | StoreStackArg { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }

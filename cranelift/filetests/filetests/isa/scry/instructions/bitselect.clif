@@ -1,0 +1,51 @@
+test interpret
+test run
+target scry32
+
+; Bitwise select: every BIT of the control picks
+; between the corresponding bits of x and y. The mixed-mask run cases give
+; results equal to NEITHER input, so a (wrong) whole-value select lowering
+; cannot pass them.
+;
+; The lowering ((x & c) | (y & ~c), with ~c as the single-operand xor) is
+; implemented, but the negation is blocked on the SIMULATOR's missing xor
+; support (see bitwise-xor.clif), so this file stays red until scry_sim
+; catches up.
+
+function %bsel32(i32 uext, i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = bitselect v0, v1, v2
+    return v3
+}
+; run: %bsel32(0, 123, 456) == 456
+; run: %bsel32(4294967295, 123, 456) == 123
+; run: %bsel32(252645135, 4294967295, 0) == 252645135
+; run: %bsel32(252645135, 0, 4294967295) == 4042322160
+; run: %bsel32(16711935, 305419896, 2596069104) == 2587156088
+
+function %bsel8(i8 uext, i8 uext, i8 uext) -> i8 uext {
+block0(v0: i8, v1: i8, v2: i8):
+    v3 = bitselect v0, v1, v2
+    return v3
+}
+; run: %bsel8(240, 170, 85) == 165
+; run: %bsel8(0, 200, 100) == 100
+; run: %bsel8(255, 200, 100) == 200
+
+function %bsel16(i16 uext, i16 uext, i16 uext) -> i16 uext {
+block0(v0: i16, v1: i16, v2: i16):
+    v3 = bitselect v0, v1, v2
+    return v3
+}
+; run: %bsel16(65280, 4660, 43981) == 4813
+; run: %bsel16(0, 1, 2) == 2
+
+; The result feeding a non-commutative consumer.
+function %bsel_combine(i32 uext, i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = bitselect v0, v1, v2
+    v4 = isub v3, v0
+    return v4
+}
+; run: %bsel_combine(15, 10, 32) == 27
+; run: %bsel_combine(0, 10, 32) == 32
