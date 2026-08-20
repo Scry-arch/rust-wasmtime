@@ -1950,6 +1950,16 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         }
                     }
                 }
+                LogicalNot { rd, .. } => {
+                    // The negation result is a u8 boolean; the input is
+                    // compared against 0 by bits, so its type is
+                    // unconstrained.
+                    let td = type_map
+                        .get(rd.to_reg())
+                        .refine(IsaType::Known(scry_isa::Type::Uint(0)))
+                        .unwrap();
+                    update_changed(&rd.to_reg(), td, type_map);
+                }
                 IntCmp { rd, rs1, rs2, cc } => {
                     // The comparison result is a u8 boolean.
                     let td = type_map
@@ -2367,12 +2377,24 @@ fn resolve_instruction_types(
                         IntCC::SignedGreaterThan | IntCC::UnsignedGreaterThan => {
                             AluVariant::GreaterThan
                         }
-                        _ => unimplemented!("icmp condition {:?} is not yet supported", cc),
+                        // The remaining conditions are synthesized during
+                        // lowering as LogicalNot of the opposite comparison.
+                        _ => unreachable!("icmp condition {:?} reached resolution", cc),
                     };
                     *inst = MInst::Alu1 {
                         var,
                         rd: *rd,
                         rss: vec![*rs1, *rs2],
+                        out: 0,
+                    };
+                }
+                MInst::LogicalNot { rd, rs } => {
+                    // The machine's single-operand `eq`: compares against its
+                    // implicit second operand, 0.
+                    *inst = MInst::Alu1 {
+                        var: AluVariant::Equal,
+                        rd: *rd,
+                        rss: vec![*rs],
                         out: 0,
                     };
                 }

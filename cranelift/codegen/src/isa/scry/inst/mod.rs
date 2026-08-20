@@ -147,6 +147,7 @@ impl MachInst for MInst {
                 collector.reg_use(rs);
             }
             UnaryAlu { rd, rs, .. }
+            | LogicalNot { rd, rs }
             | Load { rd, rs, .. }
             | Resize { rd, rs, .. }
             | Cast { rd, rs, .. } => {
@@ -214,6 +215,7 @@ impl MachInst for MInst {
             | BinaryAlu { .. }
             | DoubleAlu { .. }
             | UnaryAlu { .. }
+            | LogicalNot { .. }
             | IntCmp { .. }
             | Resize { .. }
             | Cast { .. }
@@ -611,6 +613,10 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
+            LogicalNot { rd, rs } => join(
+                "LogicalNot",
+                ["rd:".into(), reg_name(rd.to_reg()), "rs:".into(), reg_name(*rs)].into_iter(),
+            ),
             UnaryAlu { op, rd, rs } => join(
                 "UnaryAlu",
                 [
@@ -744,6 +750,7 @@ impl MInst {
             }
 
             UnaryAlu { rs, .. }
+            | LogicalNot { rs, .. }
             | Duplicate { rs, .. }
             | Load { rs, .. }
             | Resize { rs, .. }
@@ -874,6 +881,7 @@ impl MInst {
                 .collect::<Vec<_>>(),
             Alu1 { rd, .. }
             | UnaryAlu { rd, .. }
+            | LogicalNot { rd, .. }
             | Load { rd, .. }
             | LoadStack { rd, .. }
             | SAddr { rd, .. }
@@ -921,6 +929,7 @@ impl MInst {
             | Rets { .. }
             | JumpTrigger { .. }
             | UnaryAlu { .. }
+            | LogicalNot { .. }
             | BinaryAlu { .. }
             | IntCmp { .. }
             | Resize { .. }
@@ -1001,6 +1010,7 @@ impl MInst {
             | BinaryAlu { .. }
             | DoubleAlu { .. }
             | Resize { .. }
+            | LogicalNot { .. }
             | StoreStackArg { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }

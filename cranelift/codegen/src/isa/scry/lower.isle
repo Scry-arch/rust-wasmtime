@@ -99,6 +99,33 @@
     (icmp_tcrrr ty cc lhs rhs)
 )
 
+;; The machine only has eq, lt, and gt; the remaining condition codes are the
+;; negation of the opposite comparison (operand order preserved).
+(rule 1
+    (lower (icmp ty (IntCC.NotEqual) lhs rhs))
+    (icmp_not_tcrrr ty (IntCC.Equal) lhs rhs)
+)
+
+(rule 1
+    (lower (icmp ty (IntCC.SignedLessThanOrEqual) lhs rhs))
+    (icmp_not_tcrrr ty (IntCC.SignedGreaterThan) lhs rhs)
+)
+
+(rule 1
+    (lower (icmp ty (IntCC.UnsignedLessThanOrEqual) lhs rhs))
+    (icmp_not_tcrrr ty (IntCC.UnsignedGreaterThan) lhs rhs)
+)
+
+(rule 1
+    (lower (icmp ty (IntCC.SignedGreaterThanOrEqual) lhs rhs))
+    (icmp_not_tcrrr ty (IntCC.SignedLessThan) lhs rhs)
+)
+
+(rule 1
+    (lower (icmp ty (IntCC.UnsignedGreaterThanOrEqual) lhs rhs))
+    (icmp_not_tcrrr ty (IntCC.UnsignedLessThan) lhs rhs)
+)
+
 (rule
     (lower (uextend ty rs))
     (resize_vrr (ResizeVariant.Uextend) ty rs)

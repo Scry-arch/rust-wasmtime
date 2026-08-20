@@ -90,6 +90,7 @@ impl MachInstEmit for MInst {
             | DoubleAlu { .. }
             | Resize { .. }
             | Echo { .. }
+            | LogicalNot { .. }
             | StoreStackArg { .. } => {
                 unreachable!("Pseudo-instruction was not eliminated: {:?}", self)
             }
