@@ -1887,14 +1887,26 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     use crate::isa::scry::inst::DoubleAluOp::*;
                     // Each of these operations is signedness-steered: the
                     // machine picks the operation (and flag meaning) from the
-                    // operands' effective input type, so the operands'
+                    // operands' runtime types, so a pinned operand's
                     // signedness is hard: a conflicting operand must be
-                    // re-tagged.
-                    let signed = match op {
-                        SaddOverflow | SsubOverflow | SmulHi | SdivRem => true,
-                        UaddOverflow | UsubOverflow | UmulHi | UdivRem => false,
+                    // re-tagged. The shifts read each operand's own tag
+                    // (no effective type): the value's picks arithmetic vs
+                    // logical, the amount's the direction (negative signed
+                    // amounts shift right), so a left shift pins nothing.
+                    let (pin1, pin2): (Option<bool>, Option<bool>) = match op {
+                        SaddOverflow | SsubOverflow | SmulHi | SdivRem => {
+                            (Some(true), Some(true))
+                        }
+                        UaddOverflow | UsubOverflow | UmulHi | UdivRem => {
+                            (Some(false), Some(false))
+                        }
+                        Shl => (None, None),
+                        Ushr => (Some(false), Some(true)),
+                        Sshr => (Some(true), Some(true)),
                     };
-                    for (slot, r) in [rs1, rs2].into_iter().enumerate() {
+                    let signed = pin1.unwrap_or(false);
+                    for (slot, (r, pin)) in [(rs1, pin1), (rs2, pin2)].into_iter().enumerate() {
+                        let Some(signed) = pin else { continue };
                         let t = type_map.get(*r);
                         if t.is_int() {
                             let target = IsaType::new_known_int(t.size_pow2(), signed);
@@ -1949,6 +1961,37 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         UdivRem | SdivRem => {
                             pin_output(rdl, signed, type_map);
                             pin_output(rdh, false, type_map);
+                        }
+                        // The result carries the value operand's tag (the
+                        // shift-out high output is dead).
+                        Ushr | Sshr => {
+                            pin_output(rdl, signed, type_map);
+                        }
+                        // The result carries the value's tag, whatever it
+                        // is: unify the two (hard), re-tagging the value on
+                        // a conflict so the result keeps its established type.
+                        Shl => {
+                            let t1 = type_map.get(*rs1);
+                            let td = type_map.get(rdl.to_reg());
+                            if t1.is_int() && td.is_int() {
+                                match t1.refine(td) {
+                                    Some(refined) => {
+                                        update_changed(rs1, refined, type_map);
+                                        update_changed(&rdl.to_reg(), refined, type_map);
+                                    }
+                                    None => push_demand(
+                                        demands,
+                                        bb_v,
+                                        inst_idx,
+                                        0,
+                                        *rs1,
+                                        IsaType::new_known_int(
+                                            t1.size_pow2(),
+                                            td.is_signed_int(),
+                                        ),
+                                    ),
+                                }
+                            }
                         }
                     }
                 }
@@ -2404,6 +2447,9 @@ fn resolve_instruction_types(
                         DoubleAluOp::UsubOverflow | DoubleAluOp::SsubOverflow => Alu2Variant::Sub,
                         DoubleAluOp::UmulHi | DoubleAluOp::SmulHi => Alu2Variant::Multiply,
                         DoubleAluOp::UdivRem | DoubleAluOp::SdivRem => Alu2Variant::Division,
+                        DoubleAluOp::Shl | DoubleAluOp::Ushr | DoubleAluOp::Sshr => {
+                            Alu2Variant::Shift
+                        }
                     };
 
                     *inst = MInst::Alu2 {
