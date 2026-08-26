@@ -1177,9 +1177,9 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                                 rds.remove(dead_slot);
                                 outs.remove(dead_slot);
                                 *out_var = if dead_slot == 1 {
-                                    Alu2OutputVariant::Low
+                                    Alu2OutputVariant::LowOnly
                                 } else {
-                                    Alu2OutputVariant::High
+                                    Alu2OutputVariant::HighOnly
                                 };
                             }
                             _ => {
@@ -2374,7 +2374,7 @@ fn resolve_instruction_types(
                     *inst = match alu2_var {
                         Some(var) => MInst::Alu2 {
                             var,
-                            out_var: Alu2OutputVariant::Low,
+                            out_var: Alu2OutputVariant::LowOnly,
                             rds: vec![*rd],
                             rss: vec![*rs1, *rs2],
                             outs: vec![0],
@@ -2411,7 +2411,7 @@ fn resolve_instruction_types(
                         // Placeholder for the two-output form: the final
                         // output variant is chosen at emission from the
                         // output references (see emit.rs).
-                        out_var: Alu2OutputVariant::FirstLow,
+                        out_var: Alu2OutputVariant::LowFirst,
                         rds: vec![*rdl, *rdh],
                         rss: vec![*rs1, *rs2],
                         outs: vec![0, 0],

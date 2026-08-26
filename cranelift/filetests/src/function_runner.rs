@@ -650,6 +650,7 @@ impl<'a> Trampoline<'a> {
                         stack: base_stack,
                     }],
                     stack_buffer: STACK_SIZE,
+                    more_depth: 1, // Total: 4
                 };
 
                 let mut res = Executor::<BlockedMemory, _>::from_state(&original_state, &mut mem)

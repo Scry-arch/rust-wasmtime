@@ -891,7 +891,7 @@ impl MInst {
             DoubleAlu { rdl, rdh, .. } => {
                 // Physical production order: when both outputs go to the same
                 // consumer, the machine delivers the low output before the
-                // high one (the resolved Alu2 uses FirstLow in that case).
+                // high one (the resolved Alu2 uses LowFirst in that case).
                 vec![rdl, rdh]
             }
             Reorder { rd1, rd2, .. } => {
