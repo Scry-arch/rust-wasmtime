@@ -51,6 +51,17 @@
     (SdivRem)       ;; Signed Euclidean division: quotient (low) + remainder
                     ;; (high); CLIF's truncating semantics are recovered by
                     ;; the fix-up in `lower_sdiv`/`lower_srem`
+    ;; The machine's unified shift (rs1 = value, rs2 = amount): a
+    ;; non-negative amount shifts left, a negative one right. The amount
+    ;; must already be masked to the value width (CLIF semantics; the
+    ;; machine shifts everything out) and, for the right shifts, negated.
+    ;; The used result is the low output; the high (shift-out) output is
+    ;; dead. Right-shift kind (arithmetic vs logical) follows the value's
+    ;; runtime tag, and the direction the amount's, so the operands are
+    ;; pinned accordingly in the type analysis.
+    (Shl)           ;; Left shift (value + non-negative amount)
+    (Ushr)          ;; Logical right shift (unsigned value + negative amount)
+    (Sshr)          ;; Arithmetic right shift (signed value + negative amount)
   )
 )
 
@@ -435,6 +446,36 @@
       (_ Unit (emit (MInst.DoubleAlu op rdl rdh x y)))
     )
     rdh
+  )
+)
+
+;; Left shift: mask the amount to the value width, then the machine's
+;; unified shift with a non-negative amount.
+(decl lower_ishl (Type Type Reg Reg) Reg)
+(rule
+  (lower_ishl value_ty amount_ty value amount)
+  (let
+    ( (mask Reg (const_r amount_ty (imm64 (ty_shift_mask value_ty))))
+      (m Reg (balu_otrr (BinaryAluOp.BitAnd) amount_ty amount mask))
+    )
+    (dalu_low_otrr (DoubleAluOp.Shl) value_ty value m)
+  )
+)
+
+;; Right shifts: mask the amount to the value width and THEN negate it (the
+;; other order is wrong for amounts with the high bits set), then the
+;; machine's unified shift with a negative amount.
+(decl lower_shr (DoubleAluOp Type Type Reg Reg) Reg)
+(rule
+  (lower_shr op value_ty amount_ty value amount)
+  (let
+    ( ;; The zero comes first so the subtraction's operands arrive in order.
+      (zero Reg (const_r amount_ty (imm64 0)))
+      (mask Reg (const_r amount_ty (imm64 (ty_shift_mask value_ty))))
+      (m Reg (balu_otrr (BinaryAluOp.BitAnd) amount_ty amount mask))
+      (n Reg (isub_wrap_trrr amount_ty zero m))
+    )
+    (dalu_low_otrr op value_ty value n)
   )
 )
 

@@ -65,6 +65,21 @@
 )
 
 (rule
+    (lower (ishl ty x amt @ (value_type aty)))
+    (lower_ishl ty aty x amt)
+)
+
+(rule
+    (lower (ushr ty x amt @ (value_type aty)))
+    (lower_shr (DoubleAluOp.Ushr) ty aty x amt)
+)
+
+(rule
+    (lower (sshr ty x amt @ (value_type aty)))
+    (lower_shr (DoubleAluOp.Sshr) ty aty x amt)
+)
+
+(rule
     (lower (bnot ty x))
     (bitnot_tr ty x)
 )
