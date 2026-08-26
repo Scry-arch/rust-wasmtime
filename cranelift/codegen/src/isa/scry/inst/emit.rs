@@ -111,15 +111,15 @@ impl MachInstEmit for MInst {
                 // The encoding has a single offset field. A single output uses
                 // it directly (with the stored Low/High variant selecting
                 // which machine output survives). For two outputs, either
-                // both share the offset (FirstLow: delivered value first,
+                // both share the offset (LowFirst: delivered value first,
                 // matching get_defs order) or one goes to the next
-                // instruction and the other to the offset (NextLow/NextHigh).
+                // instruction and the other to the offset (LowNext/HighNext).
                 // insert_ref_distances guarantees one of these encodings fits.
                 let (out_var, offset) = match outs.as_slice() {
                     [o] => (*out_var, *o),
-                    [lo, hi] if lo == hi => (Alu2OutputVariant::FirstLow, *lo),
-                    [0, hi] => (Alu2OutputVariant::NextLow, *hi),
-                    [lo, 0] => (Alu2OutputVariant::NextHigh, *lo),
+                    [lo, hi] if lo == hi => (Alu2OutputVariant::LowFirst, *lo),
+                    [0, hi] => (Alu2OutputVariant::LowNext, *hi),
+                    [lo, 0] => (Alu2OutputVariant::HighNext, *lo),
                     _ => unreachable!("Unencodable two-output references: {outs:?}"),
                 };
                 vec![Instruction::Alu2(

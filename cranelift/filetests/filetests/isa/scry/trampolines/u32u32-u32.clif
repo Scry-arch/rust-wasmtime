@@ -20,14 +20,13 @@ block0(v0: i32, v1: i32):
 ;   Duplicate(rd1:, v(205), rd2:, v(206), rs:, v(207), out1: 0, out2: 2, )
 ;   Load(ty: Known(Uint(2)), rd:, v(202), rs:, v(205), out: 4, )
 ;   Const(ty: Known(Uint(2)), rd:, v(199), imm: 16, )
-;   Alu2(var: Add, var_out Low, rds:, v(200), rss:, v(199), v(206), outs: [0], )
+;   Alu2(var: Add, var_out LowOnly, rds:, v(200), rss:, v(199), v(206), outs: [0], )
 ;   Load(ty: Known(Uint(2)), rd:, v(201), rs:, v(200), out: 1, )
 ;   Call(link:, v(197), fn_ptr:, v(203), trig: 0, )
 ;   CallArgs(link:, v(197), rets:, v(198), args:, v(202), v(201), sig: Signature { params: [AbiParam { value_type: types::I32, purpose: Normal, extension: Uext }, AbiParam { value_type: types::I32, purpose: Normal, extension: Uext }], returns: [AbiParam { value_type: types::I32, purpose: Normal, extension: Uext }], call_conv: WindowsFastcall }, )
 ;   Reorder(rd1:, v(209), rd2:, v(210), rs1:, v(208), rs2:, v(198), out: 0, )
 ;   Store(rs:, v(210), rd:, v(209), )
 ;   Ret(trig: 0, )
-
 ;
 ; Disassembled:
 ; block0: ; offset 0x0
@@ -42,3 +41,4 @@ block0(v0: i32, v1: i32):
 ; echo =>0, =>0
 ; st 
 ; ret 0
+
