@@ -1,0 +1,39 @@
+test interpret
+test run
+target scry32
+
+; Byte swap has no machine operation; it expands to shifts by constant
+; amounts (negative constants shift right) combined with masks and ORs.
+
+function %bswap16(i16 uext) -> i16 uext {
+block0(v0: i16):
+    v1 = bswap v0
+    return v1
+}
+; run: %bswap16(0x1234) == 0x3412
+; run: %bswap16(0x00ff) == 0xff00
+; run: %bswap16(0xff00) == 0x00ff
+; run: %bswap16(0) == 0
+
+function %bswap32(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = bswap v0
+    return v1
+}
+; run: %bswap32(0x12345678) == 0x78563412
+; run: %bswap32(0x000000ff) == 0xff000000
+; run: %bswap32(0xff000000) == 0x000000ff
+; run: %bswap32(0x0000ff00) == 0x00ff0000
+; run: %bswap32(0x00ff0000) == 0x0000ff00
+; run: %bswap32(0xffffffff) == 0xffffffff
+; run: %bswap32(0) == 0
+
+; Signed operands swap the same bits (the right shifts must be logical).
+function %bswap32_signed(i32 sext) -> i32 sext {
+block0(v0: i32):
+    v1 = bswap v0
+    return v1
+}
+; run: %bswap32_signed(-1) == -1
+; run: %bswap32_signed(-2147483648) == 128
+; run: %bswap32_signed(128) == -2147483648

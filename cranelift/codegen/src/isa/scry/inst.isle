@@ -513,6 +513,55 @@
   )
 )
 
+(decl pure i64_imm64 (i64) Imm64)
+(extern constructor i64_imm64 i64_imm64)
+
+;; Shifts by a constant amount (negative = right): no masking or negation
+;; needed, the constant is the machine amount directly.
+(decl shl_const (Type Reg i64) Reg)
+(rule
+  (shl_const ty x amt)
+  (dalu_low_otrr (DoubleAluOp.Shl) ty x (const_r ty (i64_imm64 amt)))
+)
+
+(decl ushr_const (Type Reg i64) Reg)
+(rule
+  (ushr_const ty x amt)
+  (dalu_low_otrr (DoubleAluOp.Ushr) ty x (const_r ty (i64_imm64 amt)))
+)
+
+;; Byte swap: shifts by constant amounts combined with masks and ORs.
+(decl lower_bswap (Type Reg) Reg)
+(rule
+  (lower_bswap $I16 x)
+  (let
+    ( (l Reg (shl_const $I16 x 8))
+      (r Reg (ushr_const $I16 x -8))
+    )
+    (balu_otrr (BinaryAluOp.BitOr) $I16 l r)
+  )
+)
+
+(rule
+  (lower_bswap $I32 x)
+  (let
+    ( ;; byte 0 -> 3
+      (a Reg (shl_const $I32 x 24))
+      ;; byte 1 -> 2
+      (b0 Reg (shl_const $I32 x 8))
+      (b Reg (balu_otrr (BinaryAluOp.BitAnd) $I32 b0 (const_r $I32 (imm64 0xff0000))))
+      ;; byte 2 -> 1
+      (c0 Reg (ushr_const $I32 x -8))
+      (c Reg (balu_otrr (BinaryAluOp.BitAnd) $I32 c0 (const_r $I32 (imm64 0xff00))))
+      ;; byte 3 -> 0
+      (d Reg (ushr_const $I32 x -24))
+      (ab Reg (balu_otrr (BinaryAluOp.BitOr) $I32 a b))
+      (cd Reg (balu_otrr (BinaryAluOp.BitOr) $I32 c d))
+    )
+    (balu_otrr (BinaryAluOp.BitOr) $I32 ab cd)
+  )
+)
+
 ;; Signed division/remainder with CLIF's truncating semantics, built from the
 ;; machine's Euclidean division plus a fix-up (implemented in Rust).
 (decl lower_sdiv (Type Reg Reg) Reg)

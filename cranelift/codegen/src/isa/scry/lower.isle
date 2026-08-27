@@ -90,6 +90,11 @@
 )
 
 (rule
+    (lower (bswap ty x))
+    (lower_bswap ty x)
+)
+
+(rule
     (lower (bnot ty x))
     (bitnot_tr ty x)
 )

@@ -274,6 +274,11 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
     }
 
     #[inline]
+    fn i64_imm64(&mut self, imm: i64) -> Imm64 {
+        Imm64::new(imm)
+    }
+
+    #[inline]
     fn imm64_from_offset(&mut self, off: Offset32) -> Imm64 {
         Imm64::new(i64::from(off))
     }
