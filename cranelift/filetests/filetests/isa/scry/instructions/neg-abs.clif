@@ -1,0 +1,42 @@
+test interpret
+test run
+target scry32
+
+; Tests negation and abs instructions
+
+function %ineg32(i32 sext) -> i32 sext {
+block0(v0: i32):
+    v1 = ineg v0
+    return v1
+}
+; run: %ineg32(5) == -5
+; run: %ineg32(-5) == 5
+; run: %ineg32(0) == 0
+; run: %ineg32(-2147483648) == -2147483648
+
+function %ineg8(i8 sext) -> i8 sext {
+block0(v0: i8):
+    v1 = ineg v0
+    return v1
+}
+; run: %ineg8(1) == -1
+; run: %ineg8(-128) == -128
+
+function %iabs32(i32 sext) -> i32 sext {
+block0(v0: i32):
+    v1 = iabs v0
+    return v1
+}
+; run: %iabs32(5) == 5
+; run: %iabs32(-5) == 5
+; run: %iabs32(0) == 0
+; run: %iabs32(-2147483647) == 2147483647
+; run: %iabs32(-2147483648) == -2147483648
+
+function %iabs16(i16 sext) -> i16 sext {
+block0(v0: i16):
+    v1 = iabs v0
+    return v1
+}
+; run: %iabs16(-300) == 300
+; run: %iabs16(300) == 300

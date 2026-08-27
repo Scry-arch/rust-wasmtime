@@ -606,6 +606,61 @@
   )
 )
 
+;; Logical negation: the u8 flag (rs == 0).
+(decl lognot_r (Reg) Reg)
+(rule
+  (lognot_r rs)
+  (let
+    ( (dst WritableReg (temp_writable_reg $I8))
+      (_ Unit (emit (MInst.UnaryAlu (UnaryAluOp.LogNeg) dst rs 0)))
+    )
+    dst
+  )
+)
+
+;; Zero-extends a u8 flag to the given type (nothing to do for I8).
+(decl flag_extend (Type Reg) Reg)
+(rule 1 (flag_extend $I8 flag) flag)
+(rule (flag_extend ty flag) (resize_vrr (ResizeVariant.Uextend) ty flag))
+
+;; Negation: subtraction from zero.
+(decl ineg_tr (Type Reg) Reg)
+(rule
+  (ineg_tr ty x)
+  (isub_wrap_trrr ty (const_r ty (imm64 0)) x)
+)
+
+;; Absolute value: picks the negation on a negative value.
+(decl lower_iabs (Type Reg) Reg)
+(rule
+  (lower_iabs ty x)
+  (let
+    ( (neg Reg (ineg_tr ty x))
+      (is_neg Reg (icmp_tcrrr $I8 (IntCC.SignedLessThan) x (const_r ty (imm64 0))))
+    )
+    (select_trrr ty is_neg neg x)
+  )
+)
+
+;; Min/max: a comparison picking its left operand when it holds.
+(decl pick_left_ctrr (IntCC Type Reg Reg) Reg)
+(rule
+  (pick_left_ctrr cc ty a b)
+  (select_trrr ty (icmp_tcrrr $I8 cc a b) a b)
+)
+
+;; bmask: all bits set for a non-zero input, else zero, computed as
+;; (x == 0) - 1 in the input's width (wrapping to all ones for non-zero x).
+(decl lower_bmask (Type Reg) Reg)
+(rule
+  (lower_bmask ty x)
+  (let
+    ( (is_zero Reg (flag_extend ty (lognot_r x)))
+    )
+    (isub_wrap_trrr ty is_zero (const_r ty (imm64 1)))
+  )
+)
+
 ;; Whole-value select: a non-zero condition picks `x`, zero picks `y`. The
 ;; machine's pick takes the zero-case FIRST, so the value operands are
 ;; swapped here.
