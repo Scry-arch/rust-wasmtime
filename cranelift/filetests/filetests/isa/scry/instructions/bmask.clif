@@ -1,0 +1,31 @@
+test interpret
+test run
+target scry32
+
+; bmask: all bits set if the input is non-zero, else zero.
+
+function %bmask32(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = bmask.i32 v0
+    return v1
+}
+; run: %bmask32(0) == 0
+; run: %bmask32(1) == 4294967295
+; run: %bmask32(4294967295) == 4294967295
+; run: %bmask32(65536) == 4294967295
+
+function %bmask8(i8 uext) -> i8 uext {
+block0(v0: i8):
+    v1 = bmask.i8 v0
+    return v1
+}
+; run: %bmask8(0) == 0
+; run: %bmask8(128) == 255
+
+function %bmask32_signed(i32 sext) -> i32 sext {
+block0(v0: i32):
+    v1 = bmask.i32 v0
+    return v1
+}
+; run: %bmask32_signed(0) == 0
+; run: %bmask32_signed(-5) == -1

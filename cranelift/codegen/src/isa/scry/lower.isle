@@ -95,6 +95,41 @@
 )
 
 (rule
+    (lower (ineg ty x))
+    (ineg_tr ty x)
+)
+
+(rule
+    (lower (iabs ty x))
+    (lower_iabs ty x)
+)
+
+(rule
+    (lower (smin ty a b))
+    (pick_left_ctrr (IntCC.SignedLessThan) ty a b)
+)
+
+(rule
+    (lower (smax ty a b))
+    (pick_left_ctrr (IntCC.SignedGreaterThan) ty a b)
+)
+
+(rule
+    (lower (umin ty a b))
+    (pick_left_ctrr (IntCC.UnsignedLessThan) ty a b)
+)
+
+(rule
+    (lower (umax ty a b))
+    (pick_left_ctrr (IntCC.UnsignedGreaterThan) ty a b)
+)
+
+(rule
+    (lower (bmask ty x))
+    (lower_bmask ty x)
+)
+
+(rule
     (lower (bnot ty x))
     (bitnot_tr ty x)
 )

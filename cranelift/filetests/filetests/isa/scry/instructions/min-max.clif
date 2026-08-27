@@ -1,0 +1,63 @@
+test interpret
+test run
+target scry32
+
+; Test min/max instructions
+
+function %smin32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = smin v0, v1
+    return v2
+}
+; run: %smin32(1, 2) == 1
+; run: %smin32(2, 1) == 1
+; run: %smin32(-1, 1) == -1
+; run: %smin32(-2147483648, 2147483647) == -2147483648
+; run: %smin32(7, 7) == 7
+
+function %smax32(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = smax v0, v1
+    return v2
+}
+; run: %smax32(1, 2) == 2
+; run: %smax32(2, 1) == 2
+; run: %smax32(-1, 1) == 1
+; run: %smax32(-2147483648, 2147483647) == 2147483647
+; run: %smax32(7, 7) == 7
+
+function %umin32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = umin v0, v1
+    return v2
+}
+; run: %umin32(1, 2) == 1
+; run: %umin32(2, 1) == 1
+; run: %umin32(4294967295, 1) == 1
+; run: %umin32(0, 4294967295) == 0
+
+function %umax32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = umax v0, v1
+    return v2
+}
+; run: %umax32(1, 2) == 2
+; run: %umax32(2, 1) == 2
+; run: %umax32(4294967295, 1) == 4294967295
+; run: %umax32(0, 4294967295) == 4294967295
+
+function %smin8(i8 sext, i8 sext) -> i8 sext {
+block0(v0: i8, v1: i8):
+    v2 = smin v0, v1
+    return v2
+}
+; run: %smin8(-128, 127) == -128
+; run: %smin8(5, -3) == -3
+
+function %umax16(i16 uext, i16 uext) -> i16 uext {
+block0(v0: i16, v1: i16):
+    v2 = umax v0, v1
+    return v2
+}
+; run: %umax16(65535, 1) == 65535
+; run: %umax16(300, 400) == 400
