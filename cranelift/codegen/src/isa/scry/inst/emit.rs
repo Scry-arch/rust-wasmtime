@@ -96,6 +96,13 @@ impl MachInstEmit for MInst {
             Pick { out, .. } => vec![Instruction::Pick(out_ref(*out))],
             Args { .. } | CallArgs { .. } | JumpTrigger { .. } => vec![],
             Nop | Discard { .. } => vec![Instruction::NoOp],
+            Trap => vec![Instruction::Trap],
+            // A forward jump (taken on a zero operand) over the trap: target 1 =
+            // two instructions ahead, triggering right after the jump.
+            TrapNz { .. } => vec![
+                Instruction::Jump(1.try_into().unwrap(), 0.try_into().unwrap()),
+                Instruction::Trap,
+            ],
             Ret { trig } => {
                 vec![Instruction::Call(
                     CallVariant::Ret,

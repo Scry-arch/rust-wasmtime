@@ -71,6 +71,16 @@
     ;; A no-op.
     (Nop)
 
+    ;; The machine's trap: halts execution (an unconditional CLIF trap).
+    (Trap)
+
+    ;; A conditional trap: a forward jump over a trap, taken (the machine's
+    ;; forward-jump semantics) when the operand is zero, so the trap fires when
+    ;; `cond` is non-zero. Emits two machine instructions.
+    (TrapNz
+      (cond Reg)
+    )
+
     ;; Discards any incoming operands
     (Discard
       (rss RegVec)

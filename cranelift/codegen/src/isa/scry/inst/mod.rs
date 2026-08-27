@@ -56,7 +56,7 @@ impl MachInst for MInst {
     fn get_operands(&mut self, collector: &mut impl OperandVisitor) {
         use MInst::*;
         match self {
-            Nop | Ret { .. } | ImmJump { .. } | StackAdjust { .. } => (),
+            Nop | Trap | Ret { .. } | ImmJump { .. } | StackAdjust { .. } => (),
             StoreStack { rs, .. } | StoreStackArg { rs, .. } => {
                 collector.reg_use(rs);
             }
@@ -183,6 +183,9 @@ impl MachInst for MInst {
                 collector.reg_def(link);
                 collector.reg_use(cond);
             }
+            TrapNz { cond } => {
+                collector.reg_use(cond);
+            }
             JumpTrigger { link, args, .. } => {
                 collector.reg_use(link);
                 for r in args {
@@ -201,6 +204,7 @@ impl MachInst for MInst {
                 Some((rds[0], rss[0]))
             }
             Nop
+            | Trap
             | Args { .. }
             | Ret { .. }
             | Rets { .. }
@@ -219,6 +223,7 @@ impl MachInst for MInst {
             | Reorder { .. }
             | JumpIssue { .. }
             | BranchIssue { .. }
+            | TrapNz { .. }
             | JumpTrigger { .. }
             | ImmJump { .. }
             | Alu1 { .. }
@@ -248,8 +253,7 @@ impl MachInst for MInst {
     }
 
     fn is_trap(&self) -> bool {
-        // TODO: implement for the trap instruction
-        false
+        matches!(self, MInst::Trap | MInst::TrapNz { .. })
     }
 
     fn is_args(&self) -> bool {
@@ -348,6 +352,8 @@ impl MInst {
                 once("rss:".into()).chain(rss.iter().map(|r| reg_name(*r))),
             ),
             Nop => "Nop".into(),
+            Trap => "Trap".into(),
+            TrapNz { cond } => join("TrapNz", ["cond:".into(), reg_name(*cond)].into_iter()),
             Ret { trig } => join("Ret", once(format!("trig: {trig}"))),
             Rets { rets } => join("Rets", rets.iter().map(|p| reg_name(p.vreg))),
             Alu1 { var, rd, rss, out } => join(
@@ -741,6 +747,7 @@ impl MInst {
         use MInst::*;
         match self {
             Nop
+            | Trap
             | Ret { .. }
             | Args { .. }
             | Const { .. }
@@ -798,6 +805,7 @@ impl MInst {
                 uses
             }
             BranchIssue { cond, .. } => vec![cond],
+            TrapNz { cond } => vec![cond],
             JumpTrigger { args, .. } => args.iterate().collect(),
         }
         .into_iter()
@@ -870,6 +878,7 @@ impl MInst {
         use MInst::*;
         match self {
             Nop
+            | Trap
             | Rets { .. }
             | Ret { .. }
             | Store { .. }
@@ -881,6 +890,7 @@ impl MInst {
             | Call { .. }
             | JumpIssue { .. }
             | BranchIssue { .. }
+            | TrapNz { .. }
             | Discard { .. } => vec![],
             Echo { rds, .. } | EchoLong { rds, .. } | Alu2 { rds, .. } => {
                 rds.iterate().collect::<Vec<_>>()
@@ -959,6 +969,7 @@ impl MInst {
             Args { .. } => 0,
             Const { .. } | LoadExtName { .. } | Echo { .. } => self.emitted_length(),
             Nop
+            | Trap
             | Rets { .. }
             | JumpTrigger { .. }
             | UnaryAlu { .. }
@@ -986,6 +997,10 @@ impl MInst {
             | EchoLong { .. }
             | EchoSplit { .. }
             | EchoChain { .. } => 1,
+            // Flight times count EXECUTED instructions. The trap is only
+            // executed on the halting path, so for every value that gets past
+            // this instruction only the jump counts.
+            TrapNz { .. } => 1,
             DoubleAlu { .. } | ImmJump { .. } | StoreStackArg { .. } => unreachable!(),
         }
     }
@@ -1016,6 +1031,7 @@ impl MInst {
             )
             .len(),
             Nop
+            | Trap
             | UnaryAlu { .. }
             | Pick { .. }
             | Ret { .. }
@@ -1037,6 +1053,8 @@ impl MInst {
             | EchoLong { .. }
             | EchoSplit { .. }
             | EchoChain { .. } => 1,
+            // A jump over a trap plus the trap.
+            TrapNz { .. } => 2,
             // Pseudo-instructions that must have been eliminated by now.
             Rets { .. }
             | ImmJump { .. }
