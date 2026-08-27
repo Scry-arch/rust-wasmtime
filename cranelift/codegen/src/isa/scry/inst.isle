@@ -479,6 +479,40 @@
   )
 )
 
+;; Rotate left (by 'amount') using shifts: rotl = (val << amount) | (val >> (width - amount))
+(decl lower_rotl (Type Type Reg Reg) Reg)
+(rule
+  (lower_rotl val_ty amount_ty x amount)
+  (let
+    ( (mask Reg (const_r amount_ty (imm64 (ty_shift_mask val_ty))))
+      (m_amount Reg (balu_otrr (BinaryAluOp.BitAnd) amount_ty amount mask))
+      (shl Reg (dalu_low_otrr (DoubleAluOp.Shl) val_ty x m_amount))
+      (width Reg (const_r amount_ty (imm64 (ty_bits_u64 val_ty))))
+      (shr_amount Reg (isub_wrap_trrr amount_ty m_amount width))
+      (shr Reg (dalu_low_otrr (DoubleAluOp.Ushr) val_ty x shr_amount))
+    )
+    (balu_otrr (BinaryAluOp.BitOr) val_ty shl shr)
+  )
+)
+
+;; Rotate right (by 'amount') using shifts: rotr = (val >> amount) | (val << (width - amount))
+(decl lower_rotr (Type Type Reg Reg) Reg)
+(rule
+  (lower_rotr val_ty amount_ty x amount)
+  (let
+    ( (mask Reg (const_r amount_ty (imm64 (ty_shift_mask val_ty))))
+      (m_amount Reg (balu_otrr (BinaryAluOp.BitAnd) amount_ty amount mask))
+      (zero Reg (const_r amount_ty (imm64 0)))
+      (shr_amount Reg (isub_wrap_trrr amount_ty zero m_amount))
+      (shr Reg (dalu_low_otrr (DoubleAluOp.Ushr) val_ty x shr_amount))
+      (width Reg (const_r amount_ty (imm64 (ty_bits_u64 val_ty))))
+      (shift_left_amount Reg (isub_wrap_trrr amount_ty width m_amount))
+      (shl Reg (dalu_low_otrr (DoubleAluOp.Shl) val_ty x shift_left_amount))
+    )
+    (balu_otrr (BinaryAluOp.BitOr) val_ty shl shr)
+  )
+)
+
 ;; Signed division/remainder with CLIF's truncating semantics, built from the
 ;; machine's Euclidean division plus a fix-up (implemented in Rust).
 (decl lower_sdiv (Type Reg Reg) Reg)

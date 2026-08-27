@@ -80,6 +80,16 @@
 )
 
 (rule
+    (lower (rotl ty x amt @ (value_type aty)))
+    (lower_rotl ty aty x amt)
+)
+
+(rule
+    (lower (rotr ty x amt @ (value_type aty)))
+    (lower_rotr ty aty x amt)
+)
+
+(rule
     (lower (bnot ty x))
     (bitnot_tr ty x)
 )

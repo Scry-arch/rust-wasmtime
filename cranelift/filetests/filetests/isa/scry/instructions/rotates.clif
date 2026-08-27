@@ -1,0 +1,84 @@
+test interpret
+test run
+target scry32
+
+; Tests rotate instructions
+
+function %rotl32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = rotl v0, v1
+    return v2
+}
+; run: %rotl32(1, 1) == 2
+; run: %rotl32(2147483648, 1) == 1
+; run: %rotl32(305419896, 8) == 878082066
+; run: %rotl32(305419896, 0) == 305419896
+; run: %rotl32(305419896, 32) == 305419896
+; run: %rotl32(2147483648, 33) == 1
+; run: %rotl32(4294967295, 7) == 4294967295
+
+function %rotr32(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = rotr v0, v1
+    return v2
+}
+; run: %rotr32(2, 1) == 1
+; run: %rotr32(1, 1) == 2147483648
+; run: %rotr32(305419896, 8) == 2014458966
+; run: %rotr32(305419896, 0) == 305419896
+; run: %rotr32(305419896, 32) == 305419896
+; run: %rotr32(1, 33) == 2147483648
+; run: %rotr32(4294967295, 7) == 4294967295
+
+; A signed value rotates the same bits: the right shift must be logical.
+function %rotl32_signed(i32 sext, i32 uext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = rotl v0, v1
+    return v2
+}
+; run: %rotl32_signed(-1, 5) == -1
+; run: %rotl32_signed(-2147483648, 1) == 1
+; run: %rotl32_signed(-256, 4) == -4081
+
+function %rotr32_signed(i32 sext, i32 uext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = rotr v0, v1
+    return v2
+}
+; run: %rotr32_signed(-1, 5) == -1
+; run: %rotr32_signed(1, 1) == -2147483648
+; run: %rotr32_signed(-16, 4) == 268435455
+
+function %rotl8(i8 uext, i32 uext) -> i8 uext {
+block0(v0: i8, v1: i32):
+    v2 = rotl v0, v1
+    return v2
+}
+; run: %rotl8(129, 1) == 3
+; run: %rotl8(129, 8) == 129
+; run: %rotl8(129, 9) == 3
+
+function %rotr8(i8 uext, i32 uext) -> i8 uext {
+block0(v0: i8, v1: i32):
+    v2 = rotr v0, v1
+    return v2
+}
+; run: %rotr8(129, 1) == 192
+; run: %rotr8(129, 8) == 129
+; run: %rotr8(129, 9) == 192
+
+function %rotl16(i16 uext, i32 uext) -> i16 uext {
+block0(v0: i16, v1: i32):
+    v2 = rotl v0, v1
+    return v2
+}
+; run: %rotl16(32769, 4) == 24
+; run: %rotl16(32769, 16) == 32769
+
+function %rotr16(i16 uext, i32 uext) -> i16 uext {
+block0(v0: i16, v1: i32):
+    v2 = rotr v0, v1
+    return v2
+}
+; run: %rotr16(24, 4) == 32769
+; run: %rotr16(24, 16) == 24
