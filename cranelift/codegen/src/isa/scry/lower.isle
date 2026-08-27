@@ -335,6 +335,31 @@
     (lower_br_table idx table targets)
 )
 
+;; Traps: the machine's trap halts execution; the trap code is not encoded.
+(rule
+    (lower (trap _code))
+    (side_effect (SideEffectNoResult.Inst (MInst.Trap)))
+)
+
+(rule
+    (lower (debugtrap))
+    (side_effect (SideEffectNoResult.Inst (MInst.Trap)))
+)
+
+;; Conditional traps: the machine has no conditional trap, so these are a
+;; forward jump over a trap. The jump is taken on a zero operand, so the trap
+;; fires when the operand is non-zero: `trapnz` passes its condition directly,
+;; `trapz` its logical negation.
+(rule
+    (lower (trapnz c _code))
+    (side_effect (SideEffectNoResult.Inst (MInst.TrapNz c)))
+)
+
+(rule
+    (lower (trapz c _code))
+    (side_effect (SideEffectNoResult.Inst (MInst.TrapNz (lognot_r c))))
+)
+
 ;; Lower return
 (rule (lower (return args))
       (lower_return args))

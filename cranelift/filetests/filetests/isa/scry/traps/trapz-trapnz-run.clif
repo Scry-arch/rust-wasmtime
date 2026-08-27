@@ -1,0 +1,68 @@
+test interpret
+test run
+target scry32
+
+; Conditional traps are expanded into a branch to a trapping block before
+; lowering (the machine has no conditional trap). The simulator does not
+; execute traps, so only the non-trapping paths are exercised here; see
+; trapz-trapnz.clif for the generated code.
+
+function %trapz(i32 uext) -> i32 uext {
+block0(v0: i32):
+    trapz v0, user1
+    v1 = iconst.i32 1
+    v2 = iadd v0, v1
+    return v2
+}
+; run: %trapz(1) == 2
+; run: %trapz(4294967295) == 0
+
+function %trapnz(i32 uext) -> i32 uext {
+block0(v0: i32):
+    trapnz v0, user1
+    v1 = iconst.i32 7
+    v2 = iadd v0, v1
+    return v2
+}
+; run: %trapnz(0) == 7
+
+function %trapz_icmp(i32 sext, i32 sext) -> i32 sext {
+block0(v0: i32, v1: i32):
+    v2 = icmp sgt v0, v1
+    trapz v2, user2
+    v3 = isub v0, v1
+    return v3
+}
+; run: %trapz_icmp(5, 3) == 2
+; run: %trapz_icmp(0, -1) == 1
+
+; Two conditional traps in one block, with a value defined between them used
+; after both.
+function %two_traps(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    trapz v0, user1
+    v2 = iadd v0, v1
+    trapnz v1, user2
+    v3 = iadd v2, v0
+    return v3
+}
+; run: %two_traps(3, 0) == 6
+
+; A conditional trap inside a loop.
+function %loop_trap(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = iconst.i32 0
+    jump block1(v0, v1)
+block1(v2: i32, v3: i32):
+    trapz v2, user1
+    v4 = iconst.i32 1
+    v5 = isub v2, v4
+    v6 = iadd v3, v2
+    brif v5, block1(v5, v6), block2(v6)
+block2(v7: i32):
+    v8 = iconst.i32 0
+    v9 = iadd v7, v8
+    return v9
+}
+; run: %loop_trap(4) == 10
+; run: %loop_trap(1) == 1

@@ -1,0 +1,77 @@
+test compile precise-output
+target scry32
+
+; An unconditional trap is the machine's trap instruction; the trap code is
+; not encoded.
+
+function %trap() {
+block0:
+    trap user1
+}
+
+; VCode:
+; block0:
+;   Trap
+;
+; Disassembled:
+; block0: ; offset 0x0
+; trap 
+
+function %debugtrap() {
+block0:
+    debugtrap
+    return
+}
+
+; VCode:
+; block0:
+;   Trap
+;   Ret(trig: 0, )
+;
+; Disassembled:
+; block0: ; offset 0x0
+; trap 
+; ret 0
+
+function %trap_after_use(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = iconst.i32 7
+    v2 = iadd v0, v1
+    brif v2, block1, block2
+block1:
+    v3 = iconst.i32 1
+    v4 = iadd v2, v3
+    return v4
+block2:
+    trap user2
+}
+
+; VCode:
+; block0:
+;   EchoLong(rds:, v(202), rss:, v(192), out: 1, )
+;   Const(ty: Known(Uint(2)), rd:, v(201), imm: 7, )
+;   Alu2(var: Add, var_out LowOnly, rds:, v(200), rss:, v(202), v(201), outs: [0], )
+;   UnaryAlu(op: LogNeg, rd:, v(203), rs:, v(200), )
+;   BranchIssue(link:, v(199), cond:, v(203), dir: true, dst: MachLabel(2), trig: 0, )
+;   JumpTrigger(link:, v(199), args:, )
+; block2:
+;   Const(ty: Known(Uint(2)), rd:, v(198), imm: 1, )
+;   Alu2(var: Add, var_out LowOnly, rds:, v(197), rss:, v(200), v(198), outs: [1], )
+;   Ret(trig: 0, )
+; block1:
+;   Trap
+;
+; Disassembled:
+; block0: ; offset 0x0
+; echo =>1
+; const u32, 7
+; add Low =>0
+; eq =>0
+; nop 
+; block1: ; offset 0xa
+; const u32, 1
+; add Low =>1
+; ret 0
+; block2: ; offset 0x10
+; trap 
+

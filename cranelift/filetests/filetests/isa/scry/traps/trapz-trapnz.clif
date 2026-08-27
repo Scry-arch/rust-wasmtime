@@ -1,0 +1,61 @@
+test compile precise-output
+target scry32
+
+; Conditional traps become a branch to a block holding the machine's trap.
+
+function %trapz(i32 uext) -> i32 uext {
+block0(v0: i32):
+    trapz v0, user1
+    v1 = iconst.i32 1
+    v2 = iadd v0, v1
+    return v2
+}
+
+; VCode:
+; block0:
+;   EchoLong(rds:, v(198), rss:, v(192), out: 0, )
+;   Duplicate(rd1:, v(199), rd2:, v(200), rs:, v(198), out1: 0, out2: 3, )
+;   UnaryAlu(op: LogNeg, rd:, v(197), rs:, v(199), )
+;   TrapNz(cond:, v(197), )
+;   Const(ty: Known(Uint(2)), rd:, v(196), imm: 1, )
+;   Alu2(var: Add, var_out LowOnly, rds:, v(195), rss:, v(200), v(196), outs: [1], )
+;   Ret(trig: 0, )
+;
+; Disassembled:
+; block0: ; offset 0x0
+; echo =>0
+; dup =>0, =>3
+; eq =>0
+; jmp 1, 0
+; trap 
+; const u32, 1
+; add Low =>1
+; ret 0
+
+function %trapnz(i32 uext) -> i32 uext {
+block0(v0: i32):
+    trapnz v0, user1
+    v1 = iconst.i32 7
+    v2 = iadd v0, v1
+    return v2
+}
+
+; VCode:
+; block0:
+;   EchoLong(rds:, v(197), rss:, v(192), out: 0, )
+;   Duplicate(rd1:, v(198), rd2:, v(199), rs:, v(197), out1: 0, out2: 2, )
+;   TrapNz(cond:, v(198), )
+;   Const(ty: Known(Uint(2)), rd:, v(196), imm: 7, )
+;   Alu2(var: Add, var_out LowOnly, rds:, v(195), rss:, v(199), v(196), outs: [1], )
+;   Ret(trig: 0, )
+;
+; Disassembled:
+; block0: ; offset 0x0
+; echo =>0
+; dup =>0, =>2
+; jmp 1, 0
+; trap 
+; const u32, 7
+; add Low =>1
+; ret 0
+
