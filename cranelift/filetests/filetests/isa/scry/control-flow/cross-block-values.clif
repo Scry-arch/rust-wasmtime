@@ -1,0 +1,101 @@
+test interpret
+test run
+target scry32
+
+; Values used in a block other than their defining block, without being
+; passed as branch arguments. 
+
+; A parameter used in both branch targets.
+function %param_in_targets(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    brif v1, block1, block2
+block1:
+    v2 = iconst.i32 1
+    v3 = isub v0, v2
+    return v3
+block2:
+    v4 = iconst.i32 2
+    v5 = iadd v0, v4
+    return v5
+}
+; run: %param_in_targets(10, 1) == 9
+; run: %param_in_targets(10, 0) == 12
+
+; A value computed in the entry block, used two blocks further down (live
+; through an intermediate block that does not use it).
+function %live_through(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = iconst.i32 100
+    v3 = iadd v0, v2
+    brif v1, block1, block3
+block1:
+    v4 = iconst.i32 1
+    v5 = iadd v1, v4
+    jump block2(v5)
+block2(v6: i32):
+    v7 = isub v3, v6
+    return v7
+block3:
+    v8 = iconst.i32 3
+    v9 = imul v3, v8
+    return v9
+}
+; run: %live_through(5, 1) == 103
+; run: %live_through(5, 0) == 315
+
+; A loop-invariant value from before the loop used inside the loop body and
+; after it, plus a value defined inside the loop used after the loop.
+function %loop_invariant(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = iconst.i32 7
+    v3 = iadd v1, v2
+    jump block1(v0)
+block1(v4: i32):
+    v5 = iconst.i32 1
+    v6 = isub v4, v5
+    v7 = iadd v6, v3
+    brif v6, block1(v6), block2
+block2:
+    v8 = isub v7, v3
+    v9 = iadd v8, v3
+    return v9
+}
+; run: %loop_invariant(3, 1) == 8
+; run: %loop_invariant(1, 10) == 17
+
+; Cross-block values on the targets of a jump table.
+function %table(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = iconst.i32 1000
+    v3 = iadd v1, v2
+    br_table v0, block3, [block1, block2]
+block1:
+    v4 = iconst.i32 1
+    v5 = isub v3, v4
+    return v5
+block2:
+    v6 = iconst.i32 2
+    v7 = iadd v3, v6
+    return v7
+block3:
+    v8 = iconst.i32 3
+    v9 = imul v3, v8
+    return v9
+}
+; run: %table(0, 5) == 1004
+; run: %table(1, 5) == 1007
+; run: %table(2, 5) == 3015
+
+; Ordering-sensitive uses of two cross-block values.
+function %ordered_uses(i32 uext, i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32, v2: i32):
+    brif v2, block1, block2
+block1:
+    v3 = isub v0, v1
+    return v3
+block2:
+    v4 = isub v1, v0
+    return v4
+}
+; run: %ordered_uses(10, 3, 1) == 7
+; run: %ordered_uses(10, 3, 0) == 4294967289

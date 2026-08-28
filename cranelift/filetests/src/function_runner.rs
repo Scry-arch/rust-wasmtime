@@ -672,7 +672,9 @@ impl<'a> Trampoline<'a> {
                                 .chain(state.frame_stack.iter())
                                 .any(|f| f.op_queue.values().any(|ops| ops.len() > 4))
                             {
-                                panic!("Invalid simulator state: more than 4 operands delivered to one instruction");
+                                panic!(
+                                    "Invalid simulator state: more than 4 operands delivered to one instruction"
+                                );
                             }
                             if exec.state().frame_stack.len() == 0 {
                                 // Done

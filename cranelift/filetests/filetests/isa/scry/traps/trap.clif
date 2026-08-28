@@ -48,17 +48,21 @@ block2:
 
 ; VCode:
 ; block0:
-;   EchoLong(rds:, v(202), rss:, v(192), out: 1, )
+;   EchoLong(rds:, v(203), rss:, v(192), out: 1, )
 ;   Const(ty: Known(Uint(2)), rd:, v(201), imm: 7, )
-;   Alu2(var: Add, var_out LowOnly, rds:, v(200), rss:, v(202), v(201), outs: [0], )
-;   UnaryAlu(op: LogNeg, rd:, v(203), rs:, v(200), )
-;   BranchIssue(link:, v(199), cond:, v(203), dir: true, dst: MachLabel(2), trig: 0, )
-;   JumpTrigger(link:, v(199), args:, )
+;   Alu2(var: Add, var_out LowOnly, rds:, v(200), rss:, v(203), v(201), outs: [0], )
+;   Duplicate(rd1:, v(207), rd2:, v(208), rs:, v(200), out1: 0, out2: 2, )
+;   UnaryAlu(op: LogNeg, rd:, v(209), rs:, v(207), )
+;   BranchIssue(link:, v(199), cond:, v(209), dir: true, dst: MachLabel(2), trig: 0, )
+;   JumpTrigger(link:, v(199), args:, v(208), )
 ; block2:
+;   EchoLong(rds:, v(204), rss:, v(202), out: 1, )
 ;   Const(ty: Known(Uint(2)), rd:, v(198), imm: 1, )
-;   Alu2(var: Add, var_out LowOnly, rds:, v(197), rss:, v(200), v(198), outs: [1], )
+;   Alu2(var: Add, var_out LowOnly, rds:, v(197), rss:, v(204), v(198), outs: [1], )
 ;   Ret(trig: 0, )
 ; block1:
+;   EchoLong(rds:, v(206), rss:, v(205), out: 0, )
+;   Discard(rss:, v(206), )
 ;   Trap
 ;
 ; Disassembled:
@@ -66,12 +70,16 @@ block2:
 ; echo =>1
 ; const u32, 7
 ; add Low =>0
+; dup =>0, =>2
 ; eq =>0
 ; nop 
-; block1: ; offset 0xa
+; block1: ; offset 0xc
+; echo =>1
 ; const u32, 1
 ; add Low =>1
 ; ret 0
-; block2: ; offset 0x10
+; block2: ; offset 0x14
+; echo =>0
+; nop 
 ; trap 
 

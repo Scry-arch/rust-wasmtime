@@ -838,11 +838,7 @@ impl MInst {
             {
                 false
             }
-            Alu2 { var, .. }
-                if matches!(var, Alu2Variant::Add | Alu2Variant::Multiply) =>
-            {
-                false
-            }
+            Alu2 { var, .. } if matches!(var, Alu2Variant::Add | Alu2Variant::Multiply) => false,
             Alu1 { var, .. }
                 if matches!(
                     var,

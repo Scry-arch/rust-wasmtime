@@ -2,12 +2,17 @@
 
 use crate::MachLabel;
 use crate::dominator_tree::DominatorTree;
+use crate::ir::immediates::Imm64;
 use crate::ir::{AbiParam, ArgumentExtension, Signature};
 use crate::ir::{Function, Type};
+use crate::isa::scry::abi::{
+    arg_area_base, stack_area_size, stack_locals_base, stack_values_layout,
+};
 use crate::isa::scry::inst::{
     BinaryAluOp, DoubleAluOp, EmitInfo, MInst, QUEUE_CAPACITY, ResizeVariant, UnaryAluOp,
     delivery_group,
 };
+use crate::isa::scry::lower::isle::scaled_index;
 use crate::isa::scry::settings as scry_settings;
 use crate::isa::unwind::systemv;
 use crate::isa::{
@@ -36,13 +41,8 @@ use graphene::core::property::Rooted;
 use graphene::core::{Graph, MaybeOwned};
 use regalloc2::{Block, Function as RegFunc};
 use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
-use crate::ir::immediates::Imm64;
-use crate::isa::scry::abi::{
-    arg_area_base, stack_area_size, stack_locals_base, stack_values_layout,
-};
-use crate::isa::scry::lower::isle::scaled_index;
 use std::cmp::{max, min};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::iter::once;
 use target_lexicon::{Architecture, Triple};
 use vcode_cfg::*;
@@ -290,6 +290,105 @@ impl ScryBackend {
         {}
 
         Ok((vcode, new_vregs))
+    }
+}
+
+/// Makes every cross-block value use explicit as block parameters.
+///
+/// CLIF allows values to be implicitly used without being part of a block's
+/// parameters as long as the defining block dominates the use.
+/// This pass makes every such use explicit by having such values be passed
+/// as block parameters instead.
+fn make_live_ins_explicit(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
+    log::debug!("make_live_ins_explicit");
+    let vertices: Vec<usize> = cfg.graph.all_vertices().collect();
+
+    // Per block: the registers it defines (parameters and instruction defs)
+    let mut bb_defs = HashMap::<usize, HashSet<Reg>>::new();
+    // Per block: register uses that are not defined in the block (must be define in another block)
+    let mut bb_undef_uses = HashMap::<usize, HashSet<Reg>>::new();
+    for &v in &vertices {
+        let bb = cfg.graph.vertex_weight(v).unwrap();
+        let mut defs: HashSet<Reg> = bb.params.iter().copied().collect();
+        let mut undef_uses = HashSet::new();
+        for inst in &bb.inst {
+            for r in inst.get_uses() {
+                if !defs.contains(r) {
+                    undef_uses.insert(*r);
+                }
+            }
+            defs.extend(inst.get_defs());
+        }
+        bb_defs.insert(v, defs);
+        bb_undef_uses.insert(v, undef_uses);
+    }
+
+    // Calculate live-ins
+    let mut live_in = bb_undef_uses;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &v in &vertices {
+            let mut new = live_in[&v].clone();
+            for (succ_v, _) in cfg.graph.edges_sourced_in(v) {
+                new.extend(live_in[&succ_v].iter().filter(|r| !bb_defs[&v].contains(r)));
+            }
+            if new.len() != live_in[&v].len() {
+                live_in.insert(v, new);
+                changed = true;
+            }
+        }
+    }
+
+    // One fresh parameter per block and live-in register, in a fixed order per
+    // block: the order the arguments are appended in below.
+    let mut param_of: HashMap<(usize, Reg), Reg> = HashMap::new();
+    for &v in &vertices {
+        let bb = cfg.graph.vertex_weight_mut(v).unwrap();
+        for &r in &live_in[&v] {
+            let p = new_vreg();
+            bb.params.push(p);
+            param_of.insert((v, r), p);
+        }
+    }
+    if param_of.is_empty() {
+        return;
+    }
+    log::trace!("Live-in parameters: {param_of:?}");
+
+    // The entry block has no predecessors to receive from: a live-in there is
+    // a use without a definition.
+    let entry = cfg.graph.root();
+    assert!(
+        live_in[&entry].is_empty(),
+        "values used in the entry block without a definition: {:?}",
+        live_in[&entry]
+    );
+
+    // Rename every use in a block to the block's own name for the register,
+    // then pass the live-ins of every successor along the edge under the same
+    // naming (`prepare_block_params` derives the jump trigger arguments from
+    // `branch_params`).
+    let name_in = |v: usize, r: Reg| param_of.get(&(v, r)).copied().unwrap_or(r);
+    for &v in &vertices {
+        let succs = cfg
+            .graph
+            .edges_sourced_in(v)
+            .map(|(s, _)| (s, cfg.graph.vertex_weight(s).unwrap().vcode_bb))
+            .collect::<Vec<_>>();
+        let bb = cfg.graph.vertex_weight_mut(v).unwrap();
+        for inst in &mut bb.inst {
+            for r in inst.get_uses_mut() {
+                *r = name_in(v, *r);
+            }
+        }
+        for (succ, succ_block) in succs {
+            let args = bb
+                .branch_params
+                .get_mut(&succ_block)
+                .expect("successor without branch parameters");
+            args.extend(live_in[&succ].iter().map(|&r| name_in(v, r)));
+        }
     }
 }
 
@@ -649,7 +748,12 @@ fn prepare_block_params(
             .collect::<Vec<_>>();
         for chunk in unused.chunks(QUEUE_CAPACITY) {
             // Insert discard directly after the echo, which routes the values to it
-            bb.inst.insert(2, MInst::Discard { rss: chunk.to_vec() });
+            bb.inst.insert(
+                2,
+                MInst::Discard {
+                    rss: chunk.to_vec(),
+                },
+            );
         }
     }
 
@@ -1199,8 +1303,7 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                             let use_idx = use_pos[&def];
                             (
                                 i,
-                                ref_dist - use_idx.1 - (inst.reference_length() as u16)
-                                    + use_idx.2,
+                                ref_dist - use_idx.1 - (inst.reference_length() as u16) + use_idx.2,
                             )
                         })
                         .collect::<HashMap<_, _>>();
@@ -1448,7 +1551,16 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
                     // order. Repeated passes sort any permutation pairwise.
                     let uses = inst.get_uses().cloned().collect::<Vec<_>>();
                     let wrong_order_pair =
-                        (0..uses.len() - 1).find(|i| def_pos[&uses[i + 1]] < def_pos[&uses[*i]]);
+                        (0..uses.len() - 1).find(|i| {
+                            let pos = |r: &Reg| {
+                                *def_pos.get(r).unwrap_or_else(|| {
+                                    panic!(
+                                        "use of {r:?} not defined in its block (missed by \n                                         make_live_ins_explicit)"
+                                    )
+                                })
+                            };
+                            pos(&uses[i + 1]) < pos(&uses[*i])
+                        });
 
                     if let Some(pair_idx) = wrong_order_pair {
                         // If the reorder is needed for branch or call arguments, the reorder
@@ -1648,8 +1760,22 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
     let mut demands: CastDemands = HashMap::new();
     let mut rounds = 0;
     loop {
-        type_analysis_phase(cfg, func_sig, &reg_blocks, &mut type_map, &mut demands, false);
-        type_analysis_phase(cfg, func_sig, &reg_blocks, &mut type_map, &mut demands, true);
+        type_analysis_phase(
+            cfg,
+            func_sig,
+            &reg_blocks,
+            &mut type_map,
+            &mut demands,
+            false,
+        );
+        type_analysis_phase(
+            cfg,
+            func_sig,
+            &reg_blocks,
+            &mut type_map,
+            &mut demands,
+            true,
+        );
 
         if demands.is_empty() {
             break;
@@ -1721,8 +1847,7 @@ fn apply_cast_demands<F: Fn(Reg) -> Option<Type>>(
                     *bb.inst[inst_idx]
                         .get_defs_mut()
                         .nth(slot)
-                        .expect("Demanded def slot out of range") =
-                        WritableReg::from_reg(fresh);
+                        .expect("Demanded def slot out of range") = WritableReg::from_reg(fresh);
                     bb.inst.insert(
                         inst_idx + 1,
                         MInst::Cast {
@@ -1847,9 +1972,8 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                                 // only with both operands known signed. If the
                                 // established result type disagrees, the
                                 // result is re-tagged on its way out.
-                                let known_unsigned = |t: IsaType| {
-                                    t.get_known().is_some_and(|k| k.is_unsigned_int())
-                                };
+                                let known_unsigned =
+                                    |t: IsaType| t.get_known().is_some_and(|k| k.is_unsigned_int());
                                 let eff_sign = if known_unsigned(t1) || known_unsigned(t2) {
                                     Some(false)
                                 } else if t1.is_signed_int() && t2.is_signed_int() {
@@ -1863,14 +1987,9 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                                         Some(refined) => {
                                             update_changed(&rd.to_reg(), refined, type_map)
                                         }
-                                        None => push_demand(
-                                            demands,
-                                            bb_v,
-                                            inst_idx,
-                                            0,
-                                            rd.to_reg(),
-                                            td,
-                                        ),
+                                        None => {
+                                            push_demand(demands, bb_v, inst_idx, 0, rd.to_reg(), td)
+                                        }
                                     }
                                 }
                             }
@@ -1894,9 +2013,7 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     // logical, the amount's the direction (negative signed
                     // amounts shift right), so a left shift pins nothing.
                     let (pin1, pin2): (Option<bool>, Option<bool>) = match op {
-                        SaddOverflow | SsubOverflow | SmulHi | SdivRem => {
-                            (Some(true), Some(true))
-                        }
+                        SaddOverflow | SsubOverflow | SmulHi | SdivRem => (Some(true), Some(true)),
                         UaddOverflow | UsubOverflow | UmulHi | UdivRem => {
                             (Some(false), Some(false))
                         }
@@ -1912,30 +2029,24 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                             let target = IsaType::new_known_int(t.size_pow2(), signed);
                             match t.refine(target) {
                                 Some(refined) => update_changed(r, refined, type_map),
-                                None => push_demand(
-                                    demands,
-                                    bb_v,
-                                    inst_idx,
-                                    slot,
-                                    *r,
-                                    target,
-                                ),
+                                None => push_demand(demands, bb_v, inst_idx, slot, *r, target),
                             }
                         }
                     }
 
                     // A helper pinning an output to a known signedness.
-                    let mut pin_output = |rd: &WritableReg, sign: bool, type_map: &mut TypeMap<F>| {
-                        let td = type_map.get(rd.to_reg());
-                        if td.is_int() {
-                            update_changed(
-                                &rd.to_reg(),
-                                td.refine(IsaType::new_known_int(td.size_pow2(), sign))
-                                    .unwrap(),
-                                type_map,
-                            );
-                        }
-                    };
+                    let mut pin_output =
+                        |rd: &WritableReg, sign: bool, type_map: &mut TypeMap<F>| {
+                            let td = type_map.get(rd.to_reg());
+                            if td.is_int() {
+                                update_changed(
+                                    &rd.to_reg(),
+                                    td.refine(IsaType::new_known_int(td.size_pow2(), sign))
+                                        .unwrap(),
+                                    type_map,
+                                );
+                            }
+                        };
 
                     match op {
                         // The value result carries the effective type; the
@@ -1985,10 +2096,7 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                                         inst_idx,
                                         0,
                                         *rs1,
-                                        IsaType::new_known_int(
-                                            t1.size_pow2(),
-                                            td.is_signed_int(),
-                                        ),
+                                        IsaType::new_known_int(t1.size_pow2(), td.is_signed_int()),
                                     ),
                                 }
                             }
@@ -2078,20 +2186,12 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                             for (slot, r) in [rs1, rs2].into_iter().enumerate() {
                                 let t = type_map.get(*r);
                                 if t.is_int() {
-                                    let target =
-                                        IsaType::new_known_int(t.size_pow2(), sign);
+                                    let target = IsaType::new_known_int(t.size_pow2(), sign);
                                     match t.refine(target) {
-                                        Some(refined) => {
-                                            update_changed(r, refined, type_map)
+                                        Some(refined) => update_changed(r, refined, type_map),
+                                        None => {
+                                            push_demand(demands, bb_v, inst_idx, slot, *r, target)
                                         }
-                                        None => push_demand(
-                                            demands,
-                                            bb_v,
-                                            inst_idx,
-                                            slot,
-                                            *r,
-                                            target,
-                                        ),
                                     }
                                 }
                             }
@@ -2129,14 +2229,7 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         let target = IsaType::new_known_int(rs_t.size_pow2(), sign);
                         match rs_t.refine(target) {
                             Some(refined) => update_changed(rs, refined, type_map),
-                            None => push_demand(
-                                demands,
-                                bb_v,
-                                inst_idx,
-                                0,
-                                *rs,
-                                target,
-                            ),
+                            None => push_demand(demands, bb_v, inst_idx, 0, *rs, target),
                         }
                     }
                     // The output's tag is whatever target type the cast is
@@ -2326,14 +2419,7 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         // value must be re-tagged.
                         match type_map.get(r).refine(ty) {
                             Some(refined) => update_changed(&r, refined, type_map),
-                            None => push_demand(
-                                demands,
-                                bb_v,
-                                inst_idx,
-                                slot,
-                                r,
-                                ty,
-                            ),
+                            None => push_demand(demands, bb_v, inst_idx, slot, r, ty),
                         }
                     }
                 }
@@ -2529,7 +2615,6 @@ fn resolve_instruction_types(
                 _ => (),
             }
         }
-
     }
 }
 
@@ -2752,6 +2837,7 @@ impl TargetIsa for ScryBackend {
         };
 
         let mut cfg = VCodeCFG::from_vcode(&vcode, &mut new_vreg, replace_jump);
+        make_live_ins_explicit(&mut cfg, &mut new_vreg);
 
         log::trace!("VCodeCFG: {cfg:?}");
 

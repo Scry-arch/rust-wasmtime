@@ -5,6 +5,7 @@ pub mod generated_code;
 use generated_code::MInst;
 
 // Types that the generated ISLE code uses via `use super::*`.
+use crate::isa::scry::abi::stack_locals_base;
 use crate::isa::scry::{IsaType, ScryBackend};
 use crate::machinst::Reg;
 use crate::machinst::{MachInst, isle::*};
@@ -20,7 +21,6 @@ use crate::{
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use regalloc2::PReg;
-use crate::isa::scry::abi::stack_locals_base;
 
 type BoxExternalName = Box<ExternalName>;
 type VecArgPair = Vec<ArgPair>;
