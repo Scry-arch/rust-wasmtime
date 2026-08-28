@@ -39,9 +39,7 @@ pub(crate) fn stack_values_layout(values: &[ir::AbiParam]) -> (Vec<u32>, u32) {
 /// (which sits at offset 0 of the private frame) rounded up to the 16-byte
 /// frame alignment, which keeps every argument's natural alignment intact.
 pub(crate) fn arg_area_base(sig: &Signature) -> u32 {
-    stack_values_layout(&sig.returns)
-        .1
-        .next_multiple_of(16)
+    stack_values_layout(&sig.returns).1.next_multiple_of(16)
 }
 
 /// The total size of the caller-reserved stack area for calling a function of
@@ -146,7 +144,7 @@ impl ABIMachineSpec for ScryMachineDeps {
     fn gen_load_stack(mem: StackAMode, into_reg: Writable<Reg>, ty: Type) -> MInst {
         // Only used for the callee side of stack-passed arguments: the
         // incoming argument area sits at the base of the private frame
-        // (offset 0). 
+        // (offset 0).
         match mem {
             StackAMode::IncomingArg(offset, _) => {
                 let scale = ty.bytes() as i64;
