@@ -21,3 +21,11 @@ jobs:
       - name: Run Scry filetests
         working-directory: cranelift
         run: cargo run -- test filetests/filetests/isa/scry
+
+      - name: Run All filetests
+        working-directory: cranelift
+        run: cargo run -- test filetests
+
+      - name: Run cranelift-object
+        working-directory: cranelift
+        run: cargo test --package cranelift-object

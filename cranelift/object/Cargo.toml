@@ -32,4 +32,6 @@ unwind = ["dep:gimli", "cranelift-codegen/unwind"]
 [dev-dependencies]
 cranelift-frontend = { workspace = true }
 cranelift-entity = { workspace = true }
-cranelift-codegen = { workspace = true, features = ["x86", "arm64"] }
+cranelift-codegen = { workspace = true, features = ["x86", "arm64", "scry"] }
+cranelift-reader = { workspace = true }
+object = { workspace = true, features = ["read"] }

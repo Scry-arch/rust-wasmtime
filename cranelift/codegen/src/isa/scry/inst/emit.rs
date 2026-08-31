@@ -8,7 +8,6 @@ use cranelift_control::ControlPlane;
 use scry_isa::{Alu2OutputVariant, AluVariant, Bits, CallVariant, Instruction};
 
 pub struct EmitInfo {
-    #[expect(dead_code, reason = "may want to be used in the future")]
     shared_flag: settings::Flags,
     #[allow(unused)]
     isa_flags: super::super::scry_settings::Flags,
