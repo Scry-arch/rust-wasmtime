@@ -390,9 +390,15 @@ impl MInst {
                 ]
                 .into_iter(),
             ),
-            LoadExtName { rd, name } => join(
+            LoadExtName { rd, name, offset } => join(
                 "LoadExtName",
-                ["rd:".into(), wreg_name(*rd), format!("name: {name:?}")].into_iter(),
+                [
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    format!("name: {name:?}"),
+                    format!("offset: {offset}"),
+                ]
+                .into_iter(),
             ),
             Echo { rds, rss } => join(
                 "Echo",

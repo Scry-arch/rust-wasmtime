@@ -1,0 +1,79 @@
+test compile precise-output
+target scry32
+
+; symbol_value materializes the address of a global symbol. cg_clif emits it
+; for string literals, statics, and the hidden &Location argument of every
+; #[track_caller] call, which makes it the dominant instruction in
+; rustc-generated panic paths.
+
+;; Near/colocated symbol. Scry has no PC-relative data addressing, so this is
+;; still materialized as an absolute address (ScryAbs32 relocation).
+function %sym_near() -> i32 {
+    gv0 = symbol colocated %global0
+block0:
+    v0 = symbol_value.i32 gv0
+    return v0
+}
+
+; VCode:
+; block0:
+;   LoadExtName(rd:, v(193), name: TestCase(%global0), offset: 0, )
+;   EchoLong(rds:, v(194), rss:, v(193), out: 1, )
+;   Ret(trig: 0, )
+;
+; Disassembled:
+; block0: ; offset 0x0
+; const u32, 0
+; grow 0
+; grow 0
+; grow 0
+; echo =>1
+; ret 0
+
+;; Non-colocated symbol: an absolute (load-time relocated) address.
+function %sym_far() -> i32 {
+    gv0 = symbol %global1
+block0:
+    v0 = symbol_value.i32 gv0
+    return v0
+}
+
+; VCode:
+; block0:
+;   LoadExtName(rd:, v(193), name: TestCase(%global1), offset: 0, )
+;   EchoLong(rds:, v(194), rss:, v(193), out: 1, )
+;   Ret(trig: 0, )
+;
+; Disassembled:
+; block0: ; offset 0x0
+; const u32, 0
+; grow 0
+; grow 0
+; grow 0
+; echo =>1
+; ret 0
+
+;; Symbol plus constant offset, as emitted for fields of statics. The offset
+;; is carried as the relocation addend.
+function %sym_offset() -> i32 {
+    gv0 = symbol colocated %global0+4
+block0:
+    v0 = symbol_value.i32 gv0
+    return v0
+}
+
+; VCode:
+; block0:
+;   LoadExtName(rd:, v(193), name: TestCase(%global0), offset: 4, )
+;   EchoLong(rds:, v(194), rss:, v(193), out: 1, )
+;   Ret(trig: 0, )
+;
+; Disassembled:
+; block0: ; offset 0x0
+; const u32, 0
+; grow 0
+; grow 0
+; grow 0
+; echo =>1
+; ret 0
+
