@@ -1105,6 +1105,16 @@ impl ObjectModule {
                     r_type: object::elf::R_RISCV_PCREL_HI20,
                 }
             }
+            Reloc::ScryAbs32 => {
+                assert_eq!(
+                    self.object.format(),
+                    object::BinaryFormat::Elf,
+                    "ScryAbs32 is not supported for this file format"
+                );
+                RelocationFlags::Elf {
+                    r_type: object::elf::R_SCRY_ABS32,
+                }
+            }
             // FIXME
             reloc => unimplemented!("{:?}", reloc),
         };

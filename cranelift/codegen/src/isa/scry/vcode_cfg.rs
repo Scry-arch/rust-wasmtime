@@ -153,7 +153,7 @@ impl<I: VCodeInst> VCodeCFG<I> {
         while let Some(bb) = worklist.pop_front() {
             // Mark done now so a self loop does not requeue itself below.
             donelist.insert(bb);
-            
+
             maybe_new_bb!(bb);
             let cfg_bb_v = bb_map[&bb];
 

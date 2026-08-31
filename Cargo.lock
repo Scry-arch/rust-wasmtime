@@ -1023,6 +1023,7 @@ dependencies = [
  "cranelift-entity",
  "cranelift-frontend",
  "cranelift-module",
+ "cranelift-reader",
  "gimli 0.33.0",
  "log",
  "object 0.40.0",
@@ -2712,7 +2713,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.40.0"
-source = "git+https://github.com/Scry-arch/rust-object.git#7c8af5eba9ab3d56f89a0b73c706745fc956b6e9"
+source = "git+https://github.com/Scry-arch/rust-object.git#791705b95a4aee34295395bb68cad2a414d9b325"
 dependencies = [
  "crc32fast",
  "hashbrown 0.17.1",

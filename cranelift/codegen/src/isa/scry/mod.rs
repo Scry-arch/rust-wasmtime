@@ -42,7 +42,7 @@ use graphene::core::{Graph, MaybeOwned};
 use regalloc2::{Block, Function as RegFunc};
 use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
 use std::cmp::{max, min};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::iter::once;
 use target_lexicon::{Architecture, Triple};
 use vcode_cfg::*;
