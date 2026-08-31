@@ -151,6 +151,9 @@ impl<I: VCodeInst> VCodeCFG<I> {
         worklist.push_back(entry_bb);
 
         while let Some(bb) = worklist.pop_front() {
+            // Mark done now so a self loop does not requeue itself below.
+            donelist.insert(bb);
+            
             maybe_new_bb!(bb);
             let cfg_bb_v = bb_map[&bb];
 
@@ -204,8 +207,6 @@ impl<I: VCodeInst> VCodeCFG<I> {
                     worklist.push_back(*succ);
                 }
             }
-
-            donelist.insert(bb);
         }
 
         // Promote blocks consisting of just a jump into well-formed blocks.
