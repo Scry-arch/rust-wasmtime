@@ -261,12 +261,21 @@
 ;; which the machine's call instruction treats as absolute.
 (rule
     (lower (call (func_ref_data sig_ref name _ _) args))
-    (call_ind_srv sig_ref (load_ext_name name) args)
+    (call_ind_srv sig_ref (load_ext_name name 0) args)
 )
 
 (rule
     (lower (func_addr ty (func_ref_data _ name _ _)))
-    (load_ext_name name)
+    (load_ext_name name 0)
+)
+
+;; The address of a global symbol (plus offset). Scry has no PC-relative
+;; addressing of data, so colocated and non-colocated symbols alike are
+;; materialized as an absolute address via the ScryAbs32 relocation; the
+;; offset becomes the relocation's addend.
+(rule
+    (lower (symbol_value _ (symbol_value_data name _ offset)))
+    (load_ext_name name offset)
 )
 
 (decl imm64_from_offset (Imm64) Offset32)

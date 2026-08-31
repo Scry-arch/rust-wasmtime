@@ -41,9 +41,9 @@ struct ScryCompiledFunction {
     code: Vec<u8>,
 
     /// ScryAbs32 relocations: (code offset, linked index of the referenced
-    /// function). The linked index is the index of the referenced function's
-    /// [UserExternalName].
-    relocs: Vec<(u32, u32)>,
+    /// function, addend). The linked index is the index of the referenced
+    /// function's [UserExternalName].
+    relocs: Vec<(u32, u32, i64)>,
 }
 
 /// Patches a ScryAbs32 relocation: writes the value's bytes into the
@@ -339,8 +339,7 @@ impl TestFileCompiler {
                             name.namespace, TESTFILE_NAMESPACE,
                             "Unexpected relocation namespace"
                         );
-                        assert_eq!(reloc.addend, 0, "Unexpected relocation addend");
-                        relocs.push((reloc.offset, name.index));
+                        relocs.push((reloc.offset, name.index, reloc.addend));
                     }
                     (kind, target) => {
                         panic!("Unsupported Scry relocation: {kind:?} -> {target:?}")
@@ -612,8 +611,9 @@ impl<'a> Trampoline<'a> {
                 for idx in &indices {
                     let func = &compiled.scry_functions[idx];
                     let mut code = func.code.clone();
-                    for (offset, target) in &func.relocs {
-                        patch_scry_abs32(&mut code, *offset as usize, code_addrs[target] as u32);
+                    for (offset, target, addend) in &func.relocs {
+                        let value = (code_addrs[target] as i64).wrapping_add(*addend) as u32;
+                        patch_scry_abs32(&mut code, *offset as usize, value);
                     }
                     mem.add_block(code.into_iter(), code_addrs[idx]);
                 }

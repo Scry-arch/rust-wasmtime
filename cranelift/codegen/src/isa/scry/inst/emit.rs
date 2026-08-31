@@ -169,12 +169,13 @@ impl MachInstEmit for MInst {
                 );
                 insts
             }
-            LoadExtName { name, .. } => {
+            LoadExtName { name, offset, .. } => {
                 // A const + 3*grow chain materializing a 32-bit absolute
                 // address. The immediates are filled in when the ScryAbs32
                 // relocation is applied: the const receives the most
-                // significant byte, each following grow the next.
-                sink.add_reloc(Reloc::ScryAbs32, &**name, 0);
+                // significant byte, each following grow the next. The offset
+                // is the relocation's addend.
+                sink.add_reloc(Reloc::ScryAbs32, &**name, *offset);
                 let ty: Bits<3, false> = scry_isa::Type::Uint(2).try_into().unwrap();
                 let zero = Bits::try_from(0i32).unwrap();
                 let mut insts = vec![Instruction::Constant(ty, zero)];

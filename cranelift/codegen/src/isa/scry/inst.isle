@@ -170,12 +170,13 @@
       (imm Imm64)
     )
 
-    ;; Represents the absolute address of an external label as a
-    ;; const + grow chain whose immediates are filled in by a ScryAbs32
-    ;; relocation.
+    ;; Represents the absolute address of an external label (plus a constant
+    ;; offset) as a const + grow chain whose immediates are filled in by a
+    ;; ScryAbs32 relocation. The offset is the relocation's addend.
     (LoadExtName
       (rd WritableReg)
       (name BoxExternalName)
+      (offset i64)
     )
 
     ;; General-purpose echoing, does not reflect a Scry echo instruction 1-to-1
@@ -719,13 +720,14 @@
 (decl get_signature (SigRef) Signature)
 (extern constructor get_signature get_signature)
 
-; Materializes the absolute address of an external function.
-(decl load_ext_name (BoxExternalName) Reg)
+; Materializes the absolute address of an external symbol plus a constant
+; offset (both resolved by the ScryAbs32 relocation).
+(decl load_ext_name (BoxExternalName i64) Reg)
 (rule
-  (load_ext_name name)
+  (load_ext_name name offset)
   (let
     ( (dst WritableReg (temp_writable_reg $I32))
-      (_ Unit (emit (MInst.LoadExtName dst name)))
+      (_ Unit (emit (MInst.LoadExtName dst name offset)))
     )
     dst
   )
