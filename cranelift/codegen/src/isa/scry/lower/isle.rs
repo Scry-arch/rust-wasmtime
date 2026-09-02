@@ -2,7 +2,7 @@
 
 // Pull in the ISLE generated code.
 pub mod generated_code;
-use generated_code::MInst;
+use generated_code::{IssueKind, MInst};
 
 // Types that the generated ISLE code uses via `use super::*`.
 use crate::isa::scry::abi::stack_locals_base;
@@ -400,14 +400,17 @@ impl generated_code::Context for ScryIsleContext<'_, '_, MInst, ScryBackend> {
         self.lower_ctx.emit(MInst::JumpIssue {
             link,
             dst: *default_target,
+            kind: IssueKind::Jump,
             trig: 0,
         });
         for (case_target, cond) in case_targets.iter().zip(conds) {
-            self.lower_ctx.emit(MInst::BranchIssue {
+            self.lower_ctx.emit(MInst::JumpIssue {
                 link,
                 dst: *case_target,
-                dir: false, // Takes the branch on a logical true
-                cond,
+                kind: IssueKind::Branch {
+                    dir: false, // Takes the branch on a logical true
+                    cond,
+                },
                 trig: 0,
             });
         }

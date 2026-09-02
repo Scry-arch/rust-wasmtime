@@ -300,7 +300,7 @@
     (lower_branch (jump block_call) targets)
     (let
       ( (jmp_trig_link WritableReg (temp_writable_reg $I64))
-        (_ Unit (emit (MInst.JumpIssue jmp_trig_link (gen_machlabel targets) 0)))
+        (_ Unit (emit (MInst.JumpIssue jmp_trig_link (gen_machlabel targets) (IssueKind.Jump) 0)))
       )
       (emit_side_effect
         (SideEffectNoResult.Inst
@@ -319,7 +319,7 @@
     (let
       ( (jmp_trig_link WritableReg (temp_writable_reg $I64))
         ; "block_call_1" is taken if "cond" is true (non-zero). Scry branch is taken on non-zero only for backward branches
-        (_ Unit (emit (MInst.BranchIssue jmp_trig_link (gen_machlabel targets) false cond 0)))
+        (_ Unit (emit (MInst.JumpIssue jmp_trig_link (gen_machlabel targets) (IssueKind.Branch false cond) 0)))
       )
       (emit_side_effect
         (SideEffectNoResult.Inst

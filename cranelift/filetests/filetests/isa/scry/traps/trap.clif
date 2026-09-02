@@ -53,7 +53,7 @@ block2:
 ;   Alu2(var: Add, var_out LowOnly, rds:, v(200), rss:, v(203), v(201), outs: [0], )
 ;   Duplicate(rd1:, v(207), rd2:, v(208), rs:, v(200), out1: 0, out2: 2, )
 ;   UnaryAlu(op: LogNeg, rd:, v(209), rs:, v(207), )
-;   BranchIssue(link:, v(199), cond:, v(209), dir: true, dst: MachLabel(2), trig: 0, )
+;   JumpIssue(link:, v(199), kind: Branch(dir: true, cond: v(209)), dst: MachLabel(2), trig: 0, )
 ;   JumpTrigger(link:, v(199), args:, v(208), )
 ; block2:
 ;   EchoLong(rds:, v(204), rss:, v(202), out: 1, )
