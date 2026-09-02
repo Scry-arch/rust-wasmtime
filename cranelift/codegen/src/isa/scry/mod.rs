@@ -387,6 +387,13 @@ fn make_live_ins_explicit(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() 
                 .branch_params
                 .get_mut(&succ_block)
                 .expect("successor without branch parameters");
+            // A pre-existing branch argument may itself be a live-in (a value
+            // defined elsewhere and forwarded by this block's branch, e.g. a
+            // loop-invariant carried over a latch): rename it to this block's
+            // own name, just like the instruction uses above.
+            for r in args.iter_mut() {
+                *r = name_in(v, *r);
+            }
             args.extend(live_in[&succ].iter().map(|&r| name_in(v, r)));
         }
     }
@@ -500,8 +507,16 @@ fn prepare_block_params(
                     .cloned()
                     .filter(|r| r != out_r)
                     .collect::<Vec<_>>();
-                assert!(others.len() == 1);
-                reg_map.insert((out_idx, *out_r), others[0]);
+                let succ_r = match others.as_slice() {
+                    // A successor's own parameter forwarded unchanged over a
+                    // back-edge (loop-invariant): both sides of the edge use the
+                    // same register, so the edge's register set collapses to just
+                    // `out_r`.
+                    [] => *out_r,
+                    [r] => *r,
+                    _ => panic!("Edge ({bb_v}->{succ_v}, {out_idx}) has more than two registers"),
+                };
+                reg_map.insert((out_idx, *out_r), succ_r);
             }
 
             log::trace!("Parameter register mapping: {reg_map:?}");
