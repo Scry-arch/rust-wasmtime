@@ -13,9 +13,10 @@ pub use crate::ir::condcodes::FloatCC;
 use alloc::string::String;
 use alloc::vec::Vec;
 use regalloc2::{RegClass, VReg};
-use scry_isa::{Alu2Variant, AluVariant, Instruction};
+use scry_isa::{Alu2Variant, AluVariant, Bits, Instruction};
 use std::cmp::min;
 use std::iter::once;
+use std::ops::RangeInclusive;
 
 pub mod args;
 pub mod emit;
@@ -24,7 +25,7 @@ pub use self::emit::*;
 use crate::isa::scry::abi::ScryMachineDeps;
 
 pub use crate::isa::scry::lower::isle::generated_code::{
-    BinaryAluOp, DoubleAluOp, MInst, ResizeVariant, UnaryAluOp,
+    BinaryAluOp, DoubleAluOp, IssueKind, MInst, ResizeVariant, UnaryAluOp,
 };
 use crate::opts::{I8, I16, I32, I64};
 
@@ -176,12 +177,19 @@ impl MachInst for MInst {
                 rets.iter_mut().for_each(|p| collector.reg_def(&mut p.vreg));
                 args.iter_mut().for_each(|p| collector.reg_use(&mut p.vreg));
             }
-            JumpIssue { link, .. } => {
+            JumpIssue { link, kind, .. } => {
                 collector.reg_def(link);
+                match kind {
+                    IssueKind::Jump => {}
+                    IssueKind::Branch { cond, .. } => collector.reg_use(cond),
+                    IssueKind::Far { cond, offset, .. } => {
+                        collector.reg_use(cond);
+                        collector.reg_use(offset);
+                    }
+                }
             }
-            BranchIssue { link, cond, .. } => {
-                collector.reg_def(link);
-                collector.reg_use(cond);
+            JumpOffset { rd, .. } => {
+                collector.reg_def(rd);
             }
             TrapNz { cond } => {
                 collector.reg_use(cond);
@@ -222,7 +230,7 @@ impl MachInst for MInst {
             | Duplicate { .. }
             | Reorder { .. }
             | JumpIssue { .. }
-            | BranchIssue { .. }
+            | JumpOffset { .. }
             | TrapNz { .. }
             | JumpTrigger { .. }
             | ImmJump { .. }
@@ -330,6 +338,17 @@ pub fn reg_name(reg: Reg) -> String {
 }
 pub fn wreg_name(reg: Writable<Reg>) -> String {
     format!("v({})", reg.to_reg().to_virtual_reg().unwrap().index())
+}
+
+impl IssueKind {
+    /// Whether the jump is conditional (a branch).
+    pub fn is_conditional(&self) -> bool {
+        match self {
+            IssueKind::Jump => false,
+            IssueKind::Branch { .. } => true,
+            IssueKind::Far { conditional, .. } => *conditional,
+        }
+    }
 }
 
 impl MInst {
@@ -706,29 +725,50 @@ impl MInst {
                     .chain(args.iter().map(|p| reg_name(p.vreg)))
                     .chain(once(format!("sig: {sig:?}"))),
             ),
-            JumpIssue { link, dst, trig } => join(
-                "JumpIssue",
-                [
-                    "link:".into(),
-                    wreg_name(*link),
-                    format!("dst: {dst:?}, trig: {trig}"),
-                ]
-                .into_iter(),
-            ),
-            BranchIssue {
+            JumpIssue {
                 link,
-                cond,
-                dir,
                 dst,
+                kind,
+                trig,
+            } => {
+                let kind = match kind {
+                    IssueKind::Jump => String::from("Jump"),
+                    IssueKind::Branch { dir, cond } => {
+                        format!("Branch(dir: {dir:?}, cond: {})", reg_name(*cond))
+                    }
+                    IssueKind::Far {
+                        conditional,
+                        dir,
+                        cond,
+                        offset,
+                    } => format!(
+                        "Far(conditional: {conditional:?}, dir: {dir:?}, cond: {}, offset: {})",
+                        reg_name(*cond),
+                        reg_name(*offset)
+                    ),
+                };
+                join(
+                    "JumpIssue",
+                    [
+                        "link:".into(),
+                        wreg_name(*link),
+                        format!("kind: {kind}, dst: {dst:?}, trig: {trig}"),
+                    ]
+                    .into_iter(),
+                )
+            }
+            JumpOffset {
+                rd,
+                dst,
+                size_pow2,
+                gap,
                 trig,
             } => join(
-                "BranchIssue",
+                "JumpOffset",
                 [
-                    "link:".into(),
-                    wreg_name(*link),
-                    "cond:".into(),
-                    reg_name(*cond),
-                    format!("dir: {dir:?}, dst: {dst:?}, trig: {trig}"),
+                    "rd:".into(),
+                    wreg_name(*rd),
+                    format!("dst: {dst:?}, size_pow2: {size_pow2}, gap: {gap}, trig: {trig}"),
                 ]
                 .into_iter(),
             ),
@@ -758,7 +798,11 @@ impl MInst {
             | Args { .. }
             | Const { .. }
             | LoadExtName { .. }
-            | JumpIssue { .. }
+            | JumpIssue {
+                kind: IssueKind::Jump,
+                ..
+            }
+            | JumpOffset { .. }
             | ImmJump { .. }
             | LoadStack { .. }
             | SAddr { .. }
@@ -810,7 +854,15 @@ impl MInst {
                 uses.extend(args.iterate().map(|p| reference([(p.vreg)])));
                 uses
             }
-            BranchIssue { cond, .. } => vec![cond],
+            JumpIssue {
+                kind: IssueKind::Branch { cond, .. },
+                ..
+            } => vec![cond],
+            // The machine's operand order: condition first, then the target.
+            JumpIssue {
+                kind: IssueKind::Far { cond, offset, .. },
+                ..
+            } => vec![cond, offset],
             TrapNz { cond } => vec![cond],
             JumpTrigger { args, .. } => args.iterate().collect(),
         }
@@ -891,7 +943,6 @@ impl MInst {
             | ImmJump { .. }
             | Call { .. }
             | JumpIssue { .. }
-            | BranchIssue { .. }
             | TrapNz { .. }
             | Discard { .. } => vec![],
             Echo { rds, .. } | EchoLong { rds, .. } | Alu2 { rds, .. } => {
@@ -931,6 +982,7 @@ impl MInst {
             | LoadStack { rd, .. }
             | SAddr { rd, .. }
             | LoadExtName { rd, .. }
+            | JumpOffset { rd, .. }
             | BinaryAlu { rd, .. }
             | IntCmp { rd, .. }
             | Resize { rd, .. }
@@ -969,7 +1021,9 @@ impl MInst {
         use MInst::*;
         match self {
             Args { .. } => 0,
-            Const { .. } | LoadExtName { .. } | Echo { .. } => self.emitted_length(),
+            Const { .. } | LoadExtName { .. } | JumpOffset { .. } | Echo { .. } => {
+                self.emitted_length()
+            }
             Nop
             | Trap
             | Rets { .. }
@@ -992,7 +1046,6 @@ impl MInst {
             | StackAdjust { .. }
             | Cast { .. }
             | JumpIssue { .. }
-            | BranchIssue { .. }
             | Alu1 { .. }
             | Alu2 { .. }
             | Discard { .. }
@@ -1012,6 +1065,9 @@ impl MInst {
         use MInst::*;
         match self {
             Args { .. } | CallArgs { .. } | JumpTrigger { .. } => 0,
+            // The return terminator is replaced by the (empty) epilogue at
+            // emission.
+            Rets { .. } => 0,
             // A constant wider than the 8-bit immediate is emitted as a
             // `const`+`grow` chain (see `const_emit_bytes`).
             Const { ty, imm, .. } => match ty.get_known() {
@@ -1023,6 +1079,8 @@ impl MInst {
             // An address is materialized as a const + 3*grow chain patched by
             // the ScryAbs32 relocation.
             LoadExtName { .. } => 4,
+            // A const + grow chain of one instruction per byte of the offset
+            JumpOffset { size_pow2, .. } => 1 << size_pow2,
             Echo { rds, rss } => Self::receive_chain(
                 rds.iter()
                     .cloned()
@@ -1048,7 +1106,6 @@ impl MInst {
             | StackAdjust { .. }
             | Cast { .. }
             | JumpIssue { .. }
-            | BranchIssue { .. }
             | Alu1 { .. }
             | Alu2 { .. }
             | Discard { .. }
@@ -1058,8 +1115,7 @@ impl MInst {
             // A jump over a trap plus the trap.
             TrapNz { .. } => 2,
             // Pseudo-instructions that must have been eliminated by now.
-            Rets { .. }
-            | ImmJump { .. }
+            ImmJump { .. }
             | IntCmp { .. }
             | BinaryAlu { .. }
             | DoubleAlu { .. }
@@ -1183,32 +1239,103 @@ pub(crate) fn delivery_group(wire_idx: usize) -> usize {
 /// Different forms of label references for different instruction formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LabelUse {
-    /// 7-bit jump location offset. Used in [`Instruction::Jump`] for short range
+    /// The 7-bit immediate of a short [`Instruction::Jump`].
     JmpLoc7,
     /// 6-bit jump trigger offset. Used in [`Instruction::Jump`] for short range
     JmpTrig6,
+    /// The signed offset operand of a far jump (the two-operand
+    /// [`Instruction::Jump`]), materialized by a `const` + `grow` chain of
+    /// `2^size_pow2` instructions (one per byte, most significant first). The
+    /// jump follows `gap` instructions after the chain, and its trigger offset
+    /// is `trig`.
+    ///
+    /// The offset has the same meaning as the short jump's immediate: relative
+    /// to the jump instruction when jumping backward (zero or negative), and
+    /// past the trigger address when jumping forward (positive). Its width is
+    /// chosen by `widen_far_jumps`.
+    JmpFar { size_pow2: u16, gap: u16, trig: u16 },
+}
+
+impl LabelUse {
+    /// The number of instructions in a far jump's offset chain: one per byte
+    /// of the offset.
+    fn far_chain_len(size_pow2: u16) -> i64 {
+        1i64 << size_pow2
+    }
+
+    /// The largest positive value a far jump's offset can hold.
+    fn far_offset_max(size_pow2: u16) -> i64 {
+        (1i64 << ((8 << size_pow2) - 1)) - 1
+    }
+
+    /// The range of jump offsets (see [`Self::jump_offset`]) this label use can
+    /// encode: the single definition of a jump's reach. `widen_far_jumps`
+    /// decides against it, `patch` asserts it, and the backward range reported
+    /// to the [`MachBuffer`] derives from it.
+    pub(crate) fn offset_range(self) -> RangeInclusive<i64> {
+        use LabelUse::*;
+        match self {
+            JmpLoc7 => -(1 << (7 - 1))..=(1 << (7 - 1)) - 1,
+            JmpFar { size_pow2, .. } => {
+                let max = Self::far_offset_max(size_pow2);
+                -(max + 1)..=max
+            }
+            JmpTrig6 => unreachable!("Not a jump offset"),
+        }
+    }
+
+    /// How many instructions before the jump the patched instructions start.
+    fn lead(self) -> i64 {
+        use LabelUse::*;
+        match self {
+            JmpLoc7 => 0,
+            JmpFar { size_pow2, gap, .. } => Self::far_chain_len(size_pow2) + gap as i64,
+            JmpTrig6 => unreachable!("Not a jump offset"),
+        }
+    }
+
+    /// The offset (immediate or far operand) a jump at instruction address
+    /// `jump`, triggering `trig` instructions later, needs to reach the
+    /// instruction address `target`, per the ISA's jump semantics. All in
+    /// instructions, not bytes.
+    ///
+    /// Returns `None` for a target that no offset reaches: the jump itself
+    /// (offset 0 means "jump to self", not fall-through), anything up to its
+    /// trigger, and the fall-through instruction right after the trigger.
+    pub(crate) fn jump_offset(jump: i64, trig: i64, target: i64) -> Option<i64> {
+        if target <= jump {
+            // Backward: doubled and added to the jump's own address (offset 0
+            // targets the jump itself).
+            Some(target - jump)
+        } else {
+            // Forward: doubled, incremented, and added to the trigger address.
+            let trigger = jump + trig;
+            (target >= trigger + 2).then(|| target - trigger - 1)
+        }
+    }
 }
 
 impl MachInstLabelUse for LabelUse {
     const ALIGN: CodeOffset = 2;
 
     fn max_pos_range(self) -> CodeOffset {
-        use LabelUse::*;
-        match self {
-            JmpLoc7 => {
-                // The positive range is calculated after the trigger address and therefore
-                // gets a higher range based on it
-                ((1 << (6 + 7 - 1)) - 1) * 2
-            }
-            JmpTrig6 => ((1 << (6 - 1)) - 1) * 2,
-        }
+        // Deliberately unlimited. The buffer uses this for the deadline at
+        // which it emits an island of veneers for the pending forward jumps,
+        // and only otherwise to assert a bound label. This backend has no
+        // veneers, and an island (fenced by the `gen_jump` pseudo, and
+        // shifting every address after it) would break the exact layout
+        // `widen_far_jumps` decided on. That pass enforces the forward reach
+        // against [`Self::offset_range`] instead, and `patch` asserts it.
+        CodeOffset::MAX / 2
     }
 
     fn max_neg_range(self) -> CodeOffset {
         use LabelUse::*;
         match self {
-            JmpLoc7 => ((1 << (7 - 1)) - 1) * 2,
             JmpTrig6 => ((1 << (6 - 1)) - 1) * 2,
+            // Backward offsets are relative to the jump, `lead` instructions
+            // past the patched instructions.
+            _ => ((-self.offset_range().start() - self.lead()) * 2) as CodeOffset,
         }
     }
 
@@ -1216,60 +1343,97 @@ impl MachInstLabelUse for LabelUse {
         use LabelUse::*;
         match self {
             JmpLoc7 | JmpTrig6 => 2,
+            JmpFar { size_pow2, .. } => (Self::far_chain_len(size_pow2) * 2) as CodeOffset,
         }
     }
 
     fn patch(self, buffer: &mut [u8], use_offset: CodeOffset, label_offset: CodeOffset) {
         use LabelUse::*;
-        assert_eq!(buffer.len(), 2);
 
-        let inst = Instruction::decode(LittleEndian::read_u16(buffer));
+        assert_eq!(buffer.len(), self.patch_size() as usize);
+        assert!(use_offset.is_multiple_of(2) && label_offset.is_multiple_of(2));
+        // Instruction addresses of the patched instructions and the target.
+        let use_addr = use_offset as i64 / 2;
+        let target = label_offset as i64 / 2;
 
-        log::debug!("Patching {self:?}: use({use_offset:?}) label({label_offset:?}), {inst:?}");
+        let insts: Vec<Instruction> = buffer
+            .chunks_exact(2)
+            .map(|slot| Instruction::decode(LittleEndian::read_u16(slot)))
+            .collect();
+        log::debug!("Patching {self:?}: use({use_offset:?}) label({label_offset:?}), {insts:?}");
 
-        let patched = match (self, inst) {
-            (JmpTrig6, Instruction::Jump(imm, _)) => {
-                if label_offset >= use_offset {
+        let patched: Vec<Instruction> = match (self, insts.as_slice()) {
+            (JmpTrig6, [Instruction::Jump(imm, _)]) => {
+                if target >= use_addr {
                     // Trigger after instruction
-                    let diff = label_offset - use_offset;
-                    assert!(diff.is_multiple_of(2));
-                    let diff = diff / 2;
-                    Instruction::Jump(imm, (diff as i32).try_into().unwrap())
+                    vec![Instruction::Jump(
+                        *imm,
+                        ((target - use_addr) as i32).try_into().unwrap(),
+                    )]
                 } else {
                     unimplemented!()
                 }
             }
-            (JmpLoc7, Instruction::Jump(_, trig)) => {
-                if trig.value >= 0 {
-                    // Trigger after instruction
-                    let trig_offset = use_offset + trig.value as u32 * 2;
+            (JmpLoc7, [Instruction::Jump(_, trig)]) => {
+                vec![
+                    match Self::jump_offset(use_addr, trig.value as i64, target) {
+                        Some(offset) => Instruction::Jump(
+                            (offset as i32).try_into().unwrap_or_else(|_| {
+                                panic!(
+                                    "Short jump offset {offset} out of range (widen_far_jumps \
+                                     should have made this a far jump)"
+                                )
+                            }),
+                            *trig,
+                        ),
+                        // The jmp instruction cannot express a fall-through.
+                        None if target == use_addr + trig.value as i64 + 1 => Instruction::NoOp,
+                        None => panic!("Jump at {use_addr} cannot target {target}"),
+                    },
+                ]
+            }
+            (
+                JmpFar {
+                    size_pow2,
+                    gap,
+                    trig,
+                },
+                chain,
+            ) => {
+                // The chain's jump comes `gap` instructions after the chain.
+                let jump = use_addr + chain.len() as i64 + gap as i64;
+                let offset = Self::jump_offset(jump, trig as i64, target)
+                    .unwrap_or_else(|| panic!("Far jump at {jump} cannot target {target}"));
+                assert!(
+                    self.offset_range().contains(&offset),
+                    "Far jump offset {offset} does not fit in {} bits",
+                    8 << size_pow2
+                );
 
-                    if label_offset >= trig_offset {
-                        let diff = label_offset - trig_offset;
-                        assert!(diff.is_multiple_of(2));
-                        let diff = diff / 2;
-
-                        if diff == 1 {
-                            // The jmp instruction cannot be used for fallthrough
-                            Instruction::NoOp
-                        } else {
-                            Instruction::Jump((diff as i32 - 1).try_into().unwrap(), trig)
+                // The chain's const takes the most significant byte, each grow
+                // the next one down (see `Const` emission).
+                let bytes = offset.to_le_bytes();
+                chain
+                    .iter()
+                    .enumerate()
+                    .map(|(i, inst)| {
+                        let byte = Bits::try_from(bytes[chain.len() - 1 - i] as i32).unwrap();
+                        match inst {
+                            Instruction::Constant(ty, _) if i == 0 => {
+                                Instruction::Constant(*ty, byte)
+                            }
+                            Instruction::Grow(_) if i > 0 => Instruction::Grow(byte),
+                            i => unreachable!("Invalid far jump offset chain instruction: {i:?}"),
                         }
-                    } else {
-                        let diff = trig_offset - label_offset;
-                        assert!(diff.is_multiple_of(2));
-                        let diff = diff / 2;
-
-                        Instruction::Jump((-(diff as i32)).try_into().unwrap(), trig)
-                    }
-                } else {
-                    unimplemented!()
-                }
+                    })
+                    .collect()
             }
             (_, i) => unreachable!("Invalid LabelUse for instruction: {:?}, {:?}", self, i),
         };
         log::debug!("Patched: {patched:?}");
-        LittleEndian::write_u16(buffer, patched.encode());
+        for (slot, inst) in buffer.chunks_exact_mut(2).zip(patched) {
+            LittleEndian::write_u16(slot, inst.encode());
+        }
     }
 
     fn supports_veneer(self) -> bool {

@@ -9,8 +9,8 @@ use crate::isa::scry::abi::{
     arg_area_base, stack_area_size, stack_locals_base, stack_values_layout,
 };
 use crate::isa::scry::inst::{
-    BinaryAluOp, DoubleAluOp, EmitInfo, MInst, QUEUE_CAPACITY, ResizeVariant, UnaryAluOp,
-    delivery_group,
+    BinaryAluOp, DoubleAluOp, EmitInfo, IssueKind, MInst, QUEUE_CAPACITY, ResizeVariant,
+    UnaryAluOp, delivery_group,
 };
 use crate::isa::scry::lower::isle::scaled_index;
 use crate::isa::scry::settings as scry_settings;
@@ -1332,6 +1332,7 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                         // (their encodings have no output reference field).
                         MInst::Const { rd, .. }
                         | MInst::LoadExtName { rd, .. }
+                        | MInst::JumpOffset { rd, .. }
                         | MInst::LoadStack { rd, .. }
                         | MInst::SAddr { rd, .. }
                             if ref_dists[&0] > 0 =>
@@ -2640,7 +2641,7 @@ pub fn get_jmp_issues(block: &VCodeBB<MInst>) -> Option<(Vec<usize>, usize)> {
 
     for idx in 0..block.inst.len() {
         match block.inst[idx] {
-            MInst::BranchIssue { .. } | MInst::JumpIssue { .. } => {
+            MInst::JumpIssue { .. } => {
                 assert!(trigger.is_none(), "Jump issue after its trigger");
                 issues.push(idx);
             }
@@ -2680,14 +2681,18 @@ fn block_exit(bb: &VCodeBB<MInst>) -> Option<BlockExit> {
     let issues = get_jmp_issues(bb)?.0;
 
     if issues.len() > 1 {
-        return issues.iter().find_map(|issue| match bb.inst[*issue] {
-            MInst::JumpIssue { dst, .. } => Some(BlockExit::Jump(Block::new(dst.index()))),
+        return issues.iter().find_map(|issue| match &bb.inst[*issue] {
+            MInst::JumpIssue { dst, kind, .. } if !kind.is_conditional() => {
+                Some(BlockExit::Jump(Block::new(dst.index())))
+            }
             _ => None,
         });
     }
 
-    match bb.inst[issues[0]] {
-        MInst::BranchIssue { dst, .. } => Some(BlockExit::Branch(Block::new(dst.index()))),
+    match &bb.inst[issues[0]] {
+        MInst::JumpIssue { dst, kind, .. } if kind.is_conditional() => {
+            Some(BlockExit::Branch(Block::new(dst.index())))
+        }
         MInst::JumpIssue { dst, .. } => Some(BlockExit::Jump(Block::new(dst.index()))),
         _ => None,
     }
@@ -2698,7 +2703,7 @@ fn block_exit(bb: &VCodeBB<MInst>) -> Option<BlockExit> {
 /// The layout is not stored anywhere: [`VCodeCFG::build_vcode`] deterministically
 /// recomputes it (see [`VCodeCFG::compute_layout`]) when the blocks are emitted.
 /// This pass computes the same layout to learn each branch's direction: lowering
-/// emits every `BranchIssue` with backward-jump semantics (taken if the condition
+/// emits every branch with backward-jump semantics (taken if the condition
 /// is non-zero, see the ISA spec on `jmp`); if the branch target ends up *after*
 /// the block, the emitted jump offset is positive and the ISA gives it
 /// forward-jump semantics (taken if the condition is zero), so the condition must
@@ -2713,14 +2718,19 @@ fn fix_branch_conditions(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -
 
     // Find every conditional issue's branch target.
     let mut forward_issues = HashMap::new(); // bb -> its issues that jump forward
-    for (bb_v, bb) in cfg.graph.all_vertices_weighted() {
-        let Some((issues, _)) = get_jmp_issues(bb) else {
-            continue;
-        };
+    let issuing_blocks = cfg
+        .graph
+        .all_vertices_weighted()
+        .filter_map(|(bb_v, bb)| get_jmp_issues(bb).map(|(issues, _)| (bb_v, bb, issues)));
+    for (bb_v, bb, issues) in issuing_blocks {
         let forward: Vec<usize> = issues
             .into_iter()
             .filter(|issue| match bb.inst[*issue] {
-                MInst::BranchIssue { dst, .. } => {
+                MInst::JumpIssue {
+                    dst,
+                    kind: IssueKind::Branch { .. },
+                    ..
+                } => {
                     let target_bb_v = cfg
                         .vertex_of_block(Block::new(dst.index()))
                         .expect("Branch target is not a block");
@@ -2741,37 +2751,261 @@ fn fix_branch_conditions(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -
         let bb_mut = cfg.graph.vertex_weight_mut(bb_v).unwrap();
         for issue in issues.into_iter().rev() {
             // Forward jump: taken if the condition is zero, so negate it.
-            match bb_mut.inst[issue] {
-                MInst::BranchIssue {
-                    dir,
-                    dst,
-                    cond,
-                    link,
-                    trig,
+            let negation = match &mut bb_mut.inst[issue] {
+                MInst::JumpIssue {
+                    kind: IssueKind::Branch { dir, cond },
+                    ..
                 } => {
-                    assert!(!dir, "Lowering must emit backward-jump conditions");
+                    assert!(!*dir, "Lowering must emit backward-jump conditions");
                     let neg_cond_r = new_vreg();
                     let negation = MInst::UnaryAlu {
                         op: UnaryAluOp::LogNeg,
                         rd: WritableReg::from_reg(neg_cond_r),
-                        rs: cond,
+                        rs: *cond,
                         out: 0,
                     };
-                    bb_mut.inst[issue] = MInst::BranchIssue {
-                        dir: true,
-                        dst,
-                        cond: neg_cond_r,
-                        link,
-                        trig,
-                    };
-                    bb_mut.inst.insert(issue, negation);
+                    *dir = true;
+                    *cond = neg_cond_r;
+                    negation
                 }
                 _ => unreachable!(),
-            }
+            };
+            bb_mut.inst.insert(issue, negation);
         }
         // Backward (or self-loop) jumps are taken if the condition is non-zero,
         // which is what lowering emitted.
     }
+}
+
+/// Turns every jump issue whose target the short `jmp`'s 7-bit immediate cannot
+/// reach into a far issue (the ISA's two-operand `jmp`, which takes its target
+/// offset from an operand materialized by a preceding `JumpOffset` chain), and
+/// widens the offset of any far issue that has outgrown its width.
+///
+/// Distances are measured on the final block layout (the one
+/// [`VCodeCFG::build_vcode`] recomputes) with the exact emitted lengths, so this
+/// must run after [`insert_ref_distances`] and [`fix_branch_conditions`]. As
+/// widening lengthens the code, which may push other jumps out of range, and
+/// the inserted instructions need reference distances of their own, the caller
+/// alternates [`insert_ref_distances`] and this pass until nothing changes; the
+/// fixpoint exists because a jump is only ever widened, never shortened.
+///
+/// A far branch keeps its condition, which [`fix_branch_conditions`] already
+/// gave the direction's sense (taken on zero forward, on non-zero backward); a
+/// far unconditional jump gets a constant condition of that sense.
+///
+/// Returns whether anything was changed.
+fn widen_far_jumps(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) -> bool {
+    log::debug!("widen_far_jumps");
+
+    // The instruction address of every block's start in the layout.
+    let mut block_addr = HashMap::<usize, i64>::new();
+    let mut addr = 0i64;
+    for bb_v in cfg.compute_layout(block_exit) {
+        block_addr.insert(bb_v, addr);
+        let bb = cfg.graph.vertex_weight(bb_v).unwrap();
+        addr += bb
+            .inst
+            .iter()
+            .map(|i| i.emitted_length() as i64)
+            .sum::<i64>();
+    }
+    let target_addr = |cfg: &VCodeCFG<MInst>, dst: MachLabel| {
+        let v = cfg
+            .vertex_of_block(Block::new(dst.index()))
+            .expect("Jump target is not a block");
+        block_addr[&v]
+    };
+    // The reaches of the short and far forms (independent of the trigger offset
+    // and chain placement, which `jump_offset` accounts for).
+    let short_range = inst::LabelUse::JmpLoc7.offset_range();
+    let far_range = |size_pow2: u16| {
+        inst::LabelUse::JmpFar {
+            size_pow2,
+            gap: 0,
+            trig: 0,
+        }
+        .offset_range()
+    };
+
+    let mut changed = false;
+    let issuing_blocks: Vec<_> = cfg
+        .graph
+        .all_vertices()
+        .filter_map(|bb_v| {
+            get_jmp_issues(cfg.graph.vertex_weight(bb_v).unwrap())
+                .map(|(issues, trigger)| (bb_v, issues, trigger))
+        })
+        .collect();
+    for (bb_v, issues, trigger) in issuing_blocks {
+        // Decide on every issue from the same snapshot of the addresses: the
+        // edits only lengthen the code, and any jump they push out of range
+        // is caught by the next round.
+        let bb = cfg.graph.vertex_weight(bb_v).unwrap();
+        let mut inst_addr = Vec::with_capacity(bb.inst.len() + 1);
+        inst_addr.push(block_addr[&bb_v]);
+        for inst in bb.inst.iter() {
+            inst_addr.push(inst_addr.last().unwrap() + inst.emitted_length() as i64);
+        }
+        let offset_of = |cfg: &VCodeCFG<MInst>, issue: usize, dst: MachLabel| {
+            let jump = inst_addr[issue];
+            let trig = inst_addr[trigger] - inst_addr[issue + 1];
+            inst::LabelUse::jump_offset(jump, trig, target_addr(cfg, dst))
+        };
+        // The width for an offset, leaving 4 bits of slack for the widening
+        // itself.
+        let width_for = |offset: i64| {
+            let slack = far_range(1);
+            if (slack.start() >> 4..=slack.end() >> 4).contains(&offset) {
+                1u16
+            } else {
+                2u16
+            }
+        };
+
+        enum Edit {
+            /// Turn the short issue into a far one of the given width.
+            Widen { offset: i64, size_pow2: u16 },
+            /// Widen the far issue's chain to 32 bits.
+            Grow,
+        }
+        let mut edits = Vec::new();
+        for issue in issues {
+            match &bb.inst[issue] {
+                MInst::JumpIssue {
+                    dst,
+                    kind: IssueKind::Jump | IssueKind::Branch { .. },
+                    ..
+                } => {
+                    // No offset means a fall-through, which is emitted as a
+                    // NoOp and never far.
+                    if let Some(offset) = offset_of(cfg, issue, *dst) {
+                        if !short_range.contains(&offset) {
+                            edits.push((
+                                issue,
+                                Edit::Widen {
+                                    offset,
+                                    size_pow2: width_for(offset),
+                                },
+                            ));
+                        }
+                    }
+                }
+                MInst::JumpIssue {
+                    dst,
+                    kind: IssueKind::Far { .. },
+                    ..
+                } => {
+                    let off = offset_of(cfg, issue, *dst).expect("Far jump to a fall-through");
+                    // Its chain is the nearest preceding one (see set_trigger_offsets).
+                    let MInst::JumpOffset { size_pow2, .. } = bb.inst[bb.inst[..issue]
+                        .iter()
+                        .rposition(|i| matches!(i, MInst::JumpOffset { .. }))
+                        .expect("Far jump issue without a preceding JumpOffset")]
+                    else {
+                        unreachable!()
+                    };
+                    if !far_range(size_pow2).contains(&off) {
+                        assert!(size_pow2 < 2, "Far jump offset {off} exceeds 32 bits");
+                        edits.push((issue, Edit::Grow));
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        // Later issues first, so that inserting does not shift the indices
+        // still to be edited.
+        let bb = cfg.graph.vertex_weight_mut(bb_v).unwrap();
+        for (issue, edit) in edits.into_iter().rev() {
+            changed = true;
+            match edit {
+                Edit::Grow => {
+                    let chain = bb.inst[..issue]
+                        .iter()
+                        .rposition(|i| matches!(i, MInst::JumpOffset { .. }))
+                        .unwrap();
+                    match &mut bb.inst[chain] {
+                        MInst::JumpOffset { size_pow2, .. } => *size_pow2 = 2,
+                        _ => unreachable!(),
+                    }
+                }
+                Edit::Widen { offset, size_pow2 } => {
+                    let dir = offset > 0;
+                    let offset_r = new_vreg();
+                    let MInst::JumpIssue {
+                        link,
+                        dst,
+                        kind,
+                        trig,
+                    } = &bb.inst[issue]
+                    else {
+                        unreachable!()
+                    };
+                    let (link, dst, trig) = (*link, *dst, *trig);
+                    let (kind, mut inserts) = match kind.clone() {
+                        IssueKind::Jump => {
+                            // The condition of the direction's sense: zero
+                            // takes a forward jump, non-zero a backward one.
+                            let cond = new_vreg();
+                            (
+                                IssueKind::Far {
+                                    conditional: false,
+                                    dir,
+                                    cond,
+                                    offset: offset_r,
+                                },
+                                vec![MInst::Const {
+                                    rd: WritableReg::from_reg(cond),
+                                    ty: IsaType::Known(scry_isa::Type::Uint(0)),
+                                    imm: Imm64::new(if dir { 0 } else { 1 }),
+                                }],
+                            )
+                        }
+                        IssueKind::Branch {
+                            dir: branch_dir,
+                            cond,
+                        } => {
+                            assert_eq!(branch_dir, dir, "Branch condition sense mismatch");
+                            (
+                                IssueKind::Far {
+                                    conditional: true,
+                                    dir,
+                                    cond,
+                                    offset: offset_r,
+                                },
+                                vec![],
+                            )
+                        }
+                        IssueKind::Far { .. } => unreachable!(),
+                    };
+                    let far = MInst::JumpIssue {
+                        link,
+                        dst,
+                        kind,
+                        trig,
+                    };
+                    // The chain comes last, right before its issue, so that the
+                    // condition (produced earlier) arrives before the offset.
+                    inserts.push(MInst::JumpOffset {
+                        rd: WritableReg::from_reg(offset_r),
+                        dst,
+                        size_pow2,
+                        gap: 0,
+                        trig: 0,
+                    });
+                    log::debug!(
+                        "Far jump (offset {offset}): {:?} -> {far:?}",
+                        bb.inst[issue]
+                    );
+                    bb.inst[issue] = far;
+                    bb.inst.splice(issue..issue, inserts);
+                }
+            }
+        }
+    }
+    log::trace!("VCodeCFG: {cfg:?}");
+    changed
 }
 
 /// Fills in each branch issue's trigger offset.
@@ -2780,15 +3014,13 @@ fn fix_branch_conditions(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -
 /// invalidates the offsets.
 fn set_trigger_offsets(cfg: &mut VCodeCFG<MInst>) {
     log::debug!("set_trigger_offsets");
-    for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
-        let Some((issues, trigger)) = get_jmp_issues(bb) else {
-            continue;
-        };
-        for issue in issues {
-            if issue == trigger {
-                // An `ImmJump` is its own issue and trigger.
-                continue;
-            }
+    let issuing_blocks = cfg
+        .graph
+        .all_vertices_weighted_mut()
+        .filter_map(|(_, bb)| get_jmp_issues(bb).map(|(issues, trigger)| (bb, issues, trigger)));
+    for (bb, issues, trigger) in issuing_blocks {
+        // An `ImmJump` is its own issue and trigger and needs no offset.
+        for issue in issues.into_iter().filter(|issue| *issue != trigger) {
             let offset: usize = bb.inst[issue + 1..trigger]
                 .iter()
                 .map(MInst::emitted_length)
@@ -2799,7 +3031,43 @@ fn set_trigger_offsets(cfg: &mut VCodeCFG<MInst>) {
             );
             let offset = offset as u16;
             match &mut bb.inst[issue] {
-                MInst::BranchIssue { trig, .. } | MInst::JumpIssue { trig, .. } => *trig = offset,
+                MInst::JumpIssue { trig, .. } => *trig = offset,
+                _ => unreachable!(),
+            }
+        }
+
+        // Each far issue's offset chain needs to know where its jump is: the
+        // first far issue after it (the chain is inserted right before its
+        // issue, and only non-issue instructions, such as a bridging echo, can
+        // end up between them).
+        let chains: Vec<usize> = (0..bb.inst.len())
+            .filter(|chain| matches!(bb.inst[*chain], MInst::JumpOffset { .. }))
+            .collect();
+        for chain in chains {
+            let issue = (chain + 1..bb.inst.len())
+                .find(|i| {
+                    matches!(
+                        bb.inst[*i],
+                        MInst::JumpIssue {
+                            kind: IssueKind::Far { .. },
+                            ..
+                        }
+                    )
+                })
+                .expect("JumpOffset without a following far jump issue");
+            let issue_trig = match bb.inst[issue] {
+                MInst::JumpIssue { trig, .. } => trig,
+                _ => unreachable!(),
+            };
+            let between: usize = bb.inst[chain + 1..issue]
+                .iter()
+                .map(MInst::emitted_length)
+                .sum();
+            match &mut bb.inst[chain] {
+                MInst::JumpOffset { gap, trig, .. } => {
+                    *gap = between as u16;
+                    *trig = issue_trig;
+                }
                 _ => unreachable!(),
             }
         }
@@ -2845,6 +3113,7 @@ impl TargetIsa for ScryBackend {
                 MInst::JumpIssue {
                     link: WritableReg::from_reg(link),
                     dst,
+                    kind: IssueKind::Jump,
                     trig: 0,
                 },
                 MInst::JumpTrigger { link, args },
@@ -2911,7 +3180,15 @@ impl TargetIsa for ScryBackend {
         expand_echoes(&mut cfg, &mut new_vreg);
         fix_orderings(&mut cfg, &mut new_vreg);
         fix_branch_conditions(&mut cfg, &mut new_vreg);
-        insert_ref_distances(&mut cfg, &mut new_vreg);
+        // Widening a jump inserts instructions, which changes the reference
+        // distances and can push other jumps out of range, so repeat until
+        // nothing changes.
+        loop {
+            insert_ref_distances(&mut cfg, &mut new_vreg);
+            if !widen_far_jumps(&mut cfg, &mut new_vreg) {
+                break;
+            }
+        }
         assert_queue_capacities(&mut cfg);
         set_trigger_offsets(&mut cfg);
 
@@ -2928,22 +3205,28 @@ impl TargetIsa for ScryBackend {
         );
 
         cfg.build_vcode(&mut builder, block_exit, |inst, label_idx_map| match inst {
-            MInst::BranchIssue {
+            MInst::JumpIssue {
                 link,
                 dst,
-                dir,
-                cond,
+                kind,
                 trig,
-            } => MInst::BranchIssue {
+            } => MInst::JumpIssue {
                 link,
                 dst: MachLabel::new(label_idx_map[&dst.index()]),
-                dir,
-                cond,
+                kind,
                 trig,
             },
-            MInst::JumpIssue { link, dst, trig } => MInst::JumpIssue {
-                link,
+            MInst::JumpOffset {
+                rd,
+                dst,
+                size_pow2,
+                gap,
+                trig,
+            } => MInst::JumpOffset {
+                rd,
                 dst: MachLabel::new(label_idx_map[&dst.index()]),
+                size_pow2,
+                gap,
                 trig,
             },
             i => i,

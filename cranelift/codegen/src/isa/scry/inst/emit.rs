@@ -8,6 +8,7 @@ use cranelift_control::ControlPlane;
 use scry_isa::{Alu2OutputVariant, AluVariant, Bits, CallVariant, Instruction};
 
 pub struct EmitInfo {
+    #[allow(unused)]
     shared_flag: settings::Flags,
     #[allow(unused)]
     isa_flags: super::super::scry_settings::Flags,
@@ -243,13 +244,45 @@ impl MachInstEmit for MInst {
                     Bits::try_from(*trig as i32).unwrap(),
                 )]
             }
-            JumpIssue { dst, trig, .. } | BranchIssue { dst, trig, .. } => {
-                sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpLoc7);
+            JumpIssue {
+                dst, kind, trig, ..
+            } => {
+                match kind {
+                    // The short forms take their target from the 7-bit
+                    // immediate, patched once the label resolves.
+                    IssueKind::Jump | IssueKind::Branch { .. } => {
+                        sink.use_label_at_offset(sink.cur_offset(), *dst, LabelUse::JmpLoc7);
+                    }
+                    _ => {}
+                }
                 vec![Instruction::Jump(
                     0.try_into().unwrap(),
                     Bits::try_from(*trig as i32)
                         .expect(format!("Trigger offset out of bounds: {trig}").as_str()),
                 )]
+            }
+            JumpOffset {
+                dst,
+                size_pow2,
+                gap,
+                trig,
+                ..
+            } => {
+                // A signed const + grow chain with the immediate bytes resolved by the label
+                sink.use_label_at_offset(
+                    sink.cur_offset(),
+                    *dst,
+                    LabelUse::JmpFar {
+                        size_pow2: *size_pow2,
+                        gap: *gap,
+                        trig: *trig,
+                    },
+                );
+                let ty: Bits<3, false> = scry_isa::Type::Int(*size_pow2 as u8).try_into().unwrap();
+                let zero = Bits::try_from(0i32).unwrap();
+                let mut insts = vec![Instruction::Constant(ty, zero)];
+                insts.extend((1..(1usize << size_pow2)).map(|_| Instruction::Grow(zero)));
+                insts
             }
         };
         for inst in insts {

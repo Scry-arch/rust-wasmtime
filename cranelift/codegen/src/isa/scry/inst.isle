@@ -39,6 +39,38 @@
   )
 )
 
+;; The form of a `JumpIssue`.
+(type IssueKind
+  (enum
+    ;; An unconditional jump whose target is the `jmp`'s 7-bit immediate.
+    (Jump)
+
+    ;; A conditional branch whose target is the `jmp`'s 7-bit immediate. The
+    ;; condition's sense depends on the direction (see the ISA spec on `jmp`):
+    ;; taken on zero when jumping forward, on non-zero when jumping backward.
+    (Branch
+      (dir bool)       ;; Whether jumping forwards or backwards
+      (cond Reg)       ;; Condition
+    )
+
+    ;; A far jump or branch: the ISA's two-operand `jmp`, which takes its
+    ;; target from its second operand instead of the 7-bit immediate the other
+    ;; kinds are limited to. The offset operand is materialized by the
+    ;; `JumpOffset` immediately preceding the issue. The first operand is the
+    ;; condition, with the same direction-dependent sense as `Branch`; an
+    ;; unconditional far jump feeds it a constant of the right sense.
+    ;;
+    ;; Only produced by `widen_far_jumps`, from a `Jump`/`Branch` whose target
+    ;; is out of the short immediate's range.
+    (Far
+      (conditional bool) ;; Whether this is a branch (false: an unconditional jump)
+      (dir bool)         ;; Whether jumping forwards or backwards
+      (cond Reg)         ;; Condition
+      (offset Reg)       ;; Target offset, defined by the preceding `JumpOffset`
+    )
+  )
+)
+
 (type DoubleAluOp
   (enum
     (SaddOverflow)  ;; Signed wrapping addition + signed-overflow flag
@@ -308,20 +340,26 @@
       (dst MachLabel)
     )
 
-    ;; Issues a unconditional jump
+    ;; Issues a jump or branch (the ISA's `jmp`), which takes effect at the
+    ;; block's `JumpTrigger`. The `kind` selects the form of the jump.
     (JumpIssue
       (link WritableReg) ;; Links to the trigger instruction, not actually used
-      (dst MachLabel)  ;; Where to jump to
-      (trig u16)       ;; Trigger offset
+      (dst MachLabel)    ;; Where to jump to
+      (kind IssueKind)   ;; Which form of jump this is
+      (trig u16)         ;; Trigger offset
     )
 
-    ;; Issues a conditional branch
-    (BranchIssue
-      (link WritableReg) ;; Links to the trigger instruction, not actually used
-      (dst MachLabel)    ;; Where to jump to
-      (dir bool)         ;; Whether jumping forwards or backwards
-      (cond Reg)         ;; Condition
-      (trig u16)         ;; Trigger offset
+    ;; Materializes the target offset of the next far `JumpIssue`, delivered to
+    ;; it as a signed integer: a `const` + `grow` chain of 2^size_pow2
+    ;; instructions whose immediates are patched once the target label resolves
+    ;; (see `LabelUse::JmpFar`). Placed right before its issue; `gap` and `trig`
+    ;; are filled in by `set_trigger_offsets`.
+    (JumpOffset
+      (rd WritableReg)
+      (dst MachLabel)    ;; The issue's target
+      (size_pow2 u16)    ;; Byte width of the offset: 1 (16-bit) or 2 (32-bit)
+      (gap u16)          ;; Instructions emitted between this chain and the issue
+      (trig u16)         ;; The issue's trigger offset
     )
 
     ;; The point at which the control flow issued by the preceding issues takes

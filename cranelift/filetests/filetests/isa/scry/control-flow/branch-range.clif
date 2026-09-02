@@ -1,0 +1,129 @@
+test interpret
+test run
+target scry32
+
+; Tests of jumps that need to clear a large range.
+
+; Forward: block1 jumps over block2's long body to block3.
+; %fwd_far(0) walks the long body (0 + 40); nonzero takes the far jump.
+function %fwd_far(i32 uext) -> i32 uext {
+block0(v0: i32):
+    brif v0, block1, block2
+
+block1:
+    jump block3(v0)
+
+block2:
+    v10 = iconst.i32 1
+    v11 = iadd v0, v10
+    v12 = iadd v11, v10
+    v13 = iadd v12, v10
+    v14 = iadd v13, v10
+    v15 = iadd v14, v10
+    v16 = iadd v15, v10
+    v17 = iadd v16, v10
+    v18 = iadd v17, v10
+    v19 = iadd v18, v10
+    v20 = iadd v19, v10
+    v21 = iadd v20, v10
+    v22 = iadd v21, v10
+    v23 = iadd v22, v10
+    v24 = iadd v23, v10
+    v25 = iadd v24, v10
+    v26 = iadd v25, v10
+    v27 = iadd v26, v10
+    v28 = iadd v27, v10
+    v29 = iadd v28, v10
+    v30 = iadd v29, v10
+    v31 = iadd v30, v10
+    v32 = iadd v31, v10
+    v33 = iadd v32, v10
+    v34 = iadd v33, v10
+    v35 = iadd v34, v10
+    v36 = iadd v35, v10
+    v37 = iadd v36, v10
+    v38 = iadd v37, v10
+    v39 = iadd v38, v10
+    v40 = iadd v39, v10
+    v41 = iadd v40, v10
+    v42 = iadd v41, v10
+    v43 = iadd v42, v10
+    v44 = iadd v43, v10
+    v45 = iadd v44, v10
+    v46 = iadd v45, v10
+    v47 = iadd v46, v10
+    v48 = iadd v47, v10
+    v49 = iadd v48, v10
+    v50 = iadd v49, v10
+    jump block3(v50)
+
+block3(v2: i32):
+    return v2
+}
+; run: %fwd_far(0) == 40
+; run: %fwd_far(5) == 5
+; run: %fwd_far(4294967295) == 4294967295
+
+; Backward: the loop latch jumps back over its own 40-add body.
+; Returns the smallest multiple of 40 that is >= the argument.
+function %bwd_far(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = iconst.i32 0
+    jump block1(v1)
+
+block1(v2: i32):
+    v3 = icmp ult v2, v0
+    brif v3, block2, block3
+
+block2:
+    v10 = iconst.i32 1
+    v11 = iadd v2, v10
+    v12 = iadd v11, v10
+    v13 = iadd v12, v10
+    v14 = iadd v13, v10
+    v15 = iadd v14, v10
+    v16 = iadd v15, v10
+    v17 = iadd v16, v10
+    v18 = iadd v17, v10
+    v19 = iadd v18, v10
+    v20 = iadd v19, v10
+    v21 = iadd v20, v10
+    v22 = iadd v21, v10
+    v23 = iadd v22, v10
+    v24 = iadd v23, v10
+    v25 = iadd v24, v10
+    v26 = iadd v25, v10
+    v27 = iadd v26, v10
+    v28 = iadd v27, v10
+    v29 = iadd v28, v10
+    v30 = iadd v29, v10
+    v31 = iadd v30, v10
+    v32 = iadd v31, v10
+    v33 = iadd v32, v10
+    v34 = iadd v33, v10
+    v35 = iadd v34, v10
+    v36 = iadd v35, v10
+    v37 = iadd v36, v10
+    v38 = iadd v37, v10
+    v39 = iadd v38, v10
+    v40 = iadd v39, v10
+    v41 = iadd v40, v10
+    v42 = iadd v41, v10
+    v43 = iadd v42, v10
+    v44 = iadd v43, v10
+    v45 = iadd v44, v10
+    v46 = iadd v45, v10
+    v47 = iadd v46, v10
+    v48 = iadd v47, v10
+    v49 = iadd v48, v10
+    v50 = iadd v49, v10
+    jump block1(v50)
+
+block3:
+    return v2
+}
+; run: %bwd_far(0) == 0
+; run: %bwd_far(1) == 40
+; run: %bwd_far(40) == 40
+; run: %bwd_far(41) == 80
+; run: %bwd_far(1000) == 1000

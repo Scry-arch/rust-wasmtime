@@ -3573,7 +3573,7 @@ dependencies = [
 [[package]]
 name = "scry_isa"
 version = "0.0.0"
-source = "git+https://github.com/Scry-arch/scry_isa.git#66f35a0465c8382340e59b3d44f7f2d114bc15a5"
+source = "git+https://github.com/Scry-arch/scry_isa.git#dc41872555d48b97f9a57f8b9aac9404ec755909"
 dependencies = [
  "duplicate 2.0.1",
  "dyn-clone",
@@ -3589,7 +3589,7 @@ dependencies = [
 [[package]]
 name = "scry_sim"
 version = "0.0.0"
-source = "git+https://github.com/Scry-arch/scry_sim.git#8bcffffc3bb40b098fec9be4a7405abed4cb8686"
+source = "git+https://github.com/Scry-arch/scry_sim.git#be5e30b59bccd7241b6cdd2fc6949e344f9d2c67"
 dependencies = [
  "bitvec",
  "byteorder",

@@ -1,0 +1,678 @@
+test interpret
+test compile
+test run
+target scry32
+
+;; Jumps exactly at, and one past, the reach of the short `jmp`'s 7-bit
+;; immediate: -64 backward (relative to the jump) and 63 forward (relative to
+;; the instruction after the trigger). The one-past cases must become far
+;; jumps. The bodies are dependent `bnot` chains: one instruction each and no
+;; ordering freedom, so the emitted length is fixed. Even chains are
+;; identities. A constant wider than a byte adds one `grow` instruction.
+;;
+;; `short-jump-boundary-precise.clif` pins the emitted immediates of the same
+;; functions; this file checks that the right form was chosen and that the
+;; jumps execute correctly. The two files hold the same functions.
+;;
+;; Loop and merge state lives in stack slots: values carried in block params
+;; get a run-dependent instruction ordering, and the length must be fixed.
+;;
+;; Every critical edge is split, so a conditional branch to a loop header or
+;; a merge block targets an edge block instead, and the jump that spans a
+;; body backward is always unconditional (a latch, or an edge block).
+
+;; Backward jump from the edge block of a `brif` latch: the branch itself
+;; jumps forward to the edge block, whose jump spans the body backward.
+function %bwd_latch_short(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store v0, v1
+    v2 = iconst.i32 0
+    store v2, v1+4
+    jump block1
+block1:
+    v3 = stack_addr.i32 ss0
+    v4 = load.i32 v3+4
+    v20 = bnot v4
+    v21 = bnot v20
+    v22 = bnot v21
+    v23 = bnot v22
+    v24 = bnot v23
+    v25 = bnot v24
+    v26 = bnot v25
+    v27 = bnot v26
+    v28 = bnot v27
+    v29 = bnot v28
+    v30 = bnot v29
+    v31 = bnot v30
+    v32 = bnot v31
+    v33 = bnot v32
+    v34 = bnot v33
+    v35 = bnot v34
+    v36 = bnot v35
+    v37 = bnot v36
+    v38 = bnot v37
+    v39 = bnot v38
+    v40 = bnot v39
+    v41 = bnot v40
+    v42 = bnot v41
+    v43 = bnot v42
+    v44 = bnot v43
+    v45 = bnot v44
+    v46 = bnot v45
+    v47 = bnot v46
+    v48 = bnot v47
+    v49 = bnot v48
+    v50 = bnot v49
+    v51 = bnot v50
+    v52 = bnot v51
+    v53 = bnot v52
+    v54 = bnot v53
+    v55 = bnot v54
+    v56 = bnot v55
+    v57 = bnot v56
+    v58 = bnot v57
+    v59 = bnot v58
+    v60 = bnot v59
+    v61 = bnot v60
+    v62 = bnot v61
+    v63 = bnot v62
+    v64 = bnot v63
+    v65 = bnot v64
+    v66 = bnot v65
+    v67 = bnot v66
+    v5 = iconst.i32 3
+    v6 = iadd v67, v5
+    store v6, v3+4
+    v7 = load.i32 v3
+    v8 = iconst.i32 1
+    v9 = isub v7, v8
+    store v9, v3
+    brif v9, block1, block2
+block2:
+    v10 = stack_addr.i32 ss0
+    v11 = load.i32 v10+4
+    return v11
+}
+; run: %bwd_latch_short(1) == 3
+; run: %bwd_latch_short(5) == 15
+; not: JumpOffset
+
+;; Backward jump from the edge block of a `brif` latch: the branch itself
+;; jumps forward to the edge block, whose jump spans the body backward.
+function %bwd_latch_far(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store v0, v1
+    v2 = iconst.i32 0
+    store v2, v1+4
+    jump block1
+block1:
+    v3 = stack_addr.i32 ss0
+    v4 = load.i32 v3+4
+    v20 = bnot v4
+    v21 = bnot v20
+    v22 = bnot v21
+    v23 = bnot v22
+    v24 = bnot v23
+    v25 = bnot v24
+    v26 = bnot v25
+    v27 = bnot v26
+    v28 = bnot v27
+    v29 = bnot v28
+    v30 = bnot v29
+    v31 = bnot v30
+    v32 = bnot v31
+    v33 = bnot v32
+    v34 = bnot v33
+    v35 = bnot v34
+    v36 = bnot v35
+    v37 = bnot v36
+    v38 = bnot v37
+    v39 = bnot v38
+    v40 = bnot v39
+    v41 = bnot v40
+    v42 = bnot v41
+    v43 = bnot v42
+    v44 = bnot v43
+    v45 = bnot v44
+    v46 = bnot v45
+    v47 = bnot v46
+    v48 = bnot v47
+    v49 = bnot v48
+    v50 = bnot v49
+    v51 = bnot v50
+    v52 = bnot v51
+    v53 = bnot v52
+    v54 = bnot v53
+    v55 = bnot v54
+    v56 = bnot v55
+    v57 = bnot v56
+    v58 = bnot v57
+    v59 = bnot v58
+    v60 = bnot v59
+    v61 = bnot v60
+    v62 = bnot v61
+    v63 = bnot v62
+    v64 = bnot v63
+    v65 = bnot v64
+    v66 = bnot v65
+    v67 = bnot v66
+    v5 = iconst.i32 300
+    v6 = iadd v67, v5
+    store v6, v3+4
+    v7 = load.i32 v3
+    v8 = iconst.i32 1
+    v9 = isub v7, v8
+    store v9, v3
+    brif v9, block1, block2
+block2:
+    v10 = stack_addr.i32 ss0
+    v11 = load.i32 v10+4
+    return v11
+}
+; run: %bwd_latch_far(1) == 300
+; run: %bwd_latch_far(5) == 1500
+; check: JumpOffset
+
+;; Backward unconditional jump: the latch jumps back to the header.
+function %bwd_jump_short(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store v0, v1
+    v2 = iconst.i32 0
+    store v2, v1+4
+    jump block1
+block1:
+    v3 = stack_addr.i32 ss0
+    v4 = load.i32 v3
+    brif v4, block3, block2
+block3:
+    v5 = stack_addr.i32 ss0
+    v6 = load.i32 v5+4
+    v20 = bnot v6
+    v21 = bnot v20
+    v22 = bnot v21
+    v23 = bnot v22
+    v24 = bnot v23
+    v25 = bnot v24
+    v26 = bnot v25
+    v27 = bnot v26
+    v28 = bnot v27
+    v29 = bnot v28
+    v30 = bnot v29
+    v31 = bnot v30
+    v32 = bnot v31
+    v33 = bnot v32
+    v34 = bnot v33
+    v35 = bnot v34
+    v36 = bnot v35
+    v37 = bnot v36
+    v38 = bnot v37
+    v39 = bnot v38
+    v40 = bnot v39
+    v41 = bnot v40
+    v42 = bnot v41
+    v43 = bnot v42
+    v44 = bnot v43
+    v45 = bnot v44
+    v46 = bnot v45
+    v47 = bnot v46
+    v48 = bnot v47
+    v49 = bnot v48
+    v50 = bnot v49
+    v51 = bnot v50
+    v52 = bnot v51
+    v53 = bnot v52
+    v54 = bnot v53
+    v55 = bnot v54
+    v56 = bnot v55
+    v57 = bnot v56
+    v58 = bnot v57
+    v59 = bnot v58
+    v60 = bnot v59
+    v61 = bnot v60
+    v62 = bnot v61
+    v63 = bnot v62
+    v64 = bnot v63
+    v65 = bnot v64
+    v66 = bnot v65
+    v67 = bnot v66
+    v7 = iconst.i32 3
+    v8 = iadd v67, v7
+    store v8, v5+4
+    v9 = load.i32 v5
+    v10 = iconst.i32 1
+    v11 = isub v9, v10
+    store v11, v5
+    jump block1
+block2:
+    v12 = stack_addr.i32 ss0
+    v13 = load.i32 v12+4
+    return v13
+}
+; run: %bwd_jump_short(0) == 0
+; run: %bwd_jump_short(1) == 3
+; run: %bwd_jump_short(5) == 15
+; not: JumpOffset
+
+;; Backward unconditional jump: the latch jumps back to the header.
+function %bwd_jump_far(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store v0, v1
+    v2 = iconst.i32 0
+    store v2, v1+4
+    jump block1
+block1:
+    v3 = stack_addr.i32 ss0
+    v4 = load.i32 v3
+    brif v4, block3, block2
+block3:
+    v5 = stack_addr.i32 ss0
+    v6 = load.i32 v5+4
+    v20 = bnot v6
+    v21 = bnot v20
+    v22 = bnot v21
+    v23 = bnot v22
+    v24 = bnot v23
+    v25 = bnot v24
+    v26 = bnot v25
+    v27 = bnot v26
+    v28 = bnot v27
+    v29 = bnot v28
+    v30 = bnot v29
+    v31 = bnot v30
+    v32 = bnot v31
+    v33 = bnot v32
+    v34 = bnot v33
+    v35 = bnot v34
+    v36 = bnot v35
+    v37 = bnot v36
+    v38 = bnot v37
+    v39 = bnot v38
+    v40 = bnot v39
+    v41 = bnot v40
+    v42 = bnot v41
+    v43 = bnot v42
+    v44 = bnot v43
+    v45 = bnot v44
+    v46 = bnot v45
+    v47 = bnot v46
+    v48 = bnot v47
+    v49 = bnot v48
+    v50 = bnot v49
+    v51 = bnot v50
+    v52 = bnot v51
+    v53 = bnot v52
+    v54 = bnot v53
+    v55 = bnot v54
+    v56 = bnot v55
+    v57 = bnot v56
+    v58 = bnot v57
+    v59 = bnot v58
+    v60 = bnot v59
+    v61 = bnot v60
+    v62 = bnot v61
+    v63 = bnot v62
+    v64 = bnot v63
+    v65 = bnot v64
+    v66 = bnot v65
+    v67 = bnot v66
+    v7 = iconst.i32 300
+    v8 = iadd v67, v7
+    store v8, v5+4
+    v9 = load.i32 v5
+    v10 = iconst.i32 1
+    v11 = isub v9, v10
+    store v11, v5
+    jump block1
+block2:
+    v12 = stack_addr.i32 ss0
+    v13 = load.i32 v12+4
+    return v13
+}
+; run: %bwd_jump_far(0) == 0
+; run: %bwd_jump_far(1) == 300
+; run: %bwd_jump_far(5) == 1500
+; check: JumpOffset
+
+;; Forward conditional branch over the body (and the merge block) to the
+;; edge block that leads to the merge.
+function %fwd_cond_short(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store v0, v1
+    brif v0, block2, block1
+block1:
+    v2 = iconst.i32 7
+    v20 = bnot v2
+    v21 = bnot v20
+    v22 = bnot v21
+    v23 = bnot v22
+    v24 = bnot v23
+    v25 = bnot v24
+    v26 = bnot v25
+    v27 = bnot v26
+    v28 = bnot v27
+    v29 = bnot v28
+    v30 = bnot v29
+    v31 = bnot v30
+    v32 = bnot v31
+    v33 = bnot v32
+    v34 = bnot v33
+    v35 = bnot v34
+    v36 = bnot v35
+    v37 = bnot v36
+    v38 = bnot v37
+    v39 = bnot v38
+    v40 = bnot v39
+    v41 = bnot v40
+    v42 = bnot v41
+    v43 = bnot v42
+    v44 = bnot v43
+    v45 = bnot v44
+    v46 = bnot v45
+    v47 = bnot v46
+    v48 = bnot v47
+    v49 = bnot v48
+    v50 = bnot v49
+    v51 = bnot v50
+    v52 = bnot v51
+    v53 = bnot v52
+    v54 = bnot v53
+    v55 = bnot v54
+    v56 = bnot v55
+    v57 = bnot v56
+    v58 = bnot v57
+    v59 = bnot v58
+    v60 = bnot v59
+    v61 = bnot v60
+    v62 = bnot v61
+    v63 = bnot v62
+    v64 = bnot v63
+    v65 = bnot v64
+    v66 = bnot v65
+    v67 = bnot v66
+    v68 = bnot v67
+    v69 = bnot v68
+    v70 = bnot v69
+    v71 = bnot v70
+    v72 = bnot v71
+    v73 = bnot v72
+    v3 = stack_addr.i32 ss0
+    store v73, v3
+    jump block2
+block2:
+    v4 = stack_addr.i32 ss0
+    v5 = load.i32 v4
+    v6 = iconst.i32 100
+    v7 = iadd v5, v6
+    return v7
+}
+; run: %fwd_cond_short(0) == 107
+; run: %fwd_cond_short(5) == 105
+; not: JumpOffset
+
+;; Forward conditional branch over the body (and the merge block) to the
+;; edge block that leads to the merge.
+function %fwd_cond_far(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    v1 = stack_addr.i32 ss0
+    store v0, v1
+    brif v0, block2, block1
+block1:
+    v2 = iconst.i32 300
+    v20 = bnot v2
+    v21 = bnot v20
+    v22 = bnot v21
+    v23 = bnot v22
+    v24 = bnot v23
+    v25 = bnot v24
+    v26 = bnot v25
+    v27 = bnot v26
+    v28 = bnot v27
+    v29 = bnot v28
+    v30 = bnot v29
+    v31 = bnot v30
+    v32 = bnot v31
+    v33 = bnot v32
+    v34 = bnot v33
+    v35 = bnot v34
+    v36 = bnot v35
+    v37 = bnot v36
+    v38 = bnot v37
+    v39 = bnot v38
+    v40 = bnot v39
+    v41 = bnot v40
+    v42 = bnot v41
+    v43 = bnot v42
+    v44 = bnot v43
+    v45 = bnot v44
+    v46 = bnot v45
+    v47 = bnot v46
+    v48 = bnot v47
+    v49 = bnot v48
+    v50 = bnot v49
+    v51 = bnot v50
+    v52 = bnot v51
+    v53 = bnot v52
+    v54 = bnot v53
+    v55 = bnot v54
+    v56 = bnot v55
+    v57 = bnot v56
+    v58 = bnot v57
+    v59 = bnot v58
+    v60 = bnot v59
+    v61 = bnot v60
+    v62 = bnot v61
+    v63 = bnot v62
+    v64 = bnot v63
+    v65 = bnot v64
+    v66 = bnot v65
+    v67 = bnot v66
+    v68 = bnot v67
+    v69 = bnot v68
+    v70 = bnot v69
+    v71 = bnot v70
+    v72 = bnot v71
+    v73 = bnot v72
+    v3 = stack_addr.i32 ss0
+    store v73, v3
+    jump block2
+block2:
+    v4 = stack_addr.i32 ss0
+    v5 = load.i32 v4
+    v6 = iconst.i32 100
+    v7 = iadd v5, v6
+    return v7
+}
+; run: %fwd_cond_far(0) == 400
+; run: %fwd_cond_far(5) == 105
+; check: JumpOffset
+
+;; Forward branch from a br_table: the case-0 issue triggers one
+;; instruction later (the case-1 issue sits between them), so its reach
+;; is one longer. The default arm carries the filler.
+function %fwd_table_short(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    br_table v0, block1, [block2, block3]
+block1:
+    v1 = iconst.i32 7
+    v20 = bnot v1
+    v21 = bnot v20
+    v22 = bnot v21
+    v23 = bnot v22
+    v24 = bnot v23
+    v25 = bnot v24
+    v26 = bnot v25
+    v27 = bnot v26
+    v28 = bnot v27
+    v29 = bnot v28
+    v30 = bnot v29
+    v31 = bnot v30
+    v32 = bnot v31
+    v33 = bnot v32
+    v34 = bnot v33
+    v35 = bnot v34
+    v36 = bnot v35
+    v37 = bnot v36
+    v38 = bnot v37
+    v39 = bnot v38
+    v40 = bnot v39
+    v41 = bnot v40
+    v42 = bnot v41
+    v43 = bnot v42
+    v44 = bnot v43
+    v45 = bnot v44
+    v46 = bnot v45
+    v47 = bnot v46
+    v48 = bnot v47
+    v49 = bnot v48
+    v50 = bnot v49
+    v51 = bnot v50
+    v52 = bnot v51
+    v53 = bnot v52
+    v54 = bnot v53
+    v55 = bnot v54
+    v56 = bnot v55
+    v57 = bnot v56
+    v58 = bnot v57
+    v59 = bnot v58
+    v60 = bnot v59
+    v61 = bnot v60
+    v62 = bnot v61
+    v63 = bnot v62
+    v64 = bnot v63
+    v65 = bnot v64
+    v66 = bnot v65
+    v67 = bnot v66
+    v68 = bnot v67
+    v69 = bnot v68
+    v70 = bnot v69
+    v71 = bnot v70
+    v72 = bnot v71
+    v73 = bnot v72
+    v2 = stack_addr.i32 ss0
+    store v73, v2
+    jump block4
+block2:
+    v3 = iconst.i32 2
+    v4 = stack_addr.i32 ss0
+    store v3, v4
+    jump block4
+block3:
+    v5 = iconst.i32 3
+    v6 = stack_addr.i32 ss0
+    store v5, v6
+    jump block4
+block4:
+    v7 = stack_addr.i32 ss0
+    v8 = load.i32 v7
+    v9 = iconst.i32 100
+    v10 = iadd v8, v9
+    return v10
+}
+; run: %fwd_table_short(0) == 102
+; run: %fwd_table_short(1) == 103
+; run: %fwd_table_short(2) == 107
+; check: JumpOffset
+; not: JumpOffset
+
+;; Forward branch from a br_table: the case-0 issue triggers one
+;; instruction later (the case-1 issue sits between them), so its reach
+;; is one longer. The default arm carries the filler.
+function %fwd_table_far(i32 uext) -> i32 uext {
+    ss0 = explicit_slot 4
+block0(v0: i32):
+    br_table v0, block1, [block2, block3]
+block1:
+    v1 = iconst.i32 300
+    v20 = bnot v1
+    v21 = bnot v20
+    v22 = bnot v21
+    v23 = bnot v22
+    v24 = bnot v23
+    v25 = bnot v24
+    v26 = bnot v25
+    v27 = bnot v26
+    v28 = bnot v27
+    v29 = bnot v28
+    v30 = bnot v29
+    v31 = bnot v30
+    v32 = bnot v31
+    v33 = bnot v32
+    v34 = bnot v33
+    v35 = bnot v34
+    v36 = bnot v35
+    v37 = bnot v36
+    v38 = bnot v37
+    v39 = bnot v38
+    v40 = bnot v39
+    v41 = bnot v40
+    v42 = bnot v41
+    v43 = bnot v42
+    v44 = bnot v43
+    v45 = bnot v44
+    v46 = bnot v45
+    v47 = bnot v46
+    v48 = bnot v47
+    v49 = bnot v48
+    v50 = bnot v49
+    v51 = bnot v50
+    v52 = bnot v51
+    v53 = bnot v52
+    v54 = bnot v53
+    v55 = bnot v54
+    v56 = bnot v55
+    v57 = bnot v56
+    v58 = bnot v57
+    v59 = bnot v58
+    v60 = bnot v59
+    v61 = bnot v60
+    v62 = bnot v61
+    v63 = bnot v62
+    v64 = bnot v63
+    v65 = bnot v64
+    v66 = bnot v65
+    v67 = bnot v66
+    v68 = bnot v67
+    v69 = bnot v68
+    v70 = bnot v69
+    v71 = bnot v70
+    v72 = bnot v71
+    v73 = bnot v72
+    v2 = stack_addr.i32 ss0
+    store v73, v2
+    jump block4
+block2:
+    v3 = iconst.i32 2
+    v4 = stack_addr.i32 ss0
+    store v3, v4
+    jump block4
+block3:
+    v5 = iconst.i32 3
+    v6 = stack_addr.i32 ss0
+    store v5, v6
+    jump block4
+block4:
+    v7 = stack_addr.i32 ss0
+    v8 = load.i32 v7
+    v9 = iconst.i32 100
+    v10 = iadd v8, v9
+    return v10
+}
+; run: %fwd_table_far(0) == 102
+; run: %fwd_table_far(1) == 103
+; run: %fwd_table_far(2) == 400
+; check: JumpOffset
+; check: JumpOffset
+; not: JumpOffset
+
