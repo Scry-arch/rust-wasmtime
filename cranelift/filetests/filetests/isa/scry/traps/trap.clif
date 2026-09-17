@@ -55,15 +55,15 @@ block2:
 ;   UnaryAlu(op: LogNeg, rd:, v(209), rs:, v(207), )
 ;   JumpIssue(link:, v(199), kind: Branch(dir: true, cond: v(209)), dst: MachLabel(2), trig: 0, )
 ;   JumpTrigger(link:, v(199), args:, v(208), )
+; block1:
+;   EchoLong(rds:, v(206), rss:, v(205), out: 0, )
+;   Discard(rss:, v(206), )
+;   Trap
 ; block2:
 ;   EchoLong(rds:, v(204), rss:, v(202), out: 1, )
 ;   Const(ty: Known(Uint(2)), rd:, v(198), imm: 1, )
 ;   Alu2(var: Add, var_out LowOnly, rds:, v(197), rss:, v(204), v(198), outs: [1], )
 ;   Ret(trig: 0, )
-; block1:
-;   EchoLong(rds:, v(206), rss:, v(205), out: 0, )
-;   Discard(rss:, v(206), )
-;   Trap
 ;
 ; Disassembled:
 ; block0: ; offset 0x0
@@ -72,14 +72,14 @@ block2:
 ; add Low =>0
 ; dup =>0, =>2
 ; eq =>0
-; nop 
+; jmp 3, 0
 ; block1: ; offset 0xc
+; echo =>0
+; nop 
+; trap 
+; block2: ; offset 0x12
 ; echo =>1
 ; const u32, 1
 ; add Low =>1
 ; ret 0
-; block2: ; offset 0x14
-; echo =>0
-; nop 
-; trap 
 

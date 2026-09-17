@@ -1,0 +1,127 @@
+test interpret
+test run
+target scry32
+
+; A loop whose back edge comes out of a `br_table` arm, with cold arms around
+; it. This is what rustc emits for
+;
+;     fn next(r: &mut (u32, u32)) -> Option<u32> {
+;         if r.0 < r.1 { let n = r.0; r.0 = n + 1; Some(n) } else { None }
+;     }
+;     fn fn_loop(a: u32, b: u32) -> u32 {
+;         let mut it = (0, b);
+;         let mut last = 0;
+;         while let Some(n) = next(&mut it) { last = n; }
+;         last + a
+;     }
+;
+; i.e. the core of every `for` loop over a range: call `next`, spill the
+; returned (tag, payload) pair, switch on the tag, and either loop with the
+; payload or fall out and do an overflow-checked add.
+;
+; rustc's cold arms trap; here they return sentinels so the wrong path is
+; observable:  999 = impossible tag,  555 = an overflow branch.
+
+function %next(i32) -> i32 uext, i32 uext {
+    ss0 = explicit_slot 8, align = 4
+block0(v0: i32):
+    jump block1
+
+block1:
+    v2 = load.i32 notrap v0
+    v3 = load.i32 notrap v0+4
+    v4 = icmp ult v2, v3
+    brif v4, block2, block4
+
+block2:
+    v6 = load.i32 notrap v0
+    v7 = iconst.i32 1
+    v8 = iadd v6, v7
+    v9 = icmp ult v8, v6
+    brif v9, block6, block3
+
+block6 cold:
+    v10 = iconst.i32 9
+    v11 = iconst.i32 555
+    return v10, v11
+
+block3:
+    store.i32 notrap v8, v0
+    v14 = stack_addr.i32 ss0+4
+    store.i32 notrap v6, v14
+    v15 = iconst.i32 1
+    v16 = stack_addr.i32 ss0
+    store notrap v15, v16
+    v17 = stack_addr.i32 ss0
+    v18 = load.i32 notrap v17
+    v19 = stack_addr.i32 ss0+4
+    v20 = load.i32 notrap v19
+    return v18, v20
+
+block4:
+    v21 = iconst.i32 0
+    v22 = stack_addr.i32 ss0
+    store notrap v21, v22
+    v23 = stack_addr.i32 ss0
+    v24 = load.i32 notrap v23
+    v25 = stack_addr.i32 ss0+4
+    v26 = load.i32 notrap v25
+    return v24, v26
+}
+
+function %fn_loop(i32 uext, i32 uext) -> i32 uext {
+    ss0 = explicit_slot 8, align = 4
+    ss1 = explicit_slot 8, align = 4
+    fn0 = %next(i32) -> i32 uext, i32 uext
+block0(v0: i32, v1: i32):
+    jump block1
+
+block1:
+    v2 = iconst.i32 0
+    v3 = stack_addr.i32 ss0
+    store notrap v2, v3
+    v5 = stack_addr.i32 ss0+4
+    store.i32 notrap v1, v5
+    v6 = iconst.i32 0
+    jump block2(v6)
+
+block2(v22: i32):
+    v7 = stack_addr.i32 ss0
+    v8, v9 = call fn0(v7)
+    v10 = stack_addr.i32 ss1
+    store notrap v8, v10
+    v11 = stack_addr.i32 ss1+4
+    store notrap v9, v11
+    jump block3
+
+block3:
+    v12 = stack_addr.i32 ss1
+    v13 = load.i32 notrap v12
+    br_table v13, block7, [block5, block4]
+
+block4:
+    v14 = stack_addr.i32 ss1+4
+    v15 = load.i32 notrap v14
+    jump block2(v15)
+
+block5:
+    v18 = iadd.i32 v22, v0
+    v19 = icmp ult v18, v22
+    brif v19, block8, block6
+
+block8 cold:
+    v20 = iconst.i32 555
+    return v20
+
+block6:
+    return v18
+
+block7 cold:
+    v21 = iconst.i32 999
+    return v21
+}
+; last = b - 1 for b >= 1 (else 0), result = last + a
+; run: %fn_loop(2, 40) == 41
+; run: %fn_loop(2, 1) == 2
+; run: %fn_loop(5, 0) == 5
+; run: %fn_loop(7, 3) == 9

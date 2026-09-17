@@ -335,6 +335,15 @@ impl BlockLoweringOrder {
         self.cold_blocks.contains(&block)
     }
 
+    /// Clear the cold-block set, so `is_cold` reports no block as cold and
+    /// emission keeps the lowered order unchanged. For backends that compute
+    /// their own final block order and rebuild the vcode with new block
+    /// indices: this set's indices refer to this order's numbering, so
+    /// against the rebuilt vcode they would sink arbitrary blocks.
+    pub fn clear_cold_blocks(&mut self) {
+        self.cold_blocks.clear();
+    }
+
     /// Determine whether the given lowered block index is an indirect branch
     /// target.
     pub fn is_indirect_branch_target(&self, block: BlockIndex) -> bool {

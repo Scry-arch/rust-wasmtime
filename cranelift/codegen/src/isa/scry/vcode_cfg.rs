@@ -35,6 +35,11 @@ pub struct VCodeBB<I: VCodeInst> {
     ///
     /// May differ from `params` of successor blocks. See [`self.param_order`].
     pub branch_param_order: Vec<Option<Reg>>,
+
+    /// Whether the block is cold (from the original vcode's block order).
+    /// [`VCodeCFG::compute_layout`] places cold blocks as late as its
+    /// constraints allow.
+    pub cold: bool,
 }
 
 impl<I: VCodeInst> VCodeBB<I> {
@@ -139,7 +144,8 @@ impl<I: VCodeInst> VCodeCFG<I> {
                                 params: vec![],
                                 branch_params: HashMap::new(),
                                 param_order: vec![],
-                                branch_param_order: vec![]
+                                branch_param_order: vec![],
+                                cold: vcode.block_order().is_cold($($bb)+)
                             }
                         ).unwrap()
                     );
@@ -282,6 +288,12 @@ impl<I: VCodeInst> VCodeCFG<I> {
     /// conditional's fall-through is never placed by any other means, so it is
     /// guaranteed to be free when its conditional is placed.
     ///
+    /// Cold blocks (see [`VCodeBB::cold`]) sink to the end of the layout, as far
+    /// as the fall-through constraint allows: they are never chased as a jump's
+    /// fall-through preference and lose the free pick to hot blocks, but a cold
+    /// block reserved as a conditional's fall-through still follows its
+    /// conditional directly.
+    ///
     /// `block_exit` is the machine-dependent query for how a block ends. The result
     /// is deterministic given the graph and the exits, so the layout is not stored
     /// anywhere: callers needing it at different stages (fixing branch conditions,
@@ -337,29 +349,37 @@ impl<I: VCodeInst> VCodeCFG<I> {
             let bb_v = cursor.unwrap_or_else(|| {
                 // No forced or preferred continuation: pick the smallest unplaced,
                 // unreserved vertex (reserved blocks are placed when their conditional
-                // is). Deterministic.
+                // is), hot blocks before cold ones so the cold blocks sink to the
+                // end. Deterministic.
                 self.graph
                     .all_vertices()
                     .filter(|v| !placed.contains(v) && !reserved.contains(v))
-                    .min()
+                    .min_by_key(|v| (self.graph.vertex_weight(*v).unwrap().cold, *v))
                     .expect("Only reserved blocks left to place")
             });
             layout.push(bb_v);
             placed.insert(bb_v);
 
             cursor = if let Some(&ft_v) = fall_through_of.get(&bb_v) {
-                // Hard constraint: the fall-through successor comes next.
+                // Hard constraint: the fall-through successor comes next,
+                // cold or not.
                 assert!(!placed.contains(&ft_v));
                 Some(ft_v)
             } else {
                 // Soft preference: continue with an unconditional jump's target so it
-                // becomes a fall-through (the emitter turns a jump-to-next into a NoOp).
+                // becomes a fall-through (the emitter turns a jump-to-next into a
+                // NoOp). Not into a cold target, which should sink to the end
+                // instead.
                 let bb = self.graph.vertex_weight(bb_v).unwrap();
                 match block_exit(bb) {
                     Some(BlockExit::Jump(dst)) => self.vertex_of_block(dst),
                     _ => None,
                 }
-                .filter(|v| !placed.contains(v) && !reserved.contains(v))
+                .filter(|v| {
+                    !placed.contains(v)
+                        && !reserved.contains(v)
+                        && !self.graph.vertex_weight(*v).unwrap().cold
+                })
             };
         }
 

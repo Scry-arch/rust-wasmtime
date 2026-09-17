@@ -2777,6 +2777,49 @@ fn fix_branch_conditions(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -
     }
 }
 
+/// Appends a dead `Nop` to the end of every multi-issue block (a lowered
+/// `br_table`).
+///
+/// The `jmp` encoding cannot express "jump to the fall-through" (the
+/// instruction right after the trigger point, see [`LabelUse::jump_offset`]),
+/// so the emitter elides such a short jump as a `NoOp` when its label is
+/// patched. For an unconditional issue that elision is correct: not jumping
+/// falls through to the target anyway. For a *conditional* issue of a
+/// multi-issue block it is not: a taken arm branch is what overrides the
+/// block's pending unconditional default issue, so eliding the arm's jump
+/// would make the default trigger for every input. The padding pushes the
+/// following block one instruction past the fall-through address, so a jump
+/// to it always has an encodable offset and is never elided.
+///
+/// Only multi-issue blocks can be padded, but they are also the only ones
+/// that need it. A multi-issue block never falls through (its default issue
+/// is unconditional, so some jump always fires at the trigger), so the `Nop`
+/// after its trigger is dead on every path. Every other block either falls
+/// through executing whatever sits after its trigger - which would break
+/// operand delivery, since references count *executed* instructions and the
+/// `JumpTrigger` pseudo stands in for the successor's first instruction in
+/// that counting - or ends in a `Ret`. And neither needs padding: a
+/// two-target conditional block's layout places the successor its branch
+/// does *not* name next (see [`VCodeCFG::compute_layout`]), and eliding an
+/// unconditional jump is correct.
+///
+/// Must run before [`insert_ref_distances`]/[`widen_far_jumps`], so the
+/// extra instruction is part of every distance measurement. The layout
+/// ([`VCodeCFG::compute_layout`]) is unchanged: appending instructions
+/// alters neither the block structure nor the exits.
+///
+/// Future work: the padding is only *needed* when one of the block's
+/// conditional targets is laid out directly after it - analyze the layout
+/// and skip (or later remove) the unnecessary `Nop`s.
+fn pad_multi_issue_blocks(cfg: &mut VCodeCFG<MInst>) {
+    for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
+        let multi_issue = get_jmp_issues(bb).is_some_and(|(issues, _)| issues.len() > 1);
+        if multi_issue {
+            bb.inst.push(MInst::Nop);
+        }
+    }
+}
+
 /// Turns every jump issue whose target the short `jmp`'s 7-bit immediate cannot
 /// reach into a far issue (the ISA's two-operand `jmp`, which takes its target
 /// offset from an operand materialized by a preceding `JumpOffset` chain), and
@@ -3180,6 +3223,7 @@ impl TargetIsa for ScryBackend {
         expand_echoes(&mut cfg, &mut new_vreg);
         fix_orderings(&mut cfg, &mut new_vreg);
         fix_branch_conditions(&mut cfg, &mut new_vreg);
+        pad_multi_issue_blocks(&mut cfg);
         // Widening a jump inserts instructions, which changes the reference
         // distances and can push other jumps out of range, so repeat until
         // nothing changes.
@@ -3194,11 +3238,20 @@ impl TargetIsa for ScryBackend {
 
         let sigs = SigSet::new::<abi::ScryMachineDeps>(func, &self.flags)?;
         let abi = Callee::<abi::ScryMachineDeps>::new(func, self, &self.isa_flags, &sigs)?;
+        // The rebuilt vcode's blocks are numbered by the layout
+        // `VCodeCFG::compute_layout` chose, so this order's cold-block
+        // indices (in the CLIF lowering numbering) would make `VCode::emit`
+        // sink arbitrary blocks, breaking the fall-through adjacency and
+        // jump directions the layout passes fixed. Cold placement is done by
+        // `compute_layout` itself instead (see `VCodeBB::cold`), so emission
+        // must keep the block order untouched.
+        let mut block_order = BlockLoweringOrder::new(func, domtree, ctrl_plane);
+        block_order.clear_cold_blocks();
         let mut builder = VCodeBuilder::<inst::MInst>::new(
             sigs,
             abi,
             EmitInfo::new(self.flags.clone(), self.isa_flags.clone()),
-            BlockLoweringOrder::new(func, domtree, ctrl_plane),
+            block_order,
             VCodeConstants::with_capacity(vcode.constants.len()),
             VCodeBuildDirection::Backward,
             2,
