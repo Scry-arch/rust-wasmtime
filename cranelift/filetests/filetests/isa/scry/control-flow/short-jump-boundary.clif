@@ -17,6 +17,9 @@ target scry32
 ;; Loop and merge state lives in stack slots: values carried in block params
 ;; get a run-dependent instruction ordering, and the length must be fixed.
 ;;
+;; A `br_table` block ends with one dead pad `nop` after its trigger (see
+;; `pad_multi_issue_blocks`), which the table functions' chains account for.
+;;
 ;; Every critical edge is split, so a conditional branch to a loop header or
 ;; a merge block targets an edge block instead, and the jump that spans a
 ;; body backward is always unconditional (a latch, or an edge block).
@@ -505,7 +508,7 @@ function %fwd_table_short(i32 uext) -> i32 uext {
 block0(v0: i32):
     br_table v0, block1, [block2, block3]
 block1:
-    v1 = iconst.i32 7
+    v1 = iconst.i32 300
     v20 = bnot v1
     v21 = bnot v20
     v22 = bnot v21
@@ -558,10 +561,8 @@ block1:
     v69 = bnot v68
     v70 = bnot v69
     v71 = bnot v70
-    v72 = bnot v71
-    v73 = bnot v72
     v2 = stack_addr.i32 ss0
-    store v73, v2
+    store v71, v2
     jump block4
 block2:
     v3 = iconst.i32 2
@@ -582,7 +583,7 @@ block4:
 }
 ; run: %fwd_table_short(0) == 102
 ; run: %fwd_table_short(1) == 103
-; run: %fwd_table_short(2) == 107
+; run: %fwd_table_short(2) == 400
 ; check: JumpOffset
 ; not: JumpOffset
 
@@ -594,7 +595,7 @@ function %fwd_table_far(i32 uext) -> i32 uext {
 block0(v0: i32):
     br_table v0, block1, [block2, block3]
 block1:
-    v1 = iconst.i32 300
+    v1 = iconst.i32 7
     v20 = bnot v1
     v21 = bnot v20
     v22 = bnot v21
@@ -671,7 +672,7 @@ block4:
 }
 ; run: %fwd_table_far(0) == 102
 ; run: %fwd_table_far(1) == 103
-; run: %fwd_table_far(2) == 400
+; run: %fwd_table_far(2) == 107
 ; check: JumpOffset
 ; check: JumpOffset
 ; not: JumpOffset

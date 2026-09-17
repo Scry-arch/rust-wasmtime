@@ -660,6 +660,11 @@ impl<I: VCodeInst> VCode<I> {
         self.block_ranges.len()
     }
 
+    /// Access to the BlockLoweringOrder object.
+    pub fn block_order(&self) -> &BlockLoweringOrder {
+        &self.block_order
+    }
+
     /// The number of lowered instructions.
     pub fn num_insts(&self) -> usize {
         self.insts.len()

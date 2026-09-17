@@ -1,0 +1,42 @@
+test interpret
+test run
+target scry32
+
+; A `br_table` in a non-entry block whose *default* arm is a cold block. A
+; sentinel is returned instead of trapping so the wrong path is observable:
+; 999 = the default arm.
+;
+; The essential ingredients, found by ablation:
+;   - the `br_table` in a block that is not the entry block,
+;   - `cold` on the *default* arm (a cold table arm with a hot default
+;     passes, as does the same switch placed in the entry block).
+; A single table arm suffices; the loop back edge, the call, and the checked
+; add of the originating scenario are all incidental.
+;
+; The guarded-against failure mode is that every input takes the default arm:
+; with the cold default sunk to the end of the layout, an arm's target lands
+; right after the table block, and the arm's conditional jump to it must not
+; be elided as a fall-through -- that would lose its role of cancelling the
+; pending default jump, which would then always trigger. Instead every table
+; block is padded with a dead `nop` so an arm's jump to the next block stays
+; encodable (see `pad_multi_issue_blocks`).
+function %m(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = iconst.i32 1
+    v2 = iadd.i32 v0, v1
+    jump block1(v2)
+
+block1(v3: i32):
+    br_table v3, block3, [block2]
+
+block2:
+    v4 = iconst.i32 7
+    return v4
+
+block3 cold:
+    v5 = iconst.i32 999
+    return v5
+}
+; run: %m(-1) == 7
+; run: %m(0) == 999
+; run: %m(1) == 999
