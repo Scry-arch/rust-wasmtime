@@ -319,6 +319,18 @@ fn make_live_ins_explicit(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() 
             }
             defs.extend(inst.get_defs());
         }
+        // Branch arguments are uses too: a value reaches `branch_params`
+        // without any instruction use as a `brif` edge argument, or as an
+        // ImmJump argument hoisted into this block by edge-block promotion.
+        // They are consumed at the block's end, so anything outside the
+        // full def set is upward-exposed.
+        for args in bb.branch_params.values() {
+            for r in args {
+                if !defs.contains(r) {
+                    undef_uses.insert(*r);
+                }
+            }
+        }
         bb_defs.insert(v, defs);
         bb_undef_uses.insert(v, undef_uses);
     }
