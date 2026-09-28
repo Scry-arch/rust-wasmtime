@@ -1,0 +1,63 @@
+test interpret
+test run
+set opt_level=speed
+target x86_64
+target s390x
+target aarch64
+target riscv64
+target riscv64 has_c has_zcb
+target pulley64
+target pulley64be
+
+;; Volatile loads and stores behave like ordinary ones when executed, and every
+;; one of them takes effect.
+
+function %volatile_store_load(i32) -> i32 {
+    ss0 = explicit_slot 4
+
+block0(v0: i32):
+    v1 = stack_addr.i64 ss0
+    store.i32 notrap aligned volatile v0, v1
+    v2 = load.i32 notrap aligned volatile v1
+    return v2
+}
+; run: %volatile_store_load(0) == 0
+; run: %volatile_store_load(42) == 42
+; run: %volatile_store_load(-1) == -1
+
+;; Each of the two stores takes effect, so the loads in between and after see
+;; both values.
+function %volatile_two_stores(i32, i32) -> i32 {
+    ss0 = explicit_slot 4
+
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i64 ss0
+    store.i32 notrap aligned volatile v0, v2
+    v3 = load.i32 notrap aligned volatile v2
+    store.i32 notrap aligned volatile v1, v2
+    v4 = load.i32 notrap aligned volatile v2
+    v5 = isub v4, v3
+    return v5
+}
+; run: %volatile_two_stores(40, 42) == 2
+; run: %volatile_two_stores(7, 7) == 0
+
+;; Byte-wide accesses: the store writes only its byte and the extending load
+;; reads only its byte.
+function %volatile_bytes(i32) -> i32 {
+    ss0 = explicit_slot 4
+
+block0(v0: i32):
+    v1 = stack_addr.i64 ss0
+    v2 = iconst.i32 0
+    store.i32 notrap aligned v2, v1
+    istore8 notrap volatile v0, v1+1
+    v3 = uload8.i32 notrap volatile v1
+    v4 = uload8.i32 notrap volatile v1+1
+    v5 = uload8.i32 notrap volatile v1+2
+    v6 = iadd v3, v4
+    v7 = iadd v6, v5
+    return v7
+}
+; run: %volatile_bytes(0x1ff) == 0xff
+; run: %volatile_bytes(0x42) == 0x42

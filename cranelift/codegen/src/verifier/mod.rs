@@ -1856,6 +1856,26 @@ impl<'a> Verifier<'a> {
         let inst_data = &self.func.dfg.insts[inst];
 
         match *inst_data {
+            ir::InstructionData::Load { flags, .. }
+                if self.func.dfg.mem_flags[flags].volatile() =>
+            {
+                let flags = self.func.dfg.mem_flags[flags];
+                if flags.readonly() {
+                    errors.fatal((
+                        inst,
+                        self.context(inst),
+                        "A load cannot have both the `volatile` and `readonly` MemFlags",
+                    ))
+                } else if flags.can_move() {
+                    errors.fatal((
+                        inst,
+                        self.context(inst),
+                        "A load cannot have both the `volatile` and `can_move` MemFlags",
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
             ir::InstructionData::Store { flags, .. } => {
                 if self.func.dfg.mem_flags[flags].readonly() {
                     errors.fatal((

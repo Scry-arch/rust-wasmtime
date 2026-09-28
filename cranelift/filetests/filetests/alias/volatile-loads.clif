@@ -1,0 +1,205 @@
+test optimize precise-output
+set opt_level=speed
+target x86_64
+
+;; Loads with the `volatile` flag, as used for memory-mapped I/O. A device
+;; register can change between two reads and can react to being read, so every
+;; volatile load must be performed exactly as written: it is never merged with
+;; another load (redundant-load elimination), never replaced by a value stored
+;; earlier (store-to-load forwarding), and never removed when its result is
+;; unused, even when it cannot trap.
+
+;; Two volatile loads of the same address are both performed.
+function %volatile_load_twice(i64) -> i32, i32 {
+block0(v0: i64):
+    v1 = load.i32 notrap aligned volatile v0
+    v2 = load.i32 notrap aligned volatile v0
+    return v1, v2
+}
+
+; function %volatile_load_twice(i64) -> i32, i32 fast {
+; block0(v0: i64):
+;     v1 = load.i32 notrap aligned volatile v0
+;     v2 = load.i32 notrap aligned volatile v0
+;     return v1, v2
+; }
+
+;; The same, when both loads are in an alias region.
+function %volatile_load_twice_region(i64) -> i32, i32 {
+    region0 = 0 "mmio"
+block0(v0: i64):
+    v1 = load.i32 notrap aligned volatile region0 v0+4
+    v2 = load.i32 notrap aligned volatile region0 v0+4
+    return v1, v2
+}
+
+; function %volatile_load_twice_region(i64) -> i32, i32 fast {
+;     region0 = 0 "mmio"
+;
+; block0(v0: i64):
+;     v1 = load.i32 notrap aligned volatile region0 v0+4
+;     v2 = load.i32 notrap aligned volatile region0 v0+4
+;     return v1, v2
+; }
+
+;; Polling a status register: three reads, three loads.
+function %volatile_load_thrice_summed(i64) -> i32 {
+block0(v0: i64):
+    v1 = load.i32 notrap aligned volatile v0
+    v2 = load.i32 notrap aligned volatile v0
+    v3 = load.i32 notrap aligned volatile v0
+    v4 = iadd v1, v2
+    v5 = iadd v4, v3
+    return v5
+}
+
+; function %volatile_load_thrice_summed(i64) -> i32 fast {
+; block0(v0: i64):
+;     v1 = load.i32 notrap aligned volatile v0
+;     v2 = load.i32 notrap aligned volatile v0
+;     v3 = load.i32 notrap aligned volatile v0
+;     v4 = iadd v1, v2
+;     v5 = iadd v4, v3
+;     return v5
+; }
+
+;; Byte-wide registers, read with an extending load.
+function %volatile_uload8_twice(i64) -> i32, i32 {
+block0(v0: i64):
+    v1 = uload8.i32 notrap volatile v0+5
+    v2 = uload8.i32 notrap volatile v0+5
+    return v1, v2
+}
+
+; function %volatile_uload8_twice(i64) -> i32, i32 fast {
+; block0(v0: i64):
+;     v1 = uload8.i32 notrap volatile v0+5
+;     v2 = uload8.i32 notrap volatile v0+5
+;     return v1, v2
+; }
+
+;; A volatile load is not satisfied by an earlier ordinary load of the same
+;; address.
+function %volatile_load_after_plain_load(i64) -> i32, i32 {
+block0(v0: i64):
+    v1 = load.i32 notrap aligned v0
+    v2 = load.i32 notrap aligned volatile v0
+    return v1, v2
+}
+
+; function %volatile_load_after_plain_load(i64) -> i32, i32 fast {
+; block0(v0: i64):
+;     v1 = load.i32 notrap aligned v0
+;     v2 = load.i32 notrap aligned volatile v0
+;     return v1, v2
+; }
+
+;; A volatile load is not forwarded from an earlier ordinary store to the same
+;; address.
+function %volatile_load_after_plain_store(i64, i32) -> i32 {
+block0(v0: i64, v1: i32):
+    store.i32 notrap aligned v1, v0
+    v2 = load.i32 notrap aligned volatile v0
+    return v2
+}
+
+; function %volatile_load_after_plain_store(i64, i32) -> i32 fast {
+; block0(v0: i64, v1: i32):
+;     store notrap aligned v1, v0
+;     v2 = load.i32 notrap aligned volatile v0
+;     return v2
+; }
+
+;; A volatile load is not forwarded from an earlier volatile store to the same
+;; address: writing a device register and reading it back need not return the
+;; written value.
+function %volatile_load_after_volatile_store(i64, i32) -> i32 {
+block0(v0: i64, v1: i32):
+    store.i32 notrap aligned volatile v1, v0
+    v2 = load.i32 notrap aligned volatile v0
+    return v2
+}
+
+; function %volatile_load_after_volatile_store(i64, i32) -> i32 fast {
+; block0(v0: i64, v1: i32):
+;     store notrap aligned volatile v1, v0
+;     v2 = load.i32 notrap aligned volatile v0
+;     return v2
+; }
+
+;; An unused volatile load is kept even though it cannot trap: reading a
+;; register can have an effect, such as popping a byte from a receive FIFO.
+function %volatile_load_unused(i64) {
+block0(v0: i64):
+    v1 = load.i32 notrap aligned volatile v0
+    return
+}
+
+; function %volatile_load_unused(i64) fast {
+; block0(v0: i64):
+;     v1 = load.i32 notrap aligned volatile v0
+;     return
+; }
+
+;; Redundant-load elimination across blocks does not apply to volatile loads
+;; either.
+function %volatile_load_dominated_block(i64) -> i32, i32 {
+block0(v0: i64):
+    v1 = load.i32 notrap aligned volatile v0
+    jump block1
+
+block1:
+    v2 = load.i32 notrap aligned volatile v0
+    return v1, v2
+}
+
+; function %volatile_load_dominated_block(i64) -> i32, i32 fast {
+; block0(v0: i64):
+;     v1 = load.i32 notrap aligned volatile v0
+;     jump block1
+;
+; block1:
+;     v2 = load.i32 notrap aligned volatile v0
+;     return v1, v2
+; }
+
+;; A volatile load in a loop, from a loop-invariant address, stays in the loop.
+function %volatile_load_in_loop(i64) -> i32 {
+block0(v0: i64):
+    jump block1
+
+block1:
+    v1 = load.i32 notrap aligned volatile v0
+    brif v1, block1, block2
+
+block2:
+    return v1
+}
+
+; function %volatile_load_in_loop(i64) -> i32 fast {
+; block0(v0: i64):
+;     jump block1
+;
+; block1:
+;     v1 = load.i32 notrap aligned volatile v0
+;     brif v1, block1, block2
+;
+; block2:
+;     return v1
+; }
+
+;; Ordinary loads are still optimised as before: only the volatile load stays.
+function %plain_loads_still_merged(i64, i64) -> i32, i32, i32 {
+block0(v0: i64, v1: i64):
+    v2 = load.i32 notrap aligned v0
+    v3 = load.i32 notrap aligned volatile v1
+    v4 = load.i32 notrap aligned v0
+    return v2, v3, v4
+}
+
+; function %plain_loads_still_merged(i64, i64) -> i32, i32, i32 fast {
+; block0(v0: i64, v1: i64):
+;     v2 = load.i32 notrap aligned v0
+;     v3 = load.i32 notrap aligned volatile v1
+;     return v2, v3, v2
+; }

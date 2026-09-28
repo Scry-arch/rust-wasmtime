@@ -32,13 +32,26 @@ fn is_load_with_defined_trapping(
     }
 }
 
+/// Is the given instruction a memory access with the `volatile` flag?
+///
+/// Volatile accesses must be performed exactly as written, so they are never
+/// removed, even when they cannot trap and their result is unused.
+#[inline(always)]
+pub(crate) fn is_volatile_access(func: &Function, inst: Inst) -> bool {
+    func.dfg.insts[inst]
+        .memflags_data(&func.dfg)
+        .is_some_and(|flags| flags.volatile())
+}
+
 /// Does the given instruction have any side-effect that would preclude it from being removed when
 /// its value is unused?
 #[inline(always)]
 fn has_side_effect(func: &Function, inst: Inst) -> bool {
     let data = &func.dfg.insts[inst];
     let opcode = data.opcode();
-    trivially_has_side_effects(opcode) || is_load_with_defined_trapping(opcode, data, &func.dfg)
+    trivially_has_side_effects(opcode)
+        || is_load_with_defined_trapping(opcode, data, &func.dfg)
+        || is_volatile_access(func, inst)
 }
 
 /// Does the given instruction behave as a "pure" node with respect to

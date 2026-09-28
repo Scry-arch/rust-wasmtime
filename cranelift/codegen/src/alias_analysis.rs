@@ -67,6 +67,10 @@
 //!   instructions must be treated as observing every store because we
 //!   must preserve post-trap memory state.
 //!
+//! None of these apply to loads and stores with the `volatile` flag: they are
+//! never replaced, removed, or used as the known value of a location. They are
+//! still tracked as last stores and as observers, like any other access.
+//!
 //! Which store is the "last store" to a region is flow-sensitive, but
 //! whether a store is ever observed is *not*: it is observed if there
 //! is *any* path on which some instruction can observe it. We
@@ -79,7 +83,9 @@ use crate::{
     cursor::{Cursor, CursorPosition, FuncCursor},
     dominator_tree::DominatorTree,
     flowgraph::ControlFlowGraph,
-    inst_predicates::{inst_addr_offset_type, inst_store_data, visit_block_succs},
+    inst_predicates::{
+        inst_addr_offset_type, inst_store_data, is_volatile_access, visit_block_succs,
+    },
     ir::{AliasRegion, Block, Function, Inst, Opcode, Type, Value, immediates::Offset32},
     post_dominator_tree::PostDominatorTree,
     trace,
@@ -746,7 +752,11 @@ impl<'a> AliasAnalysis<'a> {
             self.mem_values,
         );
 
-        let result = if let Some((address, offset, ty)) = inst_addr_offset_type(func, inst) {
+        // Volatile accesses are performed exactly as written, so they take no
+        // part in any of the optimizations below.
+        let result = if let Some((address, offset, ty)) =
+            inst_addr_offset_type(func, inst).filter(|_| !is_volatile_access(func, inst))
+        {
             let address = func.dfg.resolve_aliases(address);
             let opcode = func.dfg.insts[inst].opcode();
 
@@ -774,6 +784,8 @@ impl<'a> AliasAnalysis<'a> {
                         // atomic store) is observable by other threads, so it
                         // can never be eliminated.
                         && !has_memory_fence_semantics(func.dfg.insts[last_store].opcode())
+                        // A volatile store always takes effect.
+                        && !is_volatile_access(func, last_store)
                         // `last_store` must really be a store that
                         // writes exactly the bytes this store
                         // overwrites (same region, address, offset,

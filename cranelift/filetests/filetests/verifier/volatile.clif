@@ -1,0 +1,18 @@
+test verifier
+
+;; A volatile load reads memory that may change at any time, which contradicts
+;; `readonly`, and it must stay where it is written, which contradicts
+;; `can_move`. Together they would make the load pure, so that the optimiser
+;; could merge, hoist or remove it.
+
+function %volatile_readonly_load(i64) -> i32 {
+block0(v0: i64):
+    v1 = load.i32 notrap readonly volatile v0 ; error: cannot have both the `volatile` and `readonly` MemFlags
+    return v1
+}
+
+function %volatile_can_move_load(i64) -> i32 {
+block0(v0: i64):
+    v1 = load.i32 notrap can_move volatile v0 ; error: cannot have both the `volatile` and `can_move` MemFlags
+    return v1
+}

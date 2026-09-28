@@ -223,6 +223,7 @@ impl MemFlagsData {
                 self.with_endianness(Endianness::Big)
             }
             "can_move" => self.with_can_move(),
+            "volatile" => self.with_volatile(),
 
             other => match TrapCode::from_str(other) {
                 Ok(code) => self.with_trap_code(Some(code)),
@@ -338,6 +339,32 @@ impl MemFlagsData {
     /// Set the `aligned` flag, returning new flags.
     pub const fn with_aligned(mut self) -> Self {
         self.flags = self.flags.with_aligned();
+        self
+    }
+
+    /// Test if the `volatile` flag is set.
+    ///
+    /// A volatile access, such as one to a memory-mapped device register, must
+    /// be performed exactly as written: the optimizer never removes it, merges
+    /// it with another access, forwards a stored value to it, or treats it as a
+    /// dead or idempotent store. It cannot be combined with `readonly` or
+    /// `can_move` on a load.
+    ///
+    /// This flag does not order a volatile access with respect to ordinary
+    /// memory accesses. Ordinary loads on either side of a volatile load can
+    /// still be merged, for example.
+    pub const fn volatile(self) -> bool {
+        self.flags.volatile()
+    }
+
+    /// Set the `volatile` flag.
+    pub fn set_volatile(&mut self) {
+        *self = self.with_volatile();
+    }
+
+    /// Set the `volatile` flag, returning new flags.
+    pub const fn with_volatile(mut self) -> Self {
+        self.flags = self.flags.with_volatile();
         self
     }
 
@@ -587,6 +614,7 @@ impl Index<AliasRegion> for AliasRegionSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     use cranelift_entity::EntityRef;
 
     #[test]
@@ -616,6 +644,94 @@ mod tests {
 
         let flags = flags.with_alias_region(None);
         assert_eq!(flags.alias_region(), None);
+    }
+
+    #[test]
+    fn volatile_is_off_by_default() {
+        assert!(!MemFlagsData::new().volatile());
+        assert!(!MemFlagsData::trusted().volatile());
+    }
+
+    #[test]
+    fn with_volatile_sets_only_volatile() {
+        let flags = MemFlagsData::trusted().with_volatile();
+        assert!(flags.volatile());
+        assert!(flags.notrap());
+        assert!(flags.aligned());
+        assert!(!flags.readonly());
+        assert!(!flags.can_move());
+        assert_eq!(flags.explicit_endianness(), None);
+        assert_eq!(flags.alias_region(), None);
+
+        let mut flags = MemFlagsData::new();
+        flags.set_volatile();
+        assert!(flags.volatile());
+    }
+
+    #[test]
+    fn volatile_is_independent_of_other_flags() {
+        let region = AliasRegion::new(3);
+        let trap = TrapCode::user(7).unwrap();
+        let flags = MemFlagsData::new()
+            .with_trap_code(Some(trap))
+            .with_endianness(Endianness::Big)
+            .with_alias_region(Some(region))
+            .with_volatile();
+        assert!(flags.volatile());
+        assert_eq!(flags.trap_code(), Some(trap));
+        assert_eq!(flags.explicit_endianness(), Some(Endianness::Big));
+        assert_eq!(flags.alias_region(), Some(region));
+
+        // Setting other flags afterwards keeps `volatile`.
+        let flags = flags.with_notrap().with_aligned();
+        assert!(flags.volatile());
+    }
+
+    #[test]
+    fn volatile_by_name() {
+        let mut flags = MemFlagsData::new();
+        assert_eq!(flags.set_by_name("volatile"), Ok(true));
+        assert!(flags.volatile());
+    }
+
+    #[test]
+    fn volatile_display() {
+        assert_eq!(
+            MemFlagsData::trusted().with_volatile().to_string(),
+            " notrap aligned volatile"
+        );
+        assert_eq!(
+            MemFlagsData::new()
+                .with_volatile()
+                .with_alias_region(Some(AliasRegion::new(0)))
+                .to_string(),
+            " volatile region0"
+        );
+    }
+
+    #[test]
+    fn volatile_reaches_backends() {
+        let mach = MachMemFlags::from(MemFlagsData::trusted().with_volatile());
+        assert!(mach.volatile());
+        assert!(!MachMemFlags::from(MemFlagsData::trusted()).volatile());
+
+        // And survives the way back.
+        let mach = MachMemFlags::from(MemFlagsData::trusted()).with_volatile();
+        assert!(MemFlagsData::from(mach).volatile());
+    }
+
+    #[test]
+    fn volatile_is_not_deduplicated_away() {
+        let mut set = MemFlagsSet::new();
+        let plain = set.insert(MemFlagsData::trusted()).unwrap();
+        let volatile = set.insert(MemFlagsData::trusted().with_volatile()).unwrap();
+        assert_ne!(plain, volatile);
+        assert!(!set[plain].volatile());
+        assert!(set[volatile].volatile());
+        assert_eq!(
+            set.insert(MemFlagsData::trusted().with_volatile()),
+            Ok(volatile)
+        );
     }
 
     #[test]

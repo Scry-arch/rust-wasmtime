@@ -1,0 +1,45 @@
+test cat
+test verifier
+
+;; The `volatile` memory flag is parsed on every kind of load and store and is
+;; printed after the other flags and before the alias region.
+
+function %volatile_loads(i64) -> i32, i32, i64, i32 {
+    region0 = 0 "mmio"
+block0(v0: i64):
+    v1 = load.i32 volatile v0
+    ; check: v1 = load.i32 volatile v0
+    v2 = load.i32 notrap aligned volatile v0+4
+    ; check: v2 = load.i32 notrap aligned volatile v0+4
+    v3 = load.i64 volatile notrap v0+8
+    ; check: v3 = load.i64 notrap volatile v0+8
+    v4 = uload8.i32 notrap volatile region0 v0+5
+    ; check: v4 = uload8.i32 notrap volatile region0 v0+5
+    return v1, v2, v3, v4
+}
+
+function %volatile_stores(i64, i32) {
+    region0 = 0 "mmio"
+block0(v0: i64, v1: i32):
+    store volatile v1, v0
+    ; check: store volatile v1, v0
+    store.i32 notrap aligned volatile v1, v0+4
+    ; check: store notrap aligned volatile v1, v0+4
+    istore8 volatile notrap region0 v1, v0+5
+    ; check: istore8 notrap volatile region0 v1, v0+5
+    return
+}
+
+function %volatile_with_trap_code(i64) -> i32 {
+block0(v0: i64):
+    v1 = load.i32 user7 volatile v0
+    ; check: v1 = load.i32 user7 volatile v0
+    return v1
+}
+
+function %volatile_big_endian(i64) -> i32 {
+block0(v0: i64):
+    v1 = load.i32 notrap big volatile v0
+    ; check: v1 = load.i32 notrap big volatile v0
+    return v1
+}

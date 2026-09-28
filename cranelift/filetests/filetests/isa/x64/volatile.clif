@@ -1,0 +1,93 @@
+test compile precise-output
+set opt_level=speed
+target x86_64
+
+;; With optimisation on, every volatile access in the source is still one
+;; memory access in the machine code.
+
+function %volatile_load_thrice(i64) -> i32 {
+block0(v0: i64):
+    v1 = load.i32 notrap aligned volatile v0
+    v2 = load.i32 notrap aligned volatile v0
+    v3 = load.i32 notrap aligned volatile v0
+    v4 = iadd v1, v2
+    v5 = iadd v4, v3
+    return v5
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movl (%rdi), %eax
+;   addl (%rdi), %eax
+;   addl (%rdi), %eax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movl (%rdi), %eax
+;   addl (%rdi), %eax
+;   addl (%rdi), %eax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %volatile_store_twice(i64, i32, i32) {
+block0(v0: i64, v1: i32, v2: i32):
+    store.i32 notrap aligned volatile v1, v0
+    store.i32 notrap aligned volatile v2, v0
+    return
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movl %esi, (%rdi)
+;   movl %edx, (%rdi)
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movl %esi, (%rdi)
+;   movl %edx, (%rdi)
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %volatile_uload8_unused(i64) {
+block0(v0: i64):
+    v1 = uload8.i32 notrap volatile v0
+    return
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movzbq (%rdi), %rdx
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movzbq (%rdi), %rdx
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
