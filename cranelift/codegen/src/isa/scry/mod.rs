@@ -1573,8 +1573,11 @@ fn expand_echoes(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
     log::trace!("VCodeCFG: {cfg:?}");
 }
 
-fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
+/// Inserts reorders so that every order-sensitive consumer receives its
+/// operands in use order. Returns whether any reorder was inserted.
+fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) -> bool {
     log::debug!("fix_orderings");
+    let mut changed = false;
     for (bb_v, bb) in cfg.graph.all_vertices_weighted_mut() {
         log::trace!("bb {bb_v}: {bb:?}");
         'a: loop {
@@ -1592,7 +1595,14 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
                 if inst.use_order_meaningful() && inst.get_uses().count() > 1 {
                     // Find the first adjacent pair of uses that will arrive in the wrong
                     // order. Repeated passes sort any permutation pairwise.
+                    // Branch arguments in different delivery groups arrive at
+                    // different instructions of the target (see
+                    // `delivery_group`), so their relative order is free.
                     let uses = inst.get_uses().cloned().collect::<Vec<_>>();
+                    let same_target = |i: usize| match inst {
+                        MInst::JumpTrigger { .. } => delivery_group(i) == delivery_group(i + 1),
+                        _ => true,
+                    };
                     let wrong_order_pair =
                         (0..uses.len() - 1).find(|i| {
                             let pos = |r: &Reg| {
@@ -1602,7 +1612,7 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
                                     )
                                 })
                             };
-                            pos(&uses[i + 1]) < pos(&uses[*i])
+                            same_target(*i) && pos(&uses[i + 1]) < pos(&uses[*i])
                         });
 
                     if let Some(pair_idx) = wrong_order_pair {
@@ -1651,6 +1661,7 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
                                 out: 0,
                             },
                         );
+                        changed = true;
 
                         // Start over
                         continue 'a;
@@ -1661,6 +1672,7 @@ fn fix_orderings(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
         }
     }
     log::trace!("VCodeCFG: {cfg:?}");
+    changed
 }
 
 pub(crate) fn type_to_isatype(t: Type) -> IsaType {
@@ -3419,12 +3431,22 @@ impl TargetIsa for ScryBackend {
         pad_multi_issue_blocks(&mut cfg);
         // Widening a jump inserts instructions, which changes the reference
         // distances and can push other jumps out of range, so repeat until
-        // nothing changes.
+        // nothing changes. Bridging an out-of-range reference likewise
+        // inserts a new producer, which can change the order in which a
+        // consumer's operands arrive (each bridge goes directly after the
+        // producer, so several bridged outputs of one instruction execute in
+        // reverse, and after any output the instruction still delivers
+        // directly), so the orderings are re-established every round too.
+        let mut rounds = 0;
         loop {
             insert_ref_distances(&mut cfg, &mut new_vreg);
-            if !widen_far_jumps(&mut cfg, &mut new_vreg) {
+            let widened = widen_far_jumps(&mut cfg, &mut new_vreg);
+            let reordered = fix_orderings(&mut cfg, &mut new_vreg);
+            if !widened && !reordered {
                 break;
             }
+            rounds += 1;
+            assert!(rounds < 16, "Reference distance assignment did not converge");
         }
         assert_queue_capacities(&mut cfg);
         set_trigger_offsets(&mut cfg);

@@ -1,0 +1,50 @@
+test interpret
+test run
+target scry32
+
+; Two block parameters are forwarded unchanged to a jump at the end of a long
+; block. Neither value is used in between, so both arrive at the block's
+; start and must be carried all the way to the jump, further than a single
+; instruction can reference. The order in which they reach the jump must be
+; the order of its arguments.
+;
+; The result weighs the two values differently, so swapped arguments give a
+; wrong number.
+
+function %f(i32 uext, i32 uext) -> i32 uext {
+block0(v1: i32, v2: i32):
+    jump block1(v1, v2)
+
+block1(v11: i32, v12: i32):
+    v100 = iconst.i32 1
+    v101 = iadd v100, v100
+    v102 = iadd v101, v100
+    v103 = iadd v102, v100
+    v104 = iadd v103, v100
+    v105 = iadd v104, v100
+    v106 = iadd v105, v100
+    v107 = iadd v106, v100
+    v108 = iadd v107, v100
+    v109 = iadd v108, v100
+    v110 = iadd v109, v100
+    v111 = iadd v110, v100
+    v112 = iadd v111, v100
+    v113 = iadd v112, v100
+    v114 = iadd v113, v100
+    v115 = iadd v114, v100
+    v116 = iadd v115, v100
+    v117 = iadd v116, v100
+    v118 = iadd v117, v100
+    v119 = iadd v118, v100
+    v120 = iadd v119, v100
+    jump block2(v11, v12, v120)
+
+block2(v21: i32, v22: i32, v23: i32):
+    v30 = iconst.i32 10
+    v31 = imul v22, v30
+    v32 = iadd v21, v31
+    v33 = iadd v32, v23
+    return v33
+}
+; run: %f(1, 2) == 42
+; run: %f(7, 0) == 28
