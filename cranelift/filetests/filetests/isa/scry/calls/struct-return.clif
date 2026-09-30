@@ -1,0 +1,35 @@
+test interpret
+test run
+target scry32
+
+; Returning a value through memory. rustc returns every value larger than two
+; machine words this way, and cg_clif expresses it as a first parameter with
+; the `sret` purpose that points at the caller's stack slot: the callee writes
+; the result there and the caller reads it back.
+;
+; The caller's first instruction after the call consumes operands (`isub` of
+; two values computed before the call). Cranelift lets a callee with an `sret`
+; parameter return that pointer as an implicit return value, which the call
+; site does not expect, so this checks that no such value ends up as an
+; operand of the caller's next instruction.
+
+function %make(i32 sret, i32 uext) system_v {
+block0(v0: i32, v1: i32):
+    store notrap aligned v1, v0
+    return
+}
+
+function %caller(i32 uext, i32 uext) -> i32 uext system_v {
+    ss0 = explicit_slot 4, align = 4
+    sig0 = (i32 sret, i32 uext) system_v
+    fn0 = %make sig0
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    call fn0(v2, v0)
+    v3 = isub v1, v0
+    v4 = load.i32 notrap aligned v2
+    v5 = iadd v4, v3
+    return v5
+}
+; run: %caller(5, 100) == 100
+; run: %caller(0, 7) == 7

@@ -106,7 +106,16 @@ impl ABIMachineSpec for ScryMachineDeps {
         // off the `Rets`/`CallArgs` pseudo-instructions into stack accesses.
         let (stack_offsets, stack_size) = stack_values_layout(params);
         for (i, p) in params.iter().enumerate() {
-            assert_eq!(p.purpose, ArgumentPurpose::Normal);
+            // A struct-return pointer is passed like any other value; the
+            // ABI gives it no special location.
+            assert!(
+                matches!(
+                    p.purpose,
+                    ArgumentPurpose::Normal | ArgumentPurpose::StructReturn
+                ),
+                "unsupported argument purpose: {:?}",
+                p.purpose
+            );
 
             let slot = if i < QUEUE_CAPACITY || args_or_rets == ArgsOrRets::Rets {
                 ABIArgSlot::Reg {
