@@ -1,0 +1,30 @@
+test interpret
+test run
+target scry32
+
+; One value is passed to two blocks that read it with different signedness:
+; one shifts it right logically (an unsigned operation), the other
+; arithmetically (a signed one). Both block parameters come from the same
+; jump argument, so the value's type cannot be unified across the jump; a
+; value tag must instead be settled for one side and re-tagged for the other.
+;
+; The two branches give different results for a negative input, so a wrong
+; choice of shift shows up in the result.
+
+function %f(i32, i32) -> i32 {
+block0(v0: i32, v1: i32):
+    v2 = iconst.i32 1
+    brif v1, block1(v0), block2(v0)
+
+block1(v3: i32):
+    v4 = ushr v3, v2
+    return v4
+
+block2(v5: i32):
+    v6 = sshr v5, v2
+    return v6
+}
+; run: %f(-8, 1) == 2147483644
+; run: %f(-8, 0) == -4
+; run: %f(8, 1) == 4
+; run: %f(8, 0) == 4

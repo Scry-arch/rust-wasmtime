@@ -43,7 +43,6 @@ use regalloc2::{Block, Function as RegFunc};
 use scry_isa::{Alu2OutputVariant, Alu2Variant, AluVariant};
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::iter::once;
 use target_lexicon::{Architecture, Triple};
 use vcode_cfg::*;
 
@@ -1676,12 +1675,20 @@ pub(crate) fn type_to_isatype(t: Type) -> IsaType {
     }
 }
 
+/// The type a parameter or return value carries on the wire, per the ABI:
+/// its extension attribute's signedness. A value without an attribute is
+/// passed unsigned. This fixes the tag on both sides of every call, so the
+/// sender re-tags a signed value on its way out and the receiver re-tags it
+/// back where a signed use needs it; neither side can assume anything about
+/// the other's choice (a callee cannot know what tag an unattributed argument
+/// was computed with, nor a caller what tag a callee's result was).
 fn abi_param_to_isatype(p: &AbiParam) -> IsaType {
     let t = type_to_isatype(p.value_type);
     match p.extension {
-        ArgumentExtension::None => t,
+        ArgumentExtension::None | ArgumentExtension::Uext => {
+            IsaType::new_known_int(t.size_pow2(), false)
+        }
         ArgumentExtension::Sext => IsaType::new_known_int(t.size_pow2(), true),
-        ArgumentExtension::Uext => IsaType::new_known_int(t.size_pow2(), false),
     }
 }
 
@@ -1768,27 +1775,6 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
         }
     }
 
-    // For every register that crosses a block boundary, the blocks whose type
-    // reasoning can be affected by it: both endpoints of every dataflow edge
-    // naming it. A block reasons about a register of its own *and* about the
-    // registers on the other side of its edges (see the `JumpTrigger` arm, which
-    // types its successors' parameters), so a change to any of them must
-    // re-queue every block on an edge carrying it, not just the neighbours of
-    // the block that made the change. Registers absent here are block-local and
-    // are handled entirely by the instruction worklist below. (Cast insertion
-    // below never adds cross-block registers, so the map stays valid.)
-    let mut reg_blocks: HashMap<Reg, HashSet<usize>> = HashMap::new();
-    {
-        let bb_dfg = cfg.dataflow_graph();
-        for (src, sink, weight) in bb_dfg.all_edges() {
-            for r in weight.1.iter() {
-                let blocks = reg_blocks.entry(*r).or_insert_with(HashSet::new);
-                blocks.insert(src);
-                blocks.insert(sink);
-            }
-        }
-    }
-
     // The fixpoint runs in two phases. The first propagates only hard
     // constraints (ABI attributes, extends, comparisons, ...). The second
     // additionally enables the best-effort unifications (BinaryAlu, icmp
@@ -1804,6 +1790,29 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
     let mut demands: CastDemands = HashMap::new();
     let mut rounds = 0;
     loop {
+        // For every register that crosses a block boundary, the blocks whose
+        // type reasoning can be affected by it: both endpoints of every
+        // dataflow edge naming it. A block reasons about a register of its own
+        // *and* about the registers on the other side of its edges (see the
+        // `JumpTrigger` arm, which types its successors' parameters), so a
+        // change to any of them must re-queue every block on an edge carrying
+        // it, not just the neighbours of the block that made the change.
+        // Registers absent here are block-local and are handled entirely by
+        // the instruction worklist. Rebuilt every round: re-receiving a
+        // parameter (see `apply_cast_demands`) puts a fresh register on the
+        // wire.
+        let mut reg_blocks: HashMap<Reg, HashSet<usize>> = HashMap::new();
+        {
+            let bb_dfg = cfg.dataflow_graph();
+            for (src, sink, weight) in bb_dfg.all_edges() {
+                for r in weight.1.iter() {
+                    let blocks = reg_blocks.entry(*r).or_insert_with(HashSet::new);
+                    blocks.insert(src);
+                    blocks.insert(sink);
+                }
+            }
+        }
+
         type_analysis_phase(
             cfg,
             func_sig,
@@ -1840,6 +1849,15 @@ fn type_analysis<F: Fn(Reg) -> Option<Type>>(
 /// issuing instruction, for consumers that are trigger pseudos), and only
 /// that instruction's uses are redirected. The fresh register is seeded in
 /// the type map with the demanded type.
+///
+/// A demand on a block parameter (a use of the block's parameter echo) means
+/// the parameter arrives with a different tag than its established type,
+/// which cannot be changed any more (see the `JumpTrigger` arm). The
+/// parameter is then re-received: a fresh register takes its place on the
+/// wire (in the block's parameter lists, its `Args` and the echo), taking the
+/// arriving tag from the next round, and the echo's output is re-tagged to
+/// its established type right after the echo. Nothing can be inserted before
+/// the echo, which must stay the first receiving instruction.
 fn apply_cast_demands<F: Fn(Reg) -> Option<Type>>(
     cfg: &mut VCodeCFG<MInst>,
     demands: &mut CastDemands,
@@ -1855,6 +1873,23 @@ fn apply_cast_demands<F: Fn(Reg) -> Option<Type>>(
 
     for (bb_v, mut groups) in by_bb {
         groups.sort_by(|a, b| b.0.cmp(&a.0));
+
+        // For redirecting a jump argument: per successor, the index in this
+        // block's branch parameters of the parameter at each wire position.
+        let succ_branch_idxs: Vec<(crate::machinst::BlockIndex, Vec<Option<usize>>)> = cfg
+            .graph
+            .edges_sourced_in(bb_v)
+            .map(|(v, _)| {
+                let succ = cfg.graph.vertex_weight(v).unwrap();
+                let idxs = succ
+                    .param_order
+                    .iter()
+                    .map(|p| p.and_then(|p| succ.params.iter().position(|q| *q == p)))
+                    .collect();
+                (succ.vcode_bb, idxs)
+            })
+            .collect();
+
         let bb = cfg.graph.vertex_weight_mut(bb_v).unwrap();
 
         for (inst_idx, regs) in groups {
@@ -1901,6 +1936,46 @@ fn apply_cast_demands<F: Fn(Reg) -> Option<Type>>(
                             out: 0,
                         },
                     );
+                } else if bb.param_order.contains(&Some(reg)) {
+                    // Block parameter: re-receive it (see above). The demanded
+                    // type is the arriving tag, which the fresh wire register
+                    // takes from the next round's `JumpTrigger` unification.
+                    let fresh_out = new_vreg();
+                    for p in bb.params.iter_mut().filter(|p| **p == reg) {
+                        *p = fresh;
+                    }
+                    for p in bb.param_order.iter_mut().filter(|p| **p == Some(reg)) {
+                        *p = Some(fresh);
+                    }
+                    for inst in bb.inst.iter_mut() {
+                        if let MInst::Args { args } = inst {
+                            for a in args.iter_mut().filter(|a| a.vreg.to_reg() == reg) {
+                                a.vreg = WritableReg::from_reg(fresh);
+                                a.preg = fresh;
+                            }
+                        }
+                    }
+                    let MInst::Echo { rss, rds } = &mut bb.inst[inst_idx] else {
+                        panic!("Demanded block parameter is not used by the parameter echo");
+                    };
+                    assert_eq!(rss[slot], reg, "Demanded use slot holds another register");
+                    rss[slot] = fresh;
+                    let out = rds[slot].to_reg();
+                    rds[slot] = WritableReg::from_reg(fresh_out);
+                    let out_ty = type_map.get(out);
+                    assert!(
+                        out_ty.is_known(),
+                        "Re-received block parameter's echo output has no established type"
+                    );
+                    bb.inst.insert(
+                        inst_idx + 1,
+                        MInst::Cast {
+                            rd: WritableReg::from_reg(out),
+                            ty: out_ty,
+                            rs: fresh_out,
+                            out: 0,
+                        },
+                    );
                 } else {
                     // Input: re-tag before the instruction and redirect only
                     // the demanded use slot; other slots may require the
@@ -1922,6 +1997,19 @@ fn apply_cast_demands<F: Fn(Reg) -> Option<Type>>(
                         .expect("Demanded use slot out of range");
                     assert_eq!(*u, reg, "Demanded use slot holds another register");
                     *u = fresh;
+
+                    // A jump argument is also named by the block's branch
+                    // parameter lists (which the dataflow graph is built
+                    // from): the wire position now carries the re-tagged
+                    // value to every successor.
+                    if matches!(bb.inst[inst_idx], MInst::JumpTrigger { .. }) {
+                        bb.branch_param_order[slot] = Some(fresh);
+                        for (vcode_bb, idxs) in succ_branch_idxs.iter() {
+                            if let Some(Some(idx)) = idxs.get(slot) {
+                                bb.branch_params.get_mut(vcode_bb).unwrap()[*idx] = fresh;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2078,19 +2166,22 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         }
                     }
 
-                    // A helper pinning an output to a known signedness.
-                    let mut pin_output =
-                        |rd: &WritableReg, sign: bool, type_map: &mut TypeMap<F>| {
-                            let td = type_map.get(rd.to_reg());
-                            if td.is_int() {
-                                update_changed(
-                                    &rd.to_reg(),
-                                    td.refine(IsaType::new_known_int(td.size_pow2(), sign))
-                                        .unwrap(),
-                                    type_map,
-                                );
+                    // A helper pinning an output (at the given def slot) to a
+                    // known signedness. An output its consumers established
+                    // with the other signedness is re-tagged on its way out.
+                    let mut pin_output = |rd: &WritableReg,
+                                          slot: usize,
+                                          sign: bool,
+                                          type_map: &mut TypeMap<F>,
+                                          demands: &mut CastDemands| {
+                        let td = type_map.get(rd.to_reg());
+                        if td.is_int() {
+                            match td.refine(IsaType::new_known_int(td.size_pow2(), sign)) {
+                                Some(refined) => update_changed(&rd.to_reg(), refined, type_map),
+                                None => push_demand(demands, bb_v, inst_idx, slot, rd.to_reg(), td),
                             }
-                        };
+                        }
+                    };
 
                     match op {
                         // The value result carries the effective type; the
@@ -2101,26 +2192,26 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         // signed consumers (the 0/1 value widens identically
                         // either way).
                         SaddOverflow | UaddOverflow | UsubOverflow | SsubOverflow => {
-                            pin_output(rdl, signed, type_map);
+                            pin_output(rdl, 0, signed, type_map, demands);
                             let _ = rdh;
                         }
                         // The used high half carries the effective type; the
                         // low output is dead (dropped later) and needs no
                         // type.
                         UmulHi | SmulHi => {
-                            pin_output(rdh, signed, type_map);
+                            pin_output(rdh, 1, signed, type_map, demands);
                         }
                         // The quotient carries the effective type; the
                         // machine types the remainder unsigned (Euclidean
                         // remainders are non-negative).
                         UdivRem | SdivRem => {
-                            pin_output(rdl, signed, type_map);
-                            pin_output(rdh, false, type_map);
+                            pin_output(rdl, 0, signed, type_map, demands);
+                            pin_output(rdh, 1, false, type_map, demands);
                         }
                         // The result carries the value operand's tag (the
                         // shift-out high output is dead).
                         Ushr | Sshr => {
-                            pin_output(rdl, signed, type_map);
+                            pin_output(rdl, 0, signed, type_map, demands);
                         }
                         // The result carries the value's tag, whatever it
                         // is: unify the two (hard), re-tagging the value on
@@ -2386,14 +2477,17 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     update_changed(&rd2.to_reg(), merged_t, type_map);
                 }
                 Load { rs, .. } => {
-                    update_changed(
-                        rs,
-                        type_map
-                            .get(*rs)
-                            .refine(IsaType::Known(scry_isa::Type::Uint(2)))
-                            .expect("Load source refine fail"),
-                        type_map,
-                    );
+                    // The address is hard unsigned; an address established
+                    // signed (by another consumer) is re-tagged for the load.
+                    let t = type_map.get(*rs);
+                    let target = IsaType::Known(scry_isa::Type::Uint(2));
+                    match t.refine(target) {
+                        Some(refined) => update_changed(rs, refined, type_map),
+                        None if t.is_int() && t.size_pow2() == 2 => {
+                            push_demand(demands, bb_v, inst_idx, 0, *rs, target)
+                        }
+                        None => panic!("Load source refine fail: {t:?}"),
+                    }
 
                     // We don't assign the type of the destination since we must get the type requirements from other instructions
                 }
@@ -2403,15 +2497,17 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     // consumer (the encoding has no type field). This also
                     // grounds the types of address arithmetic on registers
                     // created after lowering, which have no CLIF fallback
-                    // type (see `lower_stack_args`).
-                    update_changed(
-                        &rd.to_reg(),
-                        type_map
-                            .get(rd.to_reg())
-                            .refine(IsaType::Known(scry_isa::Type::Uint(2)))
-                            .expect("Stack address refine fail"),
-                        type_map,
-                    );
+                    // type (see `lower_stack_args`). A result established
+                    // signed by its consumers is re-tagged on its way out.
+                    let td = type_map.get(rd.to_reg());
+                    let target = IsaType::Known(scry_isa::Type::Uint(2));
+                    match td.refine(target) {
+                        Some(refined) => update_changed(&rd.to_reg(), refined, type_map),
+                        None if td.is_int() && td.size_pow2() == 2 => {
+                            push_demand(demands, bb_v, inst_idx, 0, rd.to_reg(), td)
+                        }
+                        None => panic!("Stack address refine fail: {td:?}"),
+                    }
                 }
                 CallArgs {
                     rets, args, sig, ..
@@ -2422,13 +2518,22 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     assert_eq!(rets.len(), min(QUEUE_CAPACITY, sig.returns.len()));
                     assert_eq!(args.len(), min(QUEUE_CAPACITY, sig.params.len()));
 
-                    for (r, p) in rets.iter().map(|p| p.vreg).zip(sig.returns.iter()) {
+                    for (slot, (r, p)) in rets
+                        .iter()
+                        .map(|p| p.vreg)
+                        .zip(sig.returns.iter())
+                        .enumerate()
+                    {
                         let ty = abi_param_to_isatype(p);
-                        update_changed(
-                            &r.to_reg(),
-                            type_map.get(r.to_reg()).refine(ty).unwrap(),
-                            type_map,
-                        );
+                        // The callee returns the value with its ABI-annotated
+                        // type, so the attribute is hard: a result established
+                        // with the other signedness by its consumers is
+                        // re-tagged on its way out.
+                        let td = type_map.get(r.to_reg());
+                        match td.refine(ty) {
+                            Some(refined) => update_changed(&r.to_reg(), refined, type_map),
+                            None => push_demand(demands, bb_v, inst_idx, slot, r.to_reg(), td),
+                        }
                     }
 
                     for (slot, (r, p)) in args
@@ -2468,35 +2573,95 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     }
                 }
                 JumpTrigger { args, .. } => {
-                    for arg_r in args.iter() {
-                        let arg_ty = type_map.get(*arg_r);
+                    // A successor's parameter is a copy of the argument sent
+                    // to it, so the two are unified, edge by edge. Both may
+                    // already be established, with different signedness (each
+                    // by its own consumers, or the parameter by another
+                    // predecessor): neither can change any more, so the value
+                    // is re-tagged on its way across the edge instead.
+                    let edges: Vec<(usize, usize, Vec<Reg>)> = bb_dfg
+                        .edges_sourced_in(bb_v)
+                        .map(|(succ_v, deps)| {
+                            let deps = deps.into_borrowed().unwrap();
+                            (succ_v, deps.0, deps.1.iter().copied().collect())
+                        })
+                        .collect();
+                    for (succ_v, param_idx, regs) in edges {
+                        let succ_bb = cfg.graph.vertex_weight(succ_v).unwrap();
+                        let param = succ_bb.params[param_idx];
+                        // A loop-invariant parameter forwarded unchanged is
+                        // its own argument.
+                        let arg = *regs.iter().find(|r| **r != param).unwrap_or(&param);
+                        let arg_ty = type_map.get(arg);
+                        let param_ty = type_map.get(param);
 
-                        let shared_ty = bb_dfg
-                            .edges_sourced_in(bb_v)
-                            .filter(|(_, deps)| deps.1.contains(arg_r))
-                            .flat_map(|(_, deps)| {
+                        if let Some(shared_ty) = arg_ty.refine(param_ty) {
+                            update_changed(&arg, shared_ty, type_map);
+                            update_changed(&param, shared_ty, type_map);
+                            continue;
+                        }
+
+                        // The wire position carrying the argument, which is
+                        // the same in this block's output order and the
+                        // successor's input order.
+                        let slot = succ_bb
+                            .param_order
+                            .iter()
+                            .position(|p| *p == Some(param))
+                            .expect("Successor parameter has no wire position");
+                        assert_eq!(
+                            args[slot], arg,
+                            "Wire position {slot} of block {bb_v} carries another argument"
+                        );
+
+                        // Re-tag at the sender (this block's argument) where
+                        // the parameter's type is fixed by another predecessor
+                        // (the receiver cannot then satisfy both), or where no
+                        // other successor of this block minds the new tag at
+                        // that wire position; otherwise re-receive at the
+                        // successor (see `apply_cast_demands`). The two can
+                        // never pull in opposite directions: a block with
+                        // several successors only branches to blocks it is the
+                        // only predecessor of, as all critical edges are split
+                        // (see `prepare_block_params`), so a parameter fixed by
+                        // another predecessor is only ever reached by a jump.
+                        let fixed_by_other_pred = bb_dfg
+                            .edges_sinked_in(succ_v)
+                            .filter(|(pred_v, deps)| *pred_v != bb_v && deps.0 == param_idx)
+                            .any(|(_, deps)| {
                                 deps.into_borrowed()
                                     .unwrap()
                                     .1
                                     .iter()
-                                    .map(|d| type_map.get(*d))
-                            })
-                            .fold(arg_ty, |acc_ty, d_ty| acc_ty.refine(d_ty).unwrap());
-
-                        once(*arg_r)
-                            .chain(
-                                bb_dfg
-                                    .edges_sourced_in(bb_v)
-                                    .filter_map(|(_, deps)| {
-                                        if deps.1.contains(arg_r) {
-                                            Some(deps.into_borrowed().unwrap().1.iter().cloned())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .flatten(),
-                            )
-                            .for_each(|r| update_changed(&r, shared_ty, type_map));
+                                    .filter(|r| **r != param)
+                                    .any(|r| type_map.get(*r).is_same_signedness(&param_ty))
+                            });
+                        let other_succs_agree = cfg
+                            .graph
+                            .edges_sourced_in(bb_v)
+                            .map(|(v, _)| v)
+                            .filter(|v| *v != succ_v)
+                            .all(|v| {
+                                let other = cfg.graph.vertex_weight(v).unwrap();
+                                other
+                                    .param_order
+                                    .get(slot)
+                                    .copied()
+                                    .flatten()
+                                    .map_or(true, |p| type_map.get(p).refine(param_ty).is_some())
+                            });
+                        if fixed_by_other_pred || other_succs_agree {
+                            push_demand(demands, bb_v, inst_idx, slot, arg, param_ty);
+                        } else {
+                            let echo_idx = succ_bb
+                                .inst
+                                .iter()
+                                .position(|i| {
+                                    matches!(i, MInst::Echo { rss, .. } if rss.get(slot) == Some(&param))
+                                })
+                                .expect("Successor has no parameter echo receiving the parameter");
+                            push_demand(demands, succ_v, echo_idx, slot, param, arg_ty);
+                        }
                     }
                 }
                 _ => (),

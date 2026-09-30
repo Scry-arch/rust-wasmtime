@@ -1,0 +1,34 @@
+test interpret
+test run
+target scry32
+
+; A parameter without an extension annotation arrives with a value tag the
+; callee does not know. Every use that needs a particular signedness must
+; therefore re-tag the value for itself, whatever tag it arrived with.
+;
+; Both shifts below give a different result for a negative input depending on
+; the tag they see, so a wrong assumption shows up in the result.
+
+; A single use that needs the value signed.
+function %signed_only(i32) -> i32 {
+block0(v0: i32):
+    v1 = iconst.i32 1
+    v2 = sshr v0, v1
+    return v2
+}
+; run: %signed_only(-8) == -4
+; run: %signed_only(8) == 4
+
+; Two uses of the same value in one block, one needing it unsigned and one
+; signed. Only one of them can get the tag the value arrived with; the other
+; must be re-tagged.
+function %both(i32) -> i32 {
+block0(v0: i32):
+    v1 = iconst.i32 1
+    v2 = ushr v0, v1
+    v3 = sshr v0, v1
+    v4 = iadd v2, v3
+    return v4
+}
+; run: %both(-8) == 2147483640
+; run: %both(8) == 8
