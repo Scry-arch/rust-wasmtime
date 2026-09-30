@@ -1383,8 +1383,24 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                     if let Some(rd) = bridge_reg {
                         let fresh = new_vreg();
                         replace_all_uses(bb, rd, fresh);
+                        // The bridge goes directly after the instruction, except
+                        // that an echo chain's chained operands are implicitly
+                        // delivered to the next instruction (no reference field),
+                        // so the bridge must not come between a chain link and
+                        // its successor: it goes after the last link instead,
+                        // with the bridged output's reference (recomputed on the
+                        // next pass) carrying it there.
+                        let mut bridge_idx = bb.inst.len() - inst_idx;
+                        while bridge_idx < bb.inst.len()
+                            && matches!(
+                                &bb.inst[bridge_idx - 1],
+                                MInst::EchoChain { rd_chain, .. } if !rd_chain.is_empty()
+                            )
+                        {
+                            bridge_idx += 1;
+                        }
                         bb.inst.insert(
-                            bb.inst.len() - inst_idx,
+                            bridge_idx,
                             MInst::EchoLong {
                                 rds: vec![Writable::from_reg(fresh)],
                                 rss: vec![rd],

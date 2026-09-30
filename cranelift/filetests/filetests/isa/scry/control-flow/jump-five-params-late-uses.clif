@@ -1,0 +1,59 @@
+test interpret
+test run
+target scry32
+
+; Five values cross a jump, and the target block uses four of them only after
+; a long computation on the fifth. Each block-parameter value must be routed
+; from the start of the block to an instruction far away from it (further than
+; a single instruction can reference), while the other block-parameter values
+; are still being received.
+;
+; The result is a plain sum, so a misrouted value gives a wrong number rather
+; than a crash.
+
+function %f(i32, i32, i32, i32) -> i32 {
+block0(v0: i32, v1: i32, v2: i32, v3: i32):
+    v4 = iadd v0, v1
+    jump block1
+
+block1:
+    v5 = iconst.i32 2
+    v6 = iadd v0, v5
+    v7 = iconst.i32 3
+    v8 = iadd v6, v7
+    v9 = iconst.i32 4
+    v10 = iadd v8, v9
+    v11 = iconst.i32 5
+    v12 = iadd v10, v11
+    v13 = iconst.i32 6
+    v14 = iadd v12, v13
+    v15 = iconst.i32 7
+    v16 = iadd v14, v15
+    v17 = iconst.i32 8
+    v18 = iadd v16, v17
+    v19 = iconst.i32 9
+    v20 = iadd v18, v19
+    v21 = iconst.i32 10
+    v22 = iadd v20, v21
+    v23 = iconst.i32 11
+    v24 = iadd v22, v23
+    v25 = iconst.i32 12
+    v26 = iadd v24, v25
+    v27 = iconst.i32 13
+    v28 = iadd v26, v27
+    v29 = iconst.i32 14
+    v30 = iadd v28, v29
+    v31 = iconst.i32 15
+    v32 = iadd v30, v31
+    v33 = iconst.i32 16
+    v34 = iadd v32, v33
+    v35 = iconst.i32 17
+    v36 = iadd v34, v35
+    v37 = iadd v36, v1
+    v38 = iadd v37, v2
+    v39 = iadd v38, v3
+    v40 = iadd v39, v4
+    return v40
+}
+; run: %f(1, 2, 3, 4) == 165
+; run: %f(0, 0, 0, 0) == 152
