@@ -1,0 +1,21 @@
+test interpret
+test run
+target scry32
+
+; A signed maximum of unsigned-tagged inputs (`uext` parameters) whose
+; result feeds a signed minimum. Both comparisons must be signed:
+; smin(smax(-5, -13), 0) is -5, whereas comparing the intermediate
+; 0xFFFFFFFB as unsigned against 0 would pick 0. The inputs cover both
+; argument orders, all-positive values, and a mixed pair.
+
+function %smax_smin(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = smax v0, v1
+    v3 = iconst.i32 0
+    v4 = smin v2, v3
+    return v4
+}
+; run: %smax_smin(-5, -13) == -5
+; run: %smax_smin(-13, -5) == -5
+; run: %smax_smin(5, 13) == 0
+; run: %smax_smin(-13, 5) == 0

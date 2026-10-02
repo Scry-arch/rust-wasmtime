@@ -1,0 +1,21 @@
+test interpret
+test run
+target scry32
+
+; The absolute value of an unsigned-tagged input (a `uext` parameter)
+; consumed by a signed operation. `iabs(INT_MIN)` wraps to `INT_MIN`
+; (0x80000000), which the arithmetic shift must treat as negative, yielding
+; 0xC0000000; a logical shift would yield 0x40000000. The other inputs
+; exercise the negation path with a positive result and the pass-through
+; path.
+
+function %iabs_sshr(i32 uext) -> i32 uext {
+block0(v0: i32):
+    v1 = iabs v0
+    v2 = iconst.i32 1
+    v3 = sshr v1, v2
+    return v3
+}
+; run: %iabs_sshr(-2147483648) == -1073741824
+; run: %iabs_sshr(-5) == 2
+; run: %iabs_sshr(7) == 3

@@ -1,0 +1,30 @@
+test interpret
+test run
+target scry32
+
+; Narrowing an unsigned-tagged value (a `uext` parameter) to a narrower type
+; that is then used as signed: once by a `sext` return, once by an
+; arithmetic shift. The reduced value keeps only the low bits, so 511 and
+; 255 both become -1 as a signed byte, and 254 >> 1 is -1 as well. The
+; narrowing must compile whichever way the signedness requirements of its
+; input and output are resolved.
+
+function %reduce_signed_return(i32 uext) -> i8 sext {
+block0(v0: i32):
+    v1 = ireduce.i8 v0
+    return v1
+}
+; run: %reduce_signed_return(511) == -1
+; run: %reduce_signed_return(127) == 127
+; run: %reduce_signed_return(128) == -128
+
+function %reduce_signed_shift(i32 uext) -> i8 uext {
+block0(v0: i32):
+    v1 = ireduce.i8 v0
+    v2 = iconst.i8 1
+    v3 = sshr v1, v2
+    return v3
+}
+; run: %reduce_signed_shift(255) == -1
+; run: %reduce_signed_shift(254) == -1
+; run: %reduce_signed_shift(126) == 63

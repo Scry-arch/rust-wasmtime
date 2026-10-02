@@ -2471,14 +2471,37 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     ..
                 } => {
                     // The machine forwards the chosen value with its own tag,
-                    // so the two values and the result should agree; the
-                    // condition is tested against 0 by logical value and is
-                    // unconstrained. Unifying is only a preference: soft
-                    // phase, skipped on conflict.
-                    if enable_soft {
-                        let t1 = type_map.get(*if_zero);
-                        let t2 = type_map.get(*if_nonzero);
-                        let td = type_map.get(rd.to_reg());
+                    // so the result carries the values' tag; the condition is
+                    // tested against 0 by logical value and is unconstrained.
+                    // Once both values are known with one signedness, the
+                    // result's is therefore hard: a result its consumers
+                    // established with the other signedness is re-tagged on
+                    // its way out. Values known with different signedness
+                    // leave the result's tag to the choice made at runtime,
+                    // so an established result is re-tagged on its way out
+                    // either way. Before that, unifying the three is only a
+                    // preference: soft phase, skipped on conflict.
+                    let t1 = type_map.get(*if_zero);
+                    let t2 = type_map.get(*if_nonzero);
+                    let td = type_map.get(rd.to_reg());
+                    if t1.is_known() && t2.is_known() && t1.is_int() && t2.is_int() {
+                        if t1.is_same_signedness(&t2) {
+                            if td.is_int() {
+                                let target =
+                                    IsaType::new_known_int(td.size_pow2(), t1.is_signed_int());
+                                match td.refine(target) {
+                                    Some(refined) => {
+                                        update_changed(&rd.to_reg(), refined, type_map)
+                                    }
+                                    None => {
+                                        push_demand(demands, bb_v, inst_idx, 0, rd.to_reg(), td)
+                                    }
+                                }
+                            }
+                        } else if td.is_known() && td.is_int() {
+                            push_demand(demands, bb_v, inst_idx, 0, rd.to_reg(), td);
+                        }
+                    } else if enable_soft {
                         if let Some(refined) = t1.refine(t2).and_then(|t12| t12.refine(td)) {
                             update_changed(if_zero, refined, type_map);
                             update_changed(if_nonzero, refined, type_map);
@@ -2576,33 +2599,37 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     rd,
                     rs,
                 } => {
-                    let rs_t = type_map.get(*rs);
-                    let rd_t = type_map.get(rd.to_reg());
-
-                    if rs_t.is_same_signedness(&rd_t) {
-                        // They are the same, just assign rd
-                        update_changed(&rd.to_reg(), rd_t, type_map);
-                    } else if rs_t.is_known() && rd_t.is_known() {
-                        panic!("Incompatible type requirements: rs_t {rs_t:?}, rd_t {rd_t:?}");
-                    } else if rs_t.is_known() || rd_t.is_known() {
-                        // One is known, so use its signedness
-                        let sign = rs_t.is_signed_int() || rd_t.is_signed_int();
-
-                        if rs_t.is_int() {
-                            update_changed(
-                                rs,
-                                rs_t.refine(IsaType::new_known_int(rs_t.size_pow2(), sign))
-                                    .unwrap(),
-                                type_map,
-                            );
-                        }
-                        if rd_t.is_int() {
-                            update_changed(
-                                &rd.to_reg(),
-                                rd_t.refine(IsaType::new_known_int(rd_t.size_pow2(), sign))
-                                    .unwrap(),
-                                type_map,
-                            );
+                    // The machine truncates to the target type's bytes
+                    // whatever the input's tag, and the result carries the
+                    // target type's tag (emitted from the output's
+                    // established type), so the input's signedness is
+                    // unconstrained and the output's is whatever its
+                    // consumers establish. Matching the two is only a
+                    // preference (it types e.g. a reduction whose result is
+                    // merely stored, after its input's ABI attribute): soft
+                    // phase, skipped on conflict, the output's established
+                    // signedness taking precedence.
+                    if enable_soft {
+                        let rs_t = type_map.get(*rs);
+                        let rd_t = type_map.get(rd.to_reg());
+                        let sign = if rd_t.is_known() && rd_t.is_int() {
+                            Some(rd_t.is_signed_int())
+                        } else if rs_t.is_known() && rs_t.is_int() {
+                            Some(rs_t.is_signed_int())
+                        } else {
+                            None
+                        };
+                        if let Some(sign) = sign {
+                            for (r, t) in [(*rs, rs_t), (rd.to_reg(), rd_t)] {
+                                if !t.is_int() {
+                                    continue;
+                                }
+                                if let Some(refined) =
+                                    t.refine(IsaType::new_known_int(t.size_pow2(), sign))
+                                {
+                                    update_changed(&r, refined, type_map);
+                                }
+                            }
                         }
                     }
                 }
