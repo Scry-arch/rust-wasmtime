@@ -1,0 +1,25 @@
+test interpret
+test run
+target scry32
+
+; A select whose result feeds a signed operation while one of its values has
+; no signedness of its own: that value is itself a select between an
+; unsigned-tagged parameter and a signed shift result, which nothing else
+; constrains. The outer select's other value is the unsigned-tagged parameter
+; `v0`. Whichever value the outer select forwards, the arithmetic shift must
+; see it as signed: with the condition zero it forwards `v0`, so -8 >> 1 is
+; -4, whereas a logical shift would give 2147483644.
+
+function %select_signed_use(i32 uext, i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = iconst.i32 1
+    v4 = sshr v1, v3
+    v5 = select v2, v0, v4
+    v6 = select v2, v5, v0
+    v7 = sshr v6, v3
+    return v7
+}
+; run: %select_signed_use(-8, 0, 0) == -4
+; run: %select_signed_use(-8, -16, 1) == -4
+; run: %select_signed_use(6, -16, 1) == 3
+; run: %select_signed_use(6, 0, 0) == 3

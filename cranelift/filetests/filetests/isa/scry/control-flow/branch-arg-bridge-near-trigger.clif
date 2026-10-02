@@ -1,0 +1,49 @@
+test interpret
+test run
+target scry32
+
+; A branch argument produced early and flown across a run of other work to a
+; jump with eight arguments. The argument sits at wire position six, so it is
+; delivered past the jump's trigger, to a later instruction of the target's
+; receiving echo chain, which puts its delivery just out of the range of a
+; single output reference while the trigger itself is still within reach.
+; The bridging echo must come before the trigger, or the argument never
+; arrives. The other arguments are produced right before the jump and are
+; consumed in the target, so a lost or misrouted value changes the result.
+
+function %branch_arg_bridge(i32 uext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32):
+    v2 = iadd v0, v1
+    v3 = iconst.i32 1
+    v4 = iadd v1, v3
+    v5 = iconst.i32 1
+    v6 = iadd v4, v5
+    v7 = iconst.i32 1
+    v8 = iadd v6, v7
+    v9 = iconst.i32 1
+    v10 = iadd v8, v9
+    v11 = iconst.i32 1
+    v12 = iadd v10, v11
+    v13 = iconst.i32 1
+    v14 = iadd v12, v13
+    v15 = iconst.i32 1
+    v16 = iadd v14, v15
+    v17 = iconst.i32 1
+    v18 = iadd v16, v17
+    v19 = bnot v18
+    v20 = iconst.i32 10
+    v21 = iconst.i32 20
+    v22 = iconst.i32 30
+    v23 = iconst.i32 40
+    v24 = iconst.i32 50
+    v25 = iconst.i32 60
+    jump block1(v20, v21, v22, v23, v24, v25, v2, v19)
+
+block1(v100: i32, v101: i32, v102: i32, v103: i32, v104: i32, v105: i32, v106: i32, v107: i32):
+    v108 = isub v107, v106
+    v109 = iadd v108, v100
+    v110 = iadd v109, v105
+    return v110
+}
+; run: %branch_arg_bridge(100, 7) == -53
+; run: %branch_arg_bridge(5, 1) == 54

@@ -1371,10 +1371,23 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                                 };
                             }
                             _ => {
-                                bb.inst.insert(
-                                    bb.inst.len() - inst_idx,
-                                    MInst::Discard { rss: vec![dead] },
-                                );
+                                // The discard goes directly after the instruction,
+                                // except that an echo chain's chained operands are
+                                // implicitly delivered to the next instruction, which
+                                // a discard would swallow: it goes after the last
+                                // link instead, with the dead output's reference
+                                // (set on the next pass) carrying it there.
+                                let mut discard_idx = bb.inst.len() - inst_idx;
+                                while discard_idx < bb.inst.len()
+                                    && matches!(
+                                        &bb.inst[discard_idx - 1],
+                                        MInst::EchoChain { rd_chain, .. } if !rd_chain.is_empty()
+                                    )
+                                {
+                                    discard_idx += 1;
+                                }
+                                bb.inst
+                                    .insert(discard_idx, MInst::Discard { rss: vec![dead] });
                             }
                         }
                         continue 'a;
@@ -1497,10 +1510,14 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                         chain_root.insert(fresh, root);
                         replace_all_uses(bb, rd, fresh);
                         let after = producer + 1;
+                        // The bridge goes before the consumer, whatever the
+                        // reach: a branch argument's distance also covers its
+                        // delivery past the trigger (see `delivery_group`).
+                        let consumer = len - 1 - use_pos[&rd].0;
 
                         let mut bridge_idx = after;
                         let mut dist: u16 = 0;
-                        while bridge_idx < bb.inst.len() {
+                        while bridge_idx < consumer {
                             let next = dist + bb.inst[bridge_idx].reference_length() as u16;
                             if next > reach {
                                 break;
@@ -1670,6 +1687,123 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
         log::trace!("BB: {bb:?}");
     }
     log::trace!("VCodeCFG: {cfg:?}");
+}
+
+/// Checks the final reference distances: every explicitly referenced
+/// delivery lands on an instruction that uses the delivered value, a value
+/// delivered without a reference field is used by the next instruction, and
+/// every order-sensitive consumer receives its operands (those delivered
+/// within the block) in use order. Must run once the reference distances are
+/// final.
+fn assert_deliveries(cfg: &VCodeCFG<MInst>) {
+    for (bb_v, bb) in cfg.graph.all_vertices_weighted() {
+        let len = bb.inst.len();
+        // Reference units from the block start to each instruction.
+        let mut start = Vec::with_capacity(len + 1);
+        let mut acc = 0usize;
+        for inst in &bb.inst {
+            start.push(acc);
+            acc += inst.reference_length();
+        }
+        start.push(acc);
+
+        // Consumer index -> (producer index, def slot, value) of its arrivals.
+        let mut arrivals: HashMap<usize, Vec<(usize, usize, Reg)>> = HashMap::new();
+        for (i, inst) in bb.inst.iter().enumerate() {
+            // The output reference of each def, in def order; None where unknown.
+            let refs: Vec<Option<u16>> = match inst {
+                MInst::Alu1 { out, .. }
+                | MInst::UnaryAlu { out, .. }
+                | MInst::Pick { out, .. }
+                | MInst::Load { out, .. }
+                | MInst::Cast { out, .. }
+                | MInst::EchoLong { out, .. } => vec![Some(*out)],
+                MInst::Alu2 { rds, outs, .. } if rds.len() == 1 => vec![Some(outs[0])],
+                MInst::Duplicate { out1, out2, .. } | MInst::EchoSplit { out1, out2, .. } => {
+                    vec![Some(*out1), Some(*out2)]
+                }
+                MInst::Reorder { out, .. } => vec![Some(*out), Some(*out)],
+                MInst::EchoChain {
+                    out1,
+                    out2,
+                    rd_chain,
+                    ..
+                } => {
+                    let mut v = vec![Some(*out2), Some(*out1)];
+                    v.extend(rd_chain.iter().map(|_| Some(0)));
+                    v
+                }
+                MInst::Const { .. }
+                | MInst::LoadExtName { .. }
+                | MInst::JumpOffset { .. }
+                | MInst::LoadStack { .. }
+                | MInst::SAddr { .. } => vec![Some(0)],
+                _ => vec![],
+            };
+            for (slot, def) in inst.get_defs().enumerate() {
+                let Some(o) = refs.get(slot).copied().flatten() else {
+                    continue;
+                };
+                // A branch argument is delivered to the successor: to its
+                // first executed instruction, or a later one of its
+                // receiving echo chain (see `delivery_group`).
+                if let Some((t, w)) = bb.inst.iter().enumerate().find_map(|(t, inst)| match inst {
+                    MInst::JumpTrigger { args, .. } => {
+                        args.iter().position(|a| *a == def).map(|w| (t, w))
+                    }
+                    _ => None,
+                }) {
+                    assert!(
+                        i < t,
+                        "block {bb_v}: branch argument {def:?} is produced by instruction {i} \n                         ({inst:?}), after the trigger at {t}"
+                    );
+                    let expected = start[t] - start[i + 1] + delivery_group(w);
+                    assert_eq!(
+                        o as usize, expected,
+                        "block {bb_v}: branch argument {def:?} of instruction {i} ({inst:?}) is \n                         delivered {o} units ahead instead of {expected}"
+                    );
+                    continue;
+                }
+                let target = start[i + 1] + o as usize;
+                let at_target = (i + 1..len).filter(|j| start[*j] == target);
+                let user = at_target
+                    .clone()
+                    .find(|j| bb.inst[*j].get_uses().any(|u| *u == def));
+                let Some(user) = user else {
+                    panic!(
+                        "block {bb_v}: {def:?} of instruction {i} ({inst:?}) is delivered {o} \
+                         units ahead, to {:?}, which does not use it",
+                        at_target.map(|j| &bb.inst[j]).collect::<Vec<_>>()
+                    );
+                };
+                arrivals.entry(user).or_default().push((i, slot, def));
+            }
+        }
+
+        for (j, mut arr) in arrivals {
+            let inst = &bb.inst[j];
+            if !inst.use_order_meaningful()
+                || matches!(
+                    inst,
+                    MInst::JumpTrigger { .. } | MInst::CallArgs { .. } | MInst::Rets { .. }
+                )
+            {
+                continue;
+            }
+            arr.sort();
+            let arrived: Vec<Reg> = arr.iter().map(|a| a.2).collect();
+            let expected: Vec<Reg> = inst
+                .get_uses()
+                .filter(|u| arrived.contains(u))
+                .cloned()
+                .collect();
+            assert_eq!(
+                arrived, expected,
+                "block {bb_v}: the operands of instruction {j} ({inst:?}) arrive in a different \
+                 order than they are used in"
+            );
+        }
+    }
 }
 
 /// Checks that no instruction consumes more operands than its ready queue can
@@ -2473,33 +2607,39 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     // The machine forwards the chosen value with its own tag,
                     // so the result carries the values' tag; the condition is
                     // tested against 0 by logical value and is unconstrained.
-                    // Once both values are known with one signedness, the
-                    // result's is therefore hard: a result its consumers
-                    // established with the other signedness is re-tagged on
-                    // its way out. Values known with different signedness
-                    // leave the result's tag to the choice made at runtime,
-                    // so an established result is re-tagged on its way out
-                    // either way. Before that, unifying the three is only a
-                    // preference: soft phase, skipped on conflict.
+                    // A result its consumers established is therefore hard
+                    // on the values: one not yet known is held to the
+                    // result's signedness, and one known with the other
+                    // signedness makes the result be re-tagged on its way out
+                    // (the choice at runtime may well pick it). Without an
+                    // established result, two values known with one
+                    // signedness give it to the result; two known with
+                    // different ones leave the result's tag to the choice at
+                    // runtime, for a consumer to establish (and the above to
+                    // re-tag). Before anything is known, unifying the three
+                    // is only a preference: soft phase, skipped on conflict.
                     let t1 = type_map.get(*if_zero);
                     let t2 = type_map.get(*if_nonzero);
                     let td = type_map.get(rd.to_reg());
-                    if t1.is_known() && t2.is_known() && t1.is_int() && t2.is_int() {
-                        if t1.is_same_signedness(&t2) {
-                            if td.is_int() {
-                                let target =
-                                    IsaType::new_known_int(td.size_pow2(), t1.is_signed_int());
-                                match td.refine(target) {
-                                    Some(refined) => {
-                                        update_changed(&rd.to_reg(), refined, type_map)
-                                    }
-                                    None => {
-                                        push_demand(demands, bb_v, inst_idx, 0, rd.to_reg(), td)
-                                    }
-                                }
+                    if td.is_known() && td.is_int() {
+                        let sign = td.is_signed_int();
+                        let mut conflict = false;
+                        for (r, t) in [(if_zero, t1), (if_nonzero, t2)] {
+                            if !t.is_int() {
+                                continue;
                             }
-                        } else if td.is_known() && td.is_int() {
+                            match t.refine(IsaType::new_known_int(t.size_pow2(), sign)) {
+                                Some(refined) => update_changed(r, refined, type_map),
+                                None => conflict = true,
+                            }
+                        }
+                        if conflict {
                             push_demand(demands, bb_v, inst_idx, 0, rd.to_reg(), td);
+                        }
+                    } else if t1.is_known() && t2.is_known() && t1.is_int() && t2.is_int() {
+                        if t1.is_same_signedness(&t2) && td.is_int() {
+                            let target = IsaType::new_known_int(td.size_pow2(), t1.is_signed_int());
+                            update_changed(&rd.to_reg(), td.refine(target).unwrap(), type_map);
                         }
                     } else if enable_soft {
                         if let Some(refined) = t1.refine(t2).and_then(|t12| t12.refine(td)) {
@@ -3656,6 +3796,7 @@ impl TargetIsa for ScryBackend {
             rounds += 1;
             assert!(rounds < 16, "Reference distance assignment did not converge");
         }
+        assert_deliveries(&cfg);
         assert_queue_capacities(&mut cfg);
         set_trigger_offsets(&mut cfg);
 
