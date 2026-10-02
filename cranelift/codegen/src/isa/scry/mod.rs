@@ -1230,9 +1230,40 @@ fn insert_duplicates(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Re
     log::trace!("VCodeCFG: {cfg:?}");
 }
 
+/// The longest output reference the given def of the instruction can carry
+/// (in reference units, see [`MInst::reference_length`]). Zero for a value
+/// delivered without a reference field, which goes to the next instruction.
+fn max_out_ref(inst: &MInst, def_idx: usize) -> u16 {
+    match inst {
+        MInst::EchoLong { .. } => (1 << 10) - 1,
+        MInst::Alu1 { .. }
+        | MInst::UnaryAlu { .. }
+        | MInst::Pick { .. }
+        | MInst::Load { .. }
+        | MInst::Cast { .. }
+        | MInst::EchoSplit { .. }
+        | MInst::Duplicate { .. }
+        | MInst::Reorder { .. } => (1 << 5) - 1,
+        // Both outputs share one reference, or one goes to the next
+        // instruction: lengthening either on its own is never safe.
+        MInst::Alu2 { rds, .. } if rds.len() == 1 => (1 << 5) - 1,
+        // Defs are [rd2, rd1, chain..]; the chained values are delivered to
+        // the next instruction.
+        MInst::EchoChain { .. } if def_idx < 2 => (1 << 5) - 1,
+        _ => 0,
+    }
+}
+
 fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() -> Reg) {
     log::debug!("insert_ref_distances");
     for (_, bb) in cfg.graph.all_vertices_weighted_mut() {
+        // Bridging state across passes (see the bridge placement below):
+        // every def bridged so far, the chain of bridges each bridge belongs
+        // to (its root def), and how often each chain was bridged again
+        // after being lengthened by another bridge.
+        let mut bridged = HashSet::<Reg>::new();
+        let mut chain_root = HashMap::<Reg, Reg>::new();
+        let mut rebridges = HashMap::<Reg, u32>::new();
         'a: loop {
             log::trace!("BB: {bb:?}");
 
@@ -1240,7 +1271,34 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
             // The extra distance is non-zero for branch arguments delivered to a later
             // instruction of the successor's receiving echo chain (see `delivery_group`).
             let mut use_pos = HashMap::<Reg, (usize, u16, u16)>::new();
+            // (producer index, consumer index) of every value of an already
+            // processed instruction that a bridge must not lengthen: one
+            // delivered without a reference field (to the next instruction),
+            // or one at the limit of a short output reference.
+            let mut fixed_spans = Vec::<(usize, usize)>::new();
             let mut ref_dist = 0;
+            let len = bb.inst.len();
+            // Where each value is defined (producer index and def index),
+            // and the reference distance from the block start to each
+            // instruction, to size up values of instructions not yet
+            // processed (see `parallel` in the bridge placement).
+            let def_pos: HashMap<Reg, (usize, usize)> = bb
+                .inst
+                .iter()
+                .enumerate()
+                .flat_map(|(idx, inst)| {
+                    inst.get_defs().enumerate().map(move |(i, d)| (d, (idx, i)))
+                })
+                .collect();
+            let prefix_dist: Vec<u16> = bb
+                .inst
+                .iter()
+                .scan(0u16, |acc, inst| {
+                    let at = *acc;
+                    *acc += inst.reference_length() as u16;
+                    Some(at)
+                })
+                .collect();
             for (inst_idx, inst) in bb.inst.iter_mut().rev().enumerate() {
                 log::trace!("inst: {inst:?}");
 
@@ -1337,8 +1395,11 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                     // A def whose value the machine can only deliver to the
                     // next instruction, while its consumer sits further away,
                     // is bridged with an echo that carries the remaining
-                    // distance.
-                    let bridge_reg = match inst {
+                    // distance. The bridge is (register, reach): how many
+                    // reference units past the instruction the bridge may be
+                    // placed.
+                    let producer = len - 1 - inst_idx;
+                    let bridge = match inst {
                         // These deliver their output to the next instruction
                         // (their encodings have no output reference field).
                         MInst::Const { rd, .. }
@@ -1348,7 +1409,7 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                         | MInst::SAddr { rd, .. }
                             if ref_dists[&0] > 0 =>
                         {
-                            Some(rd.to_reg())
+                            Some((rd.to_reg(), 0))
                         }
                         // The two-output Alu2 encoding sends both outputs to
                         // one shared reference, or one output to the next
@@ -1362,7 +1423,7 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                                 && ref_dists[&0] > 0
                                 && ref_dists[&1] > 0 =>
                         {
-                            Some(rds[1].to_reg())
+                            Some((rds[1].to_reg(), 0))
                         }
                         _ => None,
                     }
@@ -1377,19 +1438,124 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                         };
                         inst.get_defs()
                             .enumerate()
-                            .find_map(|(i, d)| (ref_dists[&i] > max_ref).then_some(d))
+                            .find_map(|(i, d)| (ref_dists[&i] > max_ref).then_some((d, max_ref)))
                     });
-                    if let Some(rd) = bridge_reg {
+                    if let Some((rd, reach)) = bridge {
+                        // The bridge goes (nearly) as far past the instruction
+                        // as the bridged output's reference can reach
+                        // (recomputed on the next pass), so that every hop of a
+                        // chain of bridges covers the range of the reference
+                        // that feeds it. Placing every hop directly after the
+                        // instruction would shorten the remaining distance by a
+                        // single unit per hop, while lengthening, by that same
+                        // unit, every other value in flight across the hop.
+                        //
+                        // Inserting a bridge lengthens every value in flight
+                        // across it by one unit, which may put one of them out
+                        // of range, so that it is bridged again, which may
+                        // lengthen this value out of range again, and so on.
+                        // Three things keep that in check:
+                        // - The reach leaves a unit of slack for every bridge
+                        //   expected to be inserted across this one later:
+                        //   one for each of the instruction's other outputs,
+                        //   whose bridges land in the same range, and one for
+                        //   each value of a not yet processed instruction that
+                        //   flies across this one beyond its own range (a
+                        //   value flying in parallel), whose bridges land
+                        //   wherever they will, this value's range included.
+                        // - Values that cannot be lengthened at all are never
+                        //   crossed (`fixed_spans` below).
+                        // - A chain of bridges halves its reach every time it
+                        //   is bridged again after all, down to none: a bridge
+                        //   directly after its instruction only lengthens
+                        //   values of earlier, still unprocessed instructions,
+                        //   so it cannot be lengthened again by their bridges'
+                        //   consequences. This bounds the total number of
+                        //   bridges.
+                        let siblings = inst.get_defs().count() as u16 - 1;
+                        let parallel = use_pos
+                            .iter()
+                            .filter(|(reg, (use_idx, _, extra))| {
+                                let Some(&(def_idx, def_i)) = def_pos.get(*reg) else {
+                                    return false;
+                                };
+                                if def_idx >= producer {
+                                    return false;
+                                }
+                                let consumer = len - 1 - use_idx;
+                                let dist = prefix_dist[consumer] - prefix_dist[def_idx + 1] + extra;
+                                dist > max_out_ref(&bb.inst[def_idx], def_i)
+                            })
+                            .count() as u16;
+                        let root = chain_root.get(&rd).copied().unwrap_or(rd);
+                        if !bridged.insert(rd) {
+                            *rebridges.entry(root).or_default() += 1;
+                        }
+                        let rebridged = rebridges.get(&root).copied().unwrap_or(0);
+                        let reach = reach.saturating_sub(siblings + parallel) >> rebridged.min(15);
                         let fresh = new_vreg();
+                        chain_root.insert(fresh, root);
                         replace_all_uses(bb, rd, fresh);
-                        // The bridge goes directly after the instruction, except
-                        // that an echo chain's chained operands are implicitly
-                        // delivered to the next instruction (no reference field),
-                        // so the bridge must not come between a chain link and
-                        // its successor: it goes after the last link instead,
-                        // with the bridged output's reference (recomputed on the
-                        // next pass) carrying it there.
-                        let mut bridge_idx = bb.inst.len() - inst_idx;
+                        let after = producer + 1;
+
+                        let mut bridge_idx = after;
+                        let mut dist: u16 = 0;
+                        while bridge_idx < bb.inst.len() {
+                            let next = dist + bb.inst[bridge_idx].reference_length() as u16;
+                            if next > reach {
+                                break;
+                            }
+                            dist = next;
+                            bridge_idx += 1;
+                        }
+                        // The bridge never crosses a value of an already
+                        // processed instruction that cannot be lengthened
+                        // (see `fixed_spans`): it retreats to the nearest point
+                        // free of such values, if need be directly after this
+                        // instruction, which only values of earlier (still
+                        // unprocessed) instructions fly across.
+                        let far_idx = bridge_idx;
+                        let mut blocked = vec![false; far_idx - after + 1];
+                        for &(producer, consumer) in &fixed_spans {
+                            // Inserting at `x` lengthens the span iff producer < x <= consumer.
+                            let lo = (producer + 1).max(after);
+                            let hi = consumer.min(far_idx);
+                            for x in lo..=hi {
+                                blocked[x - after] = true;
+                            }
+                        }
+                        // Nor may the bridge come between a call or return and
+                        // the pseudo-instruction at its trigger position (the
+                        // emitted trigger offset assumes them adjacent), or
+                        // between a jump issue and the block's trigger (the
+                        // issue's trigger offset is bounded).
+                        let mut issued = false;
+                        for x in after..=far_idx.min(len - 1) {
+                            if matches!(bb.inst[x], MInst::CallArgs { .. } | MInst::Rets { .. }) {
+                                blocked[x - after] = true;
+                            }
+                            if issued {
+                                blocked[x - after] = true;
+                            }
+                            if matches!(bb.inst[x], MInst::JumpIssue { .. } | MInst::ImmJump { .. })
+                            {
+                                issued = true;
+                            }
+                        }
+                        while bridge_idx > after && blocked[bridge_idx - after] {
+                            bridge_idx -= 1;
+                        }
+                        log::trace!(
+                            "bridge: {rd:?} of {:?} reach {reach} (siblings {siblings}, parallel {parallel}, rebridged {rebridged}) dist {dist} far_idx {far_idx} after {after} bridge_idx {bridge_idx} (len {})",
+                            bb.inst[after - 1],
+                            bb.inst.len()
+                        );
+                        // Directly after the instruction, an echo chain's chained
+                        // operands are implicitly delivered to the next
+                        // instruction (no reference field), so the bridge must
+                        // not come between a chain link and its successor: it
+                        // goes after the last link instead, with the bridged
+                        // output's reference carrying it there.
                         while bridge_idx < bb.inst.len()
                             && matches!(
                                 &bb.inst[bridge_idx - 1],
@@ -1407,6 +1573,21 @@ fn insert_ref_distances(cfg: &mut VCodeCFG<MInst>, mut new_vreg: impl FnMut() ->
                             },
                         );
                         continue 'a;
+                    }
+
+                    // All of this instruction's values are within range now;
+                    // record those that no later-inserted bridge may lengthen:
+                    // those delivered to the next instruction, and those at
+                    // the limit of a short reference. (A long reference at its
+                    // limit is left alone: it would block its whole, long span
+                    // for other bridges, which would then crawl across it one
+                    // unit per hop; lengthening it costs a single extra hop.)
+                    for (i, def) in inst.get_defs().enumerate() {
+                        let max_ref = max_out_ref(inst, i);
+                        if max_ref <= (1 << 5) - 1 && ref_dists[&i] >= max_ref {
+                            let consumer = len - 1 - use_pos[&def].0;
+                            fixed_spans.push((producer, consumer));
+                        }
                     }
 
                     match inst {

@@ -1,0 +1,48 @@
+test interpret
+test run
+target scry32
+
+; A value consumed more than 1023 reference units after it is received, i.e.
+; further than a single `echo.l` output reference (10 bits) can express. The
+; compiler must chain long echoes to bridge the remaining distance.
+;
+; `v0` is received at function entry and only consumed by the final `iadd`.
+; Each `srem.i64` in between lowers to a straight-line sequence of roughly 40
+; machine instructions, so the chain of 27 puts the consumer of `v0` just past
+; the 1023 limit. The run expectations differ in `v0` alone, so a misrouted or
+; lost `v0` changes the result.
+
+function %far_reference(i64 uext, i64 uext, i64 uext) -> i64 uext {
+block0(v0: i64, v1: i64, v2: i64):
+    v3 = srem v1, v2
+    v4 = srem v3, v2
+    v5 = srem v4, v2
+    v6 = srem v5, v2
+    v7 = srem v6, v2
+    v8 = srem v7, v2
+    v9 = srem v8, v2
+    v10 = srem v9, v2
+    v11 = srem v10, v2
+    v12 = srem v11, v2
+    v13 = srem v12, v2
+    v14 = srem v13, v2
+    v15 = srem v14, v2
+    v16 = srem v15, v2
+    v17 = srem v16, v2
+    v18 = srem v17, v2
+    v19 = srem v18, v2
+    v20 = srem v19, v2
+    v21 = srem v20, v2
+    v22 = srem v21, v2
+    v23 = srem v22, v2
+    v24 = srem v23, v2
+    v25 = srem v24, v2
+    v26 = srem v25, v2
+    v27 = srem v26, v2
+    v28 = srem v27, v2
+    v29 = srem v28, v2
+    v30 = iadd v29, v0
+    return v30
+}
+; run: %far_reference(1, 100, 7) == 3
+; run: %far_reference(5, 100, 7) == 7
