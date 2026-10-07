@@ -1,0 +1,29 @@
+test interpret
+test run
+target scry32
+
+; A store whose address is the sum of a spilled base address and a signed
+; index. The base is a stack address that is stored to a slot and loaded
+; back, so the loaded value's signedness comes from its uses alone, and its
+; only use is the addition with the signed `i32 sext` index scaled by four.
+; The address operand of the store must still be unsigned: the machine takes
+; a signed address relative to the store instruction itself. The stored value
+; is read back through the unspilled base at index 0.
+
+function %store_signed_index(i32 sext, i32 sext) -> i32 sext {
+    ss0 = explicit_slot 32, align = 4
+    ss1 = explicit_slot 4, align = 4
+block0(v0: i32, v1: i32):
+    v2 = stack_addr.i32 ss0
+    v3 = stack_addr.i32 ss1
+    store notrap v2, v3
+    v4 = load.i32 notrap v3
+    v5 = iconst.i32 4
+    v6 = imul v0, v5
+    v7 = iadd v4, v6
+    store notrap v1, v7
+    v8 = load.i32 notrap v2
+    return v8
+}
+; run: %store_signed_index(0, 7) == 7
+; run: %store_signed_index(0, -3) == -3

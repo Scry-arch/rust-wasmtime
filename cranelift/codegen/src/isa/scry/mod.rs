@@ -2836,6 +2836,21 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     update_changed(&rd1.to_reg(), merged_t, type_map);
                     update_changed(&rd2.to_reg(), merged_t, type_map);
                 }
+                Store { rd, .. } => {
+                    // The address is hard unsigned (the machine takes a signed
+                    // address relative to the instruction); an address
+                    // established signed (by another consumer) is re-tagged
+                    // for the store. The stored value is unconstrained.
+                    let t = type_map.get(*rd);
+                    let target = IsaType::Known(scry_isa::Type::Uint(2));
+                    match t.refine(target) {
+                        Some(refined) => update_changed(rd, refined, type_map),
+                        None if t.is_int() && t.size_pow2() == 2 => {
+                            push_demand(demands, bb_v, inst_idx, 1, *rd, target)
+                        }
+                        None => panic!("Store address refine fail: {t:?}"),
+                    }
+                }
                 Load { rs, .. } => {
                     // The address is hard unsigned; an address established
                     // signed (by another consumer) is re-tagged for the load.
