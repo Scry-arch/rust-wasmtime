@@ -1,0 +1,31 @@
+test interpret
+test run
+target scry32
+
+; A value returned as i32 uext must reach the caller tagged unsigned,
+; whatever the signedness of the operations that produced it. Here the
+; result is the sum of a signed parameter and a select between an unsigned
+; parameter and that signed parameter, so with the condition zero both
+; summands are signed. The caller shifts the result logically: -12 >> 1 is
+; 2147483642, whereas an arithmetic shift would give -6.
+
+function %mixed_select_sum(i32 uext, i32 sext, i32 uext) -> i32 uext {
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = select v2, v0, v1
+    v4 = iadd v3, v1
+    return v4
+}
+; run: %mixed_select_sum(0, -6, 0) == -12
+; run: %mixed_select_sum(0, -6, 1) == -6
+
+function %caller(i32 uext, i32 sext, i32 uext) -> i32 uext {
+    sig0 = (i32 uext, i32 sext, i32 uext) -> i32 uext
+    fn0 = %mixed_select_sum sig0
+block0(v0: i32, v1: i32, v2: i32):
+    v3 = call fn0(v0, v1, v2)
+    v4 = iconst.i32 1
+    v5 = ushr v3, v4
+    return v5
+}
+; run: %caller(0, -6, 0) == 2147483642
+; run: %caller(0, -6, 1) == 2147483645

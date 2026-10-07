@@ -2616,8 +2616,14 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                     // signedness give it to the result; two known with
                     // different ones leave the result's tag to the choice at
                     // runtime, for a consumer to establish (and the above to
-                    // re-tag). Before anything is known, unifying the three
-                    // is only a preference: soft phase, skipped on conflict.
+                    // re-tag). If no consumer has done so once every hard
+                    // constraint has settled (soft phase), the result is
+                    // re-tagged unsigned on its way out: the rest of the
+                    // analysis takes an undetermined value for unsigned (see
+                    // BinaryAlu), which only this instruction, forwarding a
+                    // tag it does not emit, could otherwise contradict.
+                    // Before anything is known, unifying the three is only a
+                    // preference: soft phase, skipped on conflict.
                     let t1 = type_map.get(*if_zero);
                     let t2 = type_map.get(*if_nonzero);
                     let td = type_map.get(rd.to_reg());
@@ -2640,6 +2646,15 @@ fn type_analysis_phase<F: Fn(Reg) -> Option<Type>>(
                         if t1.is_same_signedness(&t2) && td.is_int() {
                             let target = IsaType::new_known_int(td.size_pow2(), t1.is_signed_int());
                             update_changed(&rd.to_reg(), td.refine(target).unwrap(), type_map);
+                        } else if enable_soft && td.is_int() {
+                            push_demand(
+                                demands,
+                                bb_v,
+                                inst_idx,
+                                0,
+                                rd.to_reg(),
+                                IsaType::new_known_int(td.size_pow2(), false),
+                            );
                         }
                     } else if enable_soft {
                         if let Some(refined) = t1.refine(t2).and_then(|t12| t12.refine(td)) {
